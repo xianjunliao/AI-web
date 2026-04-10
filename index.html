@@ -23,6 +23,7 @@
 
         <details class="config-group" data-config-group="connection-basic" open>
           <summary class="config-group-summary">
+            <span class="config-group-icon" aria-hidden="true">◎</span>
             <span>基础连接</span>
             <small>高频使用</small>
           </summary>
@@ -55,6 +56,7 @@
 
         <details class="config-group" data-config-group="conversation-settings" open>
           <summary class="config-group-summary">
+            <span class="config-group-icon" aria-hidden="true">◈</span>
             <span>对话设置</span>
             <small>常用</small>
           </summary>
@@ -71,6 +73,32 @@
               </label>
             </div>
 
+            <div class="avatar-config-grid">
+              <div class="avatar-config-card">
+                <div class="avatar-config-head">
+                  <span>AI 头像</span>
+                  <div class="button-row left wrap-row avatar-config-actions">
+                    <button id="upload-assistant-avatar" class="ghost-button mini-action-button" type="button">上传头像</button>
+                    <button id="clear-assistant-avatar" class="ghost-button mini-action-button" type="button">清空</button>
+                  </div>
+                </div>
+                <div id="assistant-avatar-preview" class="avatar-config-preview" aria-label="AI 头像预览">AI</div>
+                <input id="assistant-avatar-input" type="file" accept="image/*" hidden>
+              </div>
+
+              <div class="avatar-config-card">
+                <div class="avatar-config-head">
+                  <span>用户头像</span>
+                  <div class="button-row left wrap-row avatar-config-actions">
+                    <button id="upload-user-avatar" class="ghost-button mini-action-button" type="button">上传头像</button>
+                    <button id="clear-user-avatar" class="ghost-button mini-action-button" type="button">清空</button>
+                  </div>
+                </div>
+                <div id="user-avatar-preview" class="avatar-config-preview" aria-label="用户头像预览">我</div>
+                <input id="user-avatar-input" type="file" accept="image/*" hidden>
+              </div>
+            </div>
+
             <label>
               <span>系统提示词</span>
               <textarea id="system-prompt" name="systemPrompt" rows="4" placeholder="例如：你是一个有帮助的本地 AI 助手，请优先使用简洁清晰的中文回复。"></textarea>
@@ -80,6 +108,7 @@
 
         <details class="config-group" data-config-group="capability-settings">
           <summary class="config-group-summary">
+            <span class="config-group-icon" aria-hidden="true">✦</span>
             <span>能力配置</span>
             <small>按需展开</small>
           </summary>
@@ -137,8 +166,74 @@
           </div>
         </details>
 
+        <details class="config-group" data-config-group="chat-history-settings">
+          <summary class="config-group-summary">
+            <span class="config-group-icon" aria-hidden="true">☰</span>
+            <span>聊天记录</span>
+            <small>历史会话</small>
+          </summary>
+          <div class="config-group-body">
+            <div class="sub-config-block">
+              <div class="sub-config-head">
+                <strong>聊天记录</strong>
+                <p>自动保存当前会话，并支持手动存档、切换查看和删除历史记录。</p>
+              </div>
+
+              <div id="chat-history-meta" class="inline-meta-card">当前还没有保存的聊天记录。</div>
+              <div id="chat-history-undo" class="chat-history-undo is-hidden"></div>
+
+              <div id="chat-history-list" class="chat-history-list">
+                <div class="file-empty">还没有聊天记录。</div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="config-group" data-config-group="scheduler-settings">
+          <summary class="config-group-summary">
+            <span class="config-group-icon" aria-hidden="true">◌</span>
+            <span>定时任务</span>
+            <small>自动执行</small>
+          </summary>
+          <div class="config-group-body">
+            <div class="sub-config-block">
+              <div class="sub-config-head">
+                <strong>定时任务</strong>
+                <p>让本地服务按固定周期自动向模型发起任务，支持启停、立即执行和查看最近结果。</p>
+              </div>
+
+              <label>
+                <span>任务名称</span>
+                <input id="schedule-task-name" type="text" placeholder="例如：日报总结">
+              </label>
+
+              <label>
+                <span>Cron 表达式</span>
+                <input id="schedule-task-cron" type="text" placeholder="例如 0 9 * * *">
+              </label>
+
+              <label>
+                <span>任务提示词</span>
+                <textarea id="schedule-task-prompt" rows="5" placeholder="例如：读取今天的日志并生成一段简洁日报。"></textarea>
+              </label>
+
+              <div class="button-row left wrap-row persona-actions">
+                <button id="create-schedule-task" class="ghost-button mini-action-button" type="button">创建任务</button>
+                <button id="refresh-schedule-tasks" class="ghost-button mini-action-button" type="button">刷新列表</button>
+              </div>
+
+              <div id="schedule-task-meta" class="inline-meta-card">当前还没有定时任务。</div>
+
+              <div id="schedule-task-list" class="schedule-task-list">
+                <div class="file-empty">还没有定时任务。</div>
+              </div>
+            </div>
+          </div>
+        </details>
+
         <details class="config-group" data-config-group="advanced-settings">
           <summary class="config-group-summary">
+            <span class="config-group-icon" aria-hidden="true">△</span>
             <span>高级参数</span>
             <small>低频使用</small>
           </summary>
@@ -158,59 +253,26 @@
         <div>
           <p class="eyebrow">CHAT</p>
           <h2>开始对话</h2>
+          <div id="current-chat-title" class="current-chat-title">未命名会话</div>
         </div>
-        <button id="clear-chat" class="ghost-button" type="button">清空会话</button>
+        <div class="button-row wrap-row workspace-chat-actions">
+          <button id="new-chat-session" class="ghost-button" type="button">新建会话</button>
+          <button id="delete-chat-session" class="ghost-button" type="button">删除会话</button>
+          <button id="clear-chat" class="ghost-button" type="button">清空会话</button>
+        </div>
       </header>
 
-      <section class="workspace-overview" aria-label="运行概览">
-        <div class="overview-top">
-          <section id="status-bar" class="status-bar">准备就绪</section>
-
-          <section class="tool-activity-panel compact" aria-label="工具活动">
-            <div class="usage-panel-head">
-              <span class="usage-title">工具活动</span>
-              <strong id="tool-activity-status">空闲</strong>
-            </div>
-            <div id="tool-activity-list" class="tool-activity-list">
-              <div class="file-empty">暂无工具记录</div>
-            </div>
-          </section>
-        </div>
-
-        <div class="overview-bottom">
-          <section class="metrics-bar compact" aria-label="运行指标">
-            <div class="metric-card">
-              <span class="metric-label">上下文字符</span>
-              <strong id="metric-context-chars">0</strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">预估 Prompt</span>
-              <strong id="metric-est-prompt">0</strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Total</span>
-              <strong id="metric-total">-</strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">速率</span>
-              <strong id="metric-speed">-</strong>
-            </div>
-          </section>
-
-          <section class="usage-panel compact" aria-label="上下文使用情况">
-            <div class="usage-panel-head">
-              <span class="usage-title">上下文</span>
-              <strong id="metric-context-usage">0 / 32768 · 0%</strong>
-            </div>
-            <div class="usage-bar">
-              <div id="usage-bar-fill" class="usage-bar-fill"></div>
-            </div>
-          </section>
-        </div>
+      <section class="workspace-overview workspace-overview-compact" aria-label="运行概览">
+        <section id="status-bar" class="status-bar">准备就绪</section>
       </section>
 
       <section class="workspace-body">
         <div class="chat-column">
+          <div class="section-minihead">
+            <span class="section-minihead-badge">对话区</span>
+            <span class="section-minihead-text">查看当前会话内容与系统推送</span>
+          </div>
+          <div id="conversation-turn-undo" class="chat-history-undo is-hidden"></div>
           <section id="chat-messages" class="chat-messages" aria-live="polite">
             <article class="message assistant">
               <div class="message-role">繁星</div>
@@ -219,8 +281,30 @@
           </section>
 
           <form id="chat-form" class="composer">
-            <label class="composer-label" for="user-input">输入你的问题</label>
-            <textarea id="user-input" rows="5" placeholder="例如：读取 app.js 并告诉我 HTML 预览相关逻辑在哪，或者启用某个技能后让我按该技能执行任务。"></textarea>
+            <div class="composer-metrics-strip" aria-label="运行指标">
+              <button id="tool-activity-trigger" class="metric-chip metric-chip-tool" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="工具活动：点击查看完整记录" data-tooltip="工具活动：点击查看完整记录">
+                <span class="metric-chip-icon">🛠</span>
+              </button>
+              <button id="metric-context-chars-chip" class="metric-chip" type="button" aria-label="上下文字符：0" data-tooltip="上下文字符：0">
+                <span class="metric-chip-icon">字</span>
+              </button>
+              <button id="metric-est-prompt-chip" class="metric-chip" type="button" aria-label="预估 Prompt：0" data-tooltip="预估 Prompt：0">
+                <span class="metric-chip-icon">算</span>
+              </button>
+              <button id="metric-total-chip" class="metric-chip" type="button" aria-label="Total：-" data-tooltip="Total：-">
+                <span class="metric-chip-icon">Σ</span>
+              </button>
+              <button id="metric-speed-chip" class="metric-chip" type="button" aria-label="速率：-" data-tooltip="速率：-">
+                <span class="metric-chip-icon">⚡</span>
+              </button>
+              <div id="metric-context-usage-chip" class="metric-chip metric-chip-usage" tabindex="0" aria-label="上下文使用情况：0 / 32768 · 0%" data-tooltip="上下文使用情况：0 / 32768 · 0%">
+                <span class="metric-chip-icon">◔</span>
+                <span class="metric-chip-bar">
+                  <span id="usage-bar-fill" class="metric-chip-bar-fill"></span>
+                </span>
+              </div>
+            </div>
+            <textarea id="user-input" rows="5" aria-label="输入你的问题" placeholder="例如：读取 app.js 并告诉我 HTML 预览相关逻辑在哪，或者启用某个技能后让我按该技能执行任务。"></textarea>
             <input id="file-input" type="file" multiple accept=".txt,.md,.js,.ts,.tsx,.jsx,.json,.html,.css,.java,.py,.go,.rs,.yml,.yaml,.xml,.csv,.sql,.sh,.bat,.ps1,.log,image/*" hidden>
             <div id="composer-files" class="composer-files is-hidden">
               <div class="composer-file-actions">
@@ -269,6 +353,23 @@
       <img id='lightbox-image' alt='图片预览' />
       <p id='lightbox-caption' class='lightbox-caption'></p>
     </div>
+  </div>
+
+  <div id="tool-activity-modal" class="activity-modal is-hidden" aria-hidden="true">
+    <div id="tool-activity-backdrop" class="activity-modal-backdrop"></div>
+    <section class="activity-modal-panel" role="dialog" aria-modal="true" aria-labelledby="tool-activity-dialog-title">
+      <div class="activity-modal-head">
+        <div>
+          <p class="eyebrow">TOOLS</p>
+          <h3 id="tool-activity-dialog-title">工具活动记录</h3>
+          <p class="activity-modal-subtitle">这里会显示完整的工具调用过程和最近状态。</p>
+        </div>
+        <button id="tool-activity-close" class="ghost-button" type="button">关闭</button>
+      </div>
+      <div id="tool-activity-list" class="tool-activity-list tool-activity-list-modal">
+        <div class="file-empty">暂无工具记录</div>
+      </div>
+    </section>
   </div>
   <script src="app.js"></script>
 </body>
