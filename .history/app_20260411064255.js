@@ -150,7 +150,7 @@ const SKILL_INSTALL_TOOL_NAMES = new Set(["install_clawhub_skill"]);
 const SCHEDULER_TOOL_NAMES = new Set(["create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task"]);
 let workspacePersonaPresets = [];
 
-const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, settingBundle: null, sending: false, previewMaximized: false, toolActivities: [] };
+const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, sending: false, previewMaximized: false, toolActivities: [] };
 const $ = (s) => document.querySelector(s);
 const els = {
   chatForm: $("#chat-form"), chatMessages: $("#chat-messages"), userInput: $("#user-input"), sendButton: $("#send-button"),
@@ -166,8 +166,7 @@ const els = {
   clearChat: $("#clear-chat"), deleteChatSession: $("#delete-chat-session"), testConnection: $("#test-connection"), loadModels: $("#load-models"),
   personaPrompt: $("#persona-prompt"), personaPreset: $("#persona-preset"), personaPresetDescription: $("#persona-preset-description"),
   applyPersonaPreset: $("#apply-persona-preset"), importPersona: $("#import-persona"), exportPersona: $("#export-persona"), clearPersona: $("#clear-persona"), personaFileInput: $("#persona-file-input"),
-  importSettingFolder: $("#import-setting-folder"), clearSettingFolder: $("#clear-setting-folder"), settingFolderInput: $("#setting-folder-input"), settingFolderSummary: $("#setting-folder-summary"), settingFolderPreview: $("#setting-folder-preview"),
-  loadSkills: $("#load-skills"), applySkill: $("#apply-skill"), disableSkill: $("#disable-skill"), skillsList: $("#skills-list"), skillPreview: $("#skill-preview"),
+  loadSkills: $("#load-skills"), applySkill: $("#apply-skill"), skillsList: $("#skills-list"), skillPreview: $("#skill-preview"),
   toolActivityTrigger: $("#tool-activity-trigger"), toolActivitySummary: $("#tool-activity-summary"), toolActivityList: $("#tool-activity-list"), toolActivityStatus: $("#tool-activity-status"),
   toolActivityModal: $("#tool-activity-modal"), toolActivityBackdrop: $("#tool-activity-backdrop"), toolActivityClose: $("#tool-activity-close"),
   workspaceBody: $(".workspace-body"), previewPanel: $("#preview-panel"), previewResizer: $("#preview-resizer"), previewFrame: $("#preview-frame"), previewEmpty: $("#preview-empty"),
@@ -405,40 +404,6 @@ function cloneSkillForStorage(skill) {
     })) : [],
   };
 }
-
-function cloneSettingBundleForStorage(bundle) {
-  if (!bundle || typeof bundle !== "object") return null;
-  return {
-    name: bundle.name || "",
-    importedAt: bundle.importedAt || Date.now(),
-    files: Array.isArray(bundle.files) ? bundle.files.map((file) => ({
-      path: file.path || "",
-      content: file.content || "",
-      size: Number(file.size || 0) || 0,
-      type: file.type || "",
-    })) : [],
-  };
-}
-
-function renderSettingBundlePreview() {
-  if (!els.settingFolderSummary || !els.settingFolderPreview) return;
-  const bundle = state.settingBundle;
-  if (!bundle?.files?.length) {
-    els.settingFolderSummary.textContent = "当前还没有导入设定文件夹。";
-    els.settingFolderPreview.textContent = "导入设定文件夹后，这里会显示文件摘要，并在后续对话里自动加载这些设定。";
-    return;
-  }
-
-  const totalChars = bundle.files.reduce((sum, file) => sum + String(file.content || "").length, 0);
-  els.settingFolderSummary.textContent = `已加载设定文件夹：${bundle.name || "未命名设定"} · ${bundle.files.length} 个文件 · ${totalChars} 字符`;
-  els.settingFolderPreview.textContent = [
-    `设定文件夹：${bundle.name || "未命名设定"}`,
-    `导入时间：${formatHistoryTime(bundle.importedAt || Date.now())}`,
-    `文件数量：${bundle.files.length}`,
-    "",
-    ...bundle.files.map((file) => `# ${file.path}\n\n${file.content}`),
-  ].join("\n");
-}
 function sameSkill(left, right) {
   if (!left || !right) return false;
   return String(left.name || "") === String(right.name || "") && String(left.source || "") === String(right.source || "");
@@ -477,10 +442,9 @@ function save() {
     skillsCache: state.skills.map((skill) => cloneSkillForStorage(skill)).filter(Boolean),
     selectedSkill: cloneSkillForStorage(state.selectedSkill),
     activeSkill: cloneSkillForStorage(state.activeSkill),
-    settingBundle: cloneSettingBundleForStorage(state.settingBundle),
     ...getResizableTextareaState(),
   }));
-  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderSettingBundlePreview();
+  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews();
 }
 function load() {
   const s = saved();
@@ -496,13 +460,11 @@ function load() {
   state.skills = Array.isArray(s.skillsCache) ? s.skillsCache.filter(Boolean) : [];
   state.selectedSkill = cloneSkillForStorage(s.selectedSkill);
   state.activeSkill = cloneSkillForStorage(s.activeSkill);
-  state.settingBundle = cloneSettingBundleForStorage(s.settingBundle);
   if (!state.selectedSkill && state.activeSkill) state.selectedSkill = cloneSkillForStorage(state.activeSkill);
   applyConfigGroupState(s.configGroupState || {});
   applyResizableTextareaState(s);
   renderSkills();
   renderSkillPreview();
-  renderSettingBundlePreview();
   renderAllAvatarPreviews();
 }
 
@@ -2294,377 +2256,6 @@ els.chatForm?.addEventListener("submit", submit, true);
 
 updateSessionOperationAvailability();
 
-function isSettingTextFile(file) {
-  const path = String(file?.webkitRelativePath || file?.name || "").toLowerCase();
-  return /\.(txt|md|markdown|json|yaml|yml|toml|ini|cfg|csv|tsv|xml|html|css|js|ts|py|java|go|rs|sql)$/i.test(path);
-}
-
-async function importSettingFolder(files) {
-  const allFiles = Array.from(files || []);
-  if (!allFiles.length) {
-    setStatus("请选择要导入的设定文件夹");
-    return;
-  }
-
-  const textFiles = allFiles.filter((file) => isSettingTextFile(file) && file.size <= MAX_FILE_SIZE).slice(0, 60);
-  if (!textFiles.length) {
-    setStatus("设定文件夹中没有可用的文本文件");
-    return;
-  }
-
-  const firstPath = textFiles[0].webkitRelativePath || textFiles[0].name || "setting-folder";
-  const folderName = firstPath.split("/")[0] || "setting-folder";
-  const importedFiles = [];
-  for (const file of textFiles) {
-    importedFiles.push({
-      path: file.webkitRelativePath || file.name,
-      content: await file.text(),
-      size: file.size,
-      type: file.type || "",
-    });
-  }
-
-  state.settingBundle = {
-    name: folderName,
-    importedAt: Date.now(),
-    files: importedFiles,
-  };
-  renderSettingBundlePreview();
-  save();
-  refreshMetrics();
-  setStatus(`已导入设定文件夹：${folderName}`);
-}
-
-els.importSettingFolder?.addEventListener("click", () => {
-  spark(els.importSettingFolder);
-  els.settingFolderInput?.click();
-});
-
-els.settingFolderInput?.addEventListener("change", async (event) => {
-  try {
-    await importSettingFolder(event.target.files);
-  } catch (error) {
-    appendMessage("system", `导入设定文件夹失败：${error.message}`, "error");
-    setStatus("导入设定文件夹失败");
-  } finally {
-    event.target.value = "";
-  }
-});
-
-els.clearSettingFolder?.addEventListener("click", () => {
-  spark(els.clearSettingFolder);
-  state.settingBundle = null;
-  renderSettingBundlePreview();
-  save();
-  refreshMetrics();
-  setStatus("已清空设定文件夹");
-});
-
-const systemMessagesBeforeSettingBundle = systemMessages;
-systemMessages = function systemMessagesWithSettingBundle() {
-  const list = systemMessagesBeforeSettingBundle();
-  if (state.settingBundle?.files?.length) {
-    const settingContent = state.settingBundle.files
-      .map((file) => `文件：${file.path}\n${file.content}`)
-      .join("\n\n");
-    list.push({
-      role: "system",
-      content: `以下是当前已加载的设定文件夹「${state.settingBundle.name}」，请在后续对话中持续遵循这些设定内容：\n\n${settingContent}`,
-    });
-  }
-  return list;
-};
-
-const refreshMetricsBeforeSettingBundle = refreshMetrics;
-refreshMetrics = function refreshMetricsWithSettingBundle(usage = null, elapsedMs = null) {
-  refreshMetricsBeforeSettingBundle(usage, elapsedMs);
-  renderSettingBundlePreview();
-};
-
-const saveBeforeSettingBundle = save;
-save = function saveWithSettingBundle() {
-  const previous = saved();
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-    ...previous,
-    settingBundle: cloneSettingBundleForStorage(state.settingBundle),
-  }));
-  saveBeforeSettingBundle();
-};
-
-const loadBeforeSettingBundle = load;
-load = function loadWithSettingBundle() {
-  loadBeforeSettingBundle();
-  const s = saved();
-  state.settingBundle = cloneSettingBundleForStorage(s.settingBundle);
-  renderSettingBundlePreview();
-};
-
-state.settingBundle = cloneSettingBundleForStorage(saved().settingBundle);
-renderSettingBundlePreview();
-
-renderPersonaPresets = function renderPersonaPresetsPersistSelection() {
-  if (!els.personaPreset) return;
-  const persistedValue = saved().personaPreset || "none";
-  const currentValue = els.personaPreset.value || "none";
-  const preferredValue = currentValue !== "none" ? currentValue : persistedValue;
-  const nodes = [];
-
-  const builtInGroup = document.createElement("optgroup");
-  builtInGroup.label = "内置模板";
-  builtInGroup.append(...PERSONA_PRESETS.map((preset) => {
-    const option = document.createElement("option");
-    option.value = preset.id;
-    option.textContent = preset.name;
-    return option;
-  }));
-  nodes.push(builtInGroup);
-
-  if (workspacePersonaPresets.length) {
-    const workspaceGroup = document.createElement("optgroup");
-    workspaceGroup.label = "工作区人设";
-    workspaceGroup.append(...workspacePersonaPresets.map((preset) => {
-      const option = document.createElement("option");
-      option.value = preset.id;
-      option.textContent = preset.name;
-      return option;
-    }));
-    nodes.push(workspaceGroup);
-  }
-
-  els.personaPreset.replaceChildren(...nodes);
-  const allPresetIds = allPersonaPresets().map((preset) => preset.id);
-  els.personaPreset.value = allPresetIds.includes(preferredValue) ? preferredValue : "none";
-  renderPersonaPresetDescription();
-};
-
-const loadWorkspacePersonaPresetsBeforePersistSelection = loadWorkspacePersonaPresets;
-loadWorkspacePersonaPresets = async function loadWorkspacePersonaPresetsKeepSelection() {
-  await loadWorkspacePersonaPresetsBeforePersistSelection();
-  const persistedValue = saved().personaPreset || "none";
-  const allPresetIds = allPersonaPresets().map((preset) => preset.id);
-  if (els.personaPreset) {
-    els.personaPreset.value = allPresetIds.includes(persistedValue) ? persistedValue : "none";
-  }
-  renderPersonaPresetDescription();
-};
-
-function disableActiveSkill() {
-  if (!state.activeSkill) {
-    setStatus("当前没有启用中的技能");
-    return;
-  }
-  const previousName = state.activeSkill.name || "当前技能";
-  state.activeSkill = null;
-  if (sameSkill(state.selectedSkill, { name: previousName, source: state.selectedSkill?.source })) {
-    // keep selected skill for preview/read state, only remove active context
-  }
-  renderSkills();
-  renderSkillPreview();
-  save();
-  refreshMetrics();
-  appendMessage("system", `已取消启用技能：${previousName}\n后续对话将不再自动附带该技能内容。`, "success");
-  setStatus(`已取消启用技能：${previousName}`);
-}
-
-els.disableSkill?.addEventListener("click", () => {
-  spark(els.disableSkill);
-  disableActiveSkill();
-});
-
-renderSkills = function renderSkillsWithEnableDisable() {
-  if (!els.skillsList) return;
-  if (!state.skills.length) {
-    els.skillsList.innerHTML = '<div class="file-empty">当前还没有读取到技能列表。</div>';
-    if (els.disableSkill) els.disableSkill.disabled = !state.activeSkill;
-    return;
-  }
-
-  els.skillsList.replaceChildren(...state.skills.map((skill) => {
-    const item = document.createElement("div");
-    item.className = `skill-item${sameSkill(skill, state.selectedSkill) ? " is-selected" : ""}${sameSkill(skill, state.activeSkill) ? " is-active" : ""}`;
-
-    const head = document.createElement("div");
-    head.className = "skill-item-head";
-
-    const titleWrap = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = skill.name;
-    const meta = document.createElement("div");
-    meta.className = "skill-summary";
-    meta.textContent = [skill.source, skill.summary].filter(Boolean).join(" · ");
-    titleWrap.append(title, meta);
-
-    const status = document.createElement("div");
-    status.className = "button-row left wrap-row";
-    if (sameSkill(skill, state.selectedSkill)) {
-      const readBadge = document.createElement("span");
-      readBadge.className = "mini-status-tag";
-      readBadge.textContent = "已读取";
-      status.append(readBadge);
-    }
-    if (sameSkill(skill, state.activeSkill)) {
-      const activeBadge = document.createElement("span");
-      activeBadge.className = "mini-status-tag active";
-      activeBadge.textContent = "已启用";
-      status.append(activeBadge);
-    }
-    head.append(titleWrap, status);
-
-    const actions = document.createElement("div");
-    actions.className = "button-row left wrap-row";
-
-    const readButton = document.createElement("button");
-    readButton.type = "button";
-    readButton.className = "ghost-button mini-action-button";
-    readButton.textContent = skill.source === "workspace" ? "读取" : "安装到当前目录";
-    readButton.onclick = async () => {
-      spark(readButton);
-      if (skill.source === "workspace") {
-        await readSkill(skill);
-      } else {
-        await installSkill(skill);
-      }
-    };
-    actions.append(readButton);
-
-    if (skill.source === "workspace") {
-      const toggleButton = document.createElement("button");
-      toggleButton.type = "button";
-      toggleButton.className = "ghost-button mini-action-button";
-      const isActive = sameSkill(skill, state.activeSkill);
-      toggleButton.textContent = isActive ? "取消启用" : "启用";
-      toggleButton.onclick = async () => {
-        spark(toggleButton);
-        if (isActive) {
-          disableActiveSkill();
-          return;
-        }
-        if (!sameSkill(skill, state.selectedSkill)) {
-          await readSkill(skill);
-        }
-        applySelectedSkill();
-      };
-      actions.append(toggleButton);
-    }
-
-    item.append(head, actions);
-    return item;
-  }));
-
-  if (els.disableSkill) {
-    els.disableSkill.disabled = !state.activeSkill;
-  }
-};
-
-const applySelectedSkillBeforeDisableSupport = applySelectedSkill;
-applySelectedSkill = function applySelectedSkillWithDisableSupport() {
-  applySelectedSkillBeforeDisableSupport();
-  renderSkills();
-  if (els.disableSkill) {
-    els.disableSkill.disabled = !state.activeSkill;
-  }
-};
-
-renderSkills();
-if (els.disableSkill) {
-  els.disableSkill.disabled = !state.activeSkill;
-}
-
-function reduceSkillToSkillMdOnly(skill) {
-  if (!skill || typeof skill !== "object") return null;
-  const files = Array.isArray(skill.files) ? skill.files : [];
-  const skillMd = files.find((file) => String(file.path || "").toUpperCase() === "SKILL.MD");
-  const content = String(skillMd?.content || skill.content || "").trim();
-  return {
-    name: skill.name || "",
-    source: skill.source || "workspace",
-    summary: skill.summary || "",
-    content,
-    files: content ? [{ path: "SKILL.md", content }] : [],
-  };
-}
-
-renderSkillPreview = function renderSkillPreviewSkillMdOnly(skill = state.selectedSkill) {
-  if (!els.skillPreview) return;
-  const normalized = reduceSkillToSkillMdOnly(skill);
-  if (!normalized?.content) {
-    els.skillPreview.textContent = "选择一个技能后，这里会显示该技能的 SKILL.md 内容摘要。";
-    return;
-  }
-  els.skillPreview.textContent = [
-    `技能：${normalized.name}`,
-    `来源：${normalized.source}`,
-    "已载入文件：1",
-    "",
-    "# SKILL.md",
-    "",
-    normalized.content,
-  ].join("\n");
-};
-
-readSkill = async function readSkillSkillMdOnly(skill) {
-  setStatus(`正在读取技能：${skill.name}`);
-  const data = await j(`/skills/read?source=${encodeURIComponent(skill.source)}&name=${encodeURIComponent(skill.name)}`);
-  state.selectedSkill = reduceSkillToSkillMdOnly(data.skill);
-  const existingIndex = state.skills.findIndex((item) => sameSkill(item, skill));
-  if (existingIndex >= 0) {
-    state.skills[existingIndex] = { ...state.skills[existingIndex], ...cloneSkillForStorage(state.selectedSkill) };
-  }
-  renderSkillPreview(state.selectedSkill);
-  renderSkills();
-  save();
-  setStatus(`已读取技能：${skill.name}（仅 SKILL.md）`);
-};
-
-applySelectedSkill = function applySelectedSkillSkillMdOnly() {
-  if (!state.selectedSkill) {
-    setStatus("请先读取一个技能");
-    return;
-  }
-  state.activeSkill = reduceSkillToSkillMdOnly(state.selectedSkill);
-  renderSkills();
-  renderSkillPreview(state.activeSkill);
-  save();
-  appendMessage("system", `已启用技能：${state.activeSkill.name}\n后续对话会按照 SKILL.md 中的要求执行。`, "success");
-  refreshMetrics();
-  setStatus(`已启用技能：${state.activeSkill.name}`);
-  if (els.disableSkill) {
-    els.disableSkill.disabled = !state.activeSkill;
-  }
-};
-
-const systemMessagesBeforeSkillMdOnly = systemMessages;
-systemMessages = function systemMessagesSkillMdOnly() {
-  const list = systemMessagesBeforeSkillMdOnly().filter((message) => !String(message?.content || "").includes("你当前启用了技能："));
-  if (state.activeSkill?.content) {
-    list.push({
-      role: "system",
-      content: `你当前启用了技能：${state.activeSkill.name}\n技能来源：${state.activeSkill.source}\n接下来只按该技能的 SKILL.md 要求执行，不要额外带入技能目录中的其他文件内容。\n\nSKILL.md:\n${state.activeSkill.content}`,
-    });
-  }
-  return list;
-};
-
-state.selectedSkill = reduceSkillToSkillMdOnly(state.selectedSkill);
-state.activeSkill = reduceSkillToSkillMdOnly(state.activeSkill);
-renderSkillPreview();
-renderSkills();
-
-if (els.applyPersonaPreset) {
-  els.applyPersonaPreset.remove();
-}
-
-els.personaPreset?.addEventListener("change", () => {
-  const preset = presetById(els.personaPreset?.value || "none");
-  if (preset.prompt && els.personaPrompt) {
-    els.personaPrompt.value = preset.prompt;
-  }
-  renderPersonaPresetDescription();
-  save();
-  refreshMetrics();
-  setStatus(preset.prompt ? `已应用人设模板：${preset.name}` : "当前预设不会覆盖现有人设");
-});
-
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -3680,61 +3271,6 @@ loadWorkspacePersonaPresets = async function loadWorkspacePersonaPresetsSafe() {
     }
   }
 };
-
-function restoreSavedPersonaPresetSelection() {
-  if (!els.personaPreset) return;
-  const persistedValue = rememberedPersonaPresetId || saved().personaPreset || "none";
-  const allPresetIds = allPersonaPresets().map((preset) => preset.id);
-  const nextValue = allPresetIds.includes(persistedValue) ? persistedValue : "none";
-  els.personaPreset.value = nextValue;
-  renderPersonaPresetDescription();
-}
-
-let rememberedPersonaPresetId = saved().personaPreset || "none";
-
-const loadBeforePersonaPresetSelectionRestore = load;
-load = function loadWithPersonaPresetSelectionRestore() {
-  loadBeforePersonaPresetSelectionRestore();
-  rememberedPersonaPresetId = saved().personaPreset || rememberedPersonaPresetId || "none";
-  restoreSavedPersonaPresetSelection();
-};
-
-const renderPersonaPresetsBeforeFinalRestore = renderPersonaPresets;
-renderPersonaPresets = function renderPersonaPresetsWithFinalRestore() {
-  renderPersonaPresetsBeforeFinalRestore();
-  restoreSavedPersonaPresetSelection();
-};
-
-const loadWorkspacePersonaPresetsBeforeFinalRestore = loadWorkspacePersonaPresets;
-loadWorkspacePersonaPresets = async function loadWorkspacePersonaPresetsWithFinalRestore() {
-  await loadWorkspacePersonaPresetsBeforeFinalRestore();
-  restoreSavedPersonaPresetSelection();
-};
-
-const saveBeforeStablePersonaPresetMemory = save;
-save = function saveWithStablePersonaPresetMemory() {
-  saveBeforeStablePersonaPresetMemory();
-  const currentSaved = saved();
-  const optionValues = els.personaPreset ? Array.from(els.personaPreset.options || []).map((option) => option.value) : [];
-  const currentValue = els.personaPreset?.value || "none";
-  const nextPersonaPreset =
-    currentValue !== "none"
-      ? currentValue
-      : (!optionValues.includes(rememberedPersonaPresetId) && rememberedPersonaPresetId !== "none"
-          ? rememberedPersonaPresetId
-          : currentValue);
-  rememberedPersonaPresetId = nextPersonaPreset || "none";
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-    ...currentSaved,
-    personaPreset: rememberedPersonaPresetId,
-  }));
-};
-
-els.personaPreset?.addEventListener("change", () => {
-  rememberedPersonaPresetId = els.personaPreset?.value || "none";
-});
-
-restoreSavedPersonaPresetSelection();
 
 appendPendingMessage = function appendPendingMessageTyping() {
   const card = document.createElement("article");

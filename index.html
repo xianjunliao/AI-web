@@ -133,17 +133,31 @@
                 </select>
               </label>
 
-              <div id="persona-preset-description" class="persona-preset-description">选择模板后，可执行应用、导入、导出、清空等操作。</div>
-
-              <div class="button-row left wrap-row persona-actions">
-                <button id="apply-persona-preset" class="ghost-button mini-action-button" type="button">应用模板</button>
-              </div>
+              <div id="persona-preset-description" class="persona-preset-description">选择模板后会立即应用，也可继续导入、导出、清空。</div>
 
               <div class="button-row left wrap-row persona-actions">
                 <button id="import-persona" class="ghost-button mini-action-button" type="button">导入</button>
                 <button id="export-persona" class="ghost-button mini-action-button" type="button">导出</button>
                 <button id="clear-persona" class="ghost-button mini-action-button" type="button">清空</button>
               </div>
+            </div>
+
+            <div class="sub-config-block">
+              <div class="sub-config-head">
+                <strong>设定文件夹</strong>
+                <p>导入小说设定或项目设定文件夹后，会自动持久化保存，并在后续对话中持续带入这些设定内容。</p>
+              </div>
+
+              <input id="setting-folder-input" type="file" webkitdirectory directory multiple hidden>
+
+              <div class="button-row left wrap-row persona-actions">
+                <button id="import-setting-folder" class="ghost-button mini-action-button" type="button">导入设定文件夹</button>
+                <button id="clear-setting-folder" class="ghost-button mini-action-button" type="button">清空设定</button>
+              </div>
+
+              <div id="setting-folder-summary" class="inline-meta-card">当前还没有导入设定文件夹。</div>
+
+              <div id="setting-folder-preview" class="skill-preview">导入设定文件夹后，这里会显示文件摘要，并在后续对话里自动加载这些设定。</div>
             </div>
 
             <div class="sub-config-block">
@@ -155,6 +169,7 @@
               <div class="button-row left">
                 <button id="load-skills" class="ghost-button" type="button">读取技能</button>
                 <button id="apply-skill" class="ghost-button" type="button">启用技能</button>
+                <button id="disable-skill" class="ghost-button" type="button">取消启用</button>
               </div>
 
               <div id="skills-list" class="skills-list">
