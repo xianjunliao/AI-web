@@ -1921,6 +1921,94 @@ renderChatHistoryList = function renderChatHistoryListGrouped() {
 
 renderChatHistoryList();
 
+function collectStructuredContentText(content, parts = []) {
+  if (content == null) return parts;
+
+  if (typeof content === "string") {
+    if (content.trim()) {
+      parts.push(content);
+    }
+    return parts;
+  }
+
+  if (Array.isArray(content)) {
+    content.forEach((item) => collectStructuredContentText(item, parts));
+    return parts;
+  }
+
+  if (typeof content !== "object") {
+    return parts;
+  }
+
+  const directTextKeys = ["text", "output_text", "content", "value", "message"];
+  directTextKeys.forEach((key) => {
+    const value = content[key];
+    if (typeof value === "string" && value.trim()) {
+      parts.push(value);
+    }
+  });
+
+  const nestedKeys = ["content", "output", "parts", "items"];
+  nestedKeys.forEach((key) => {
+    const value = content[key];
+    if (Array.isArray(value) || (value && typeof value === "object")) {
+      collectStructuredContentText(value, parts);
+    }
+  });
+
+  return parts;
+}
+
+normalizeContent = function normalizeContentStructured(content) {
+  const text = collectStructuredContentText(content, [])
+    .join("\n")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text || "";
+};
+
+function parseLastToolResult(messages = []) {
+  const lastToolMessage = [...messages].reverse().find((message) => message?.role === "tool" && typeof message.content === "string");
+  if (!lastToolMessage?.content) return null;
+
+  try {
+    const parsed = JSON.parse(lastToolMessage.content);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+const buildToolOnlyFallbackReplyBeforeRichToolResult = buildToolOnlyFallbackReply;
+buildToolOnlyFallbackReply = function buildToolOnlyFallbackReplyWithFileResult(messages = []) {
+  const original = buildToolOnlyFallbackReplyBeforeRichToolResult(messages);
+  if (typeof original === "string" && original.trim()) {
+    return original.trim();
+  }
+
+  const parsed = parseLastToolResult(messages);
+  if (!parsed) return "";
+
+  if (parsed.path && typeof parsed.bytesWritten === "number") {
+    return `已保存到本地：${parsed.path}\n写入 ${parsed.bytesWritten} 字节。`;
+  }
+
+  if (parsed.path && typeof parsed.content === "string") {
+    return `已读取文件：${parsed.path}`;
+  }
+
+  if (parsed.path && parsed.deleted) {
+    return `已删除文件：${parsed.path}`;
+  }
+
+  if (parsed.path && Array.isArray(parsed.entries)) {
+    return `已读取目录：${parsed.path}\n共找到 ${parsed.entries.length} 项。`;
+  }
+
+  return "";
+};
+
 function buildChatTitle(messages = state.messages) {
   const firstUser = Array.isArray(messages)
     ? messages.find((message) => message?.role === "user" && typeof message.content === "string" && message.content.trim())
@@ -3736,6 +3824,303 @@ els.personaPreset?.addEventListener("change", () => {
 
 restoreSavedPersonaPresetSelection();
 
+function hasNovelWritingIntent(text = "") {
+  const normalized = String(text).toLowerCase();
+  const keywords = [
+    "小说",
+    "正文",
+    "章节",
+    "设定",
+    "世界观",
+    "角色卡",
+    "角色设定",
+    "卷纲",
+    "总纲",
+    "大纲",
+    "番外",
+    "续写",
+    "润色",
+    "细化",
+    "写一章",
+    "写章节",
+    "创作",
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function isNovelWorkspacePath(targetPath = "") {
+  const normalized = String(targetPath || "").replace(/\\/g, "/").replace(/^\.\/+/, "").trim();
+  return /^[^/]+\/(设定|正文)\/[^/].+/u.test(normalized);
+}
+
+function normalizeNovelFileName(fileName = "", fallbackBase = "未命名文档") {
+  const raw = String(fileName || "").replace(/\\/g, "/").split("/").pop()?.trim() || "";
+  const safeBase = raw || fallbackBase;
+  return /\.md$/i.test(safeBase) ? safeBase : `${safeBase}.md`;
+}
+
+function inferNovelSectionFromPathOrContent(targetPath = "", content = "") {
+  const normalizedPath = String(targetPath || "").replace(/\\/g, "/");
+  const normalizedContent = String(content || "");
+  if (/设定|世界观|角色|卷纲|总纲|大纲|时间线|规则/u.test(normalizedPath) || /世界观|角色设定|设定|卷纲|总纲|大纲|时间线|规则/u.test(normalizedContent)) {
+    return "设定";
+  }
+  if (/正文|章节|番外/u.test(normalizedPath) || /第.{0,6}章|正文|番外|章节/u.test(normalizedContent)) {
+    return "正文";
+  }
+  return "正文";
+}
+
+function extractNovelNameFromUserText(text = "") {
+  const raw = String(text || "");
+  const patterns = [
+    /小说[《〈<]?([^》〉>\n]{1,40})[》〉>]/u,
+    /《([^》\n]{1,40})》/u,
+    /小说名称[是为:：\s]+([^\n，。,；;]{1,40})/u,
+    /书名[是为:：\s]+([^\n，。,；;]{1,40})/u,
+  ];
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+  return "";
+}
+
+function getNovelExecutionContextText(currentText = "") {
+  const current = String(currentText || "").trim();
+  if (hasNovelWritingIntent(current)) {
+    return current;
+  }
+  const previousUser = [...state.messages].reverse().find((message) => message?.role === "user" && typeof message.content === "string" && hasNovelWritingIntent(message.content));
+  return [previousUser?.content || "", current].filter(Boolean).join("\n");
+}
+
+function fillNovelWorkspacePath(args = {}, userText = "") {
+  const nextArgs = { ...args };
+  const normalizedPath = String(nextArgs.path || "").replace(/\\/g, "/").trim();
+  if (normalizedPath && isNovelWorkspacePath(normalizedPath)) {
+    return nextArgs;
+  }
+  const novelName = extractNovelNameFromUserText(userText);
+  if (!novelName) {
+    return nextArgs;
+  }
+  const section = inferNovelSectionFromPathOrContent(normalizedPath, nextArgs.content);
+  const fileName = normalizeNovelFileName(
+    normalizedPath && !normalizedPath.includes("/") ? normalizedPath : "",
+    section === "设定" ? "设定.md" : "正文.md"
+  );
+  nextArgs.path = `${novelName}/${section}/${fileName}`;
+  return nextArgs;
+}
+
+function isDirectoryLikePath(targetPath = "") {
+  const normalized = String(targetPath || "").replace(/\\/g, "/").trim();
+  if (!normalized) return true;
+  if (/[\/]$/.test(normalized)) return true;
+  if (/^[a-zA-Z]:\/?$/.test(normalized)) return true;
+  const tail = normalized.split("/").pop() || "";
+  if (!tail || tail === "." || tail === "..") return true;
+  return !/\.[a-zA-Z0-9]{1,12}$/.test(tail);
+}
+
+const fillNovelWorkspacePathBeforeDirectoryFix = fillNovelWorkspacePath;
+fillNovelWorkspacePath = function fillNovelWorkspacePathWithDirectoryFix(args = {}, userText = "") {
+  const nextArgs = fillNovelWorkspacePathBeforeDirectoryFix(args, userText);
+  const normalizedPath = String(nextArgs.path || "").replace(/\\/g, "/").trim();
+  if (!normalizedPath) {
+    return nextArgs;
+  }
+
+  if (isNovelWorkspacePath(normalizedPath) && !isDirectoryLikePath(normalizedPath)) {
+    return nextArgs;
+  }
+
+  const novelName = extractNovelNameFromUserText(userText);
+  if (!novelName) {
+    return nextArgs;
+  }
+
+  const section = inferNovelSectionFromPathOrContent(normalizedPath, nextArgs.content);
+  const fallbackFileName = section === "设定" ? "设定.md" : "正文.md";
+
+  if (isNovelWorkspacePath(normalizedPath) && isDirectoryLikePath(normalizedPath)) {
+    nextArgs.path = `${normalizedPath.replace(/[\/]+$/, "")}/${fallbackFileName}`;
+    return nextArgs;
+  }
+
+  if (isDirectoryLikePath(normalizedPath)) {
+    nextArgs.path = `${novelName}/${section}/${fallbackFileName}`;
+    return nextArgs;
+  }
+
+  return nextArgs;
+};
+
+const systemMessagesBeforeNovelSaveRule = systemMessages;
+systemMessages = function systemMessagesWithNovelSaveRule() {
+  const list = systemMessagesBeforeNovelSaveRule();
+  list.push({
+    role: "system",
+    content: "如果当前任务是在创作、续写、整理或保存小说文档，默认允许保存到当前工作区，不需要用户再次强调“保存到本地”。小说相关文件必须按“小说名称/设定/”和“小说名称/正文/”组织：世界观、角色卡、设定、大纲、卷纲、时间线等存放到“小说名称/设定/”；章节正文、番外、修订稿等存放到“小说名称/正文/”。如果用户没有额外指定路径，就按这套规则落盘。",
+  });
+  return list;
+};
+
+const getAllowedToolsForUserTextBeforeNovelSaveRule = getAllowedToolsForUserText;
+getAllowedToolsForUserText = function getAllowedToolsForUserTextWithNovelSaveRule(userText = "") {
+  const baseTools = getAllowedToolsForUserTextBeforeNovelSaveRule(userText);
+  if (!hasNovelWritingIntent(userText)) {
+    return baseTools;
+  }
+  const hasWriteFile = baseTools.some((tool) => tool?.function?.name === "write_file");
+  if (hasWriteFile) {
+    return baseTools;
+  }
+  const writeFileTool = TOOLS.find((tool) => tool?.function?.name === "write_file");
+  return writeFileTool ? [...baseTools, writeFileTool] : baseTools;
+};
+
+const executeToolBeforeNovelSaveRule = executeTool;
+executeTool = async function executeToolWithNovelSaveRule(toolCall) {
+  const name = toolCall?.function?.name || "unknown";
+  let args = {};
+
+  try {
+    args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    throw new Error("工具参数不是合法 JSON");
+  }
+
+  const latestUserText = state.lastRequestedUserText || "";
+  const novelWriteAllowed = hasNovelWritingIntent(latestUserText);
+
+  if (name === "write_file" && novelWriteAllowed) {
+    if (!String(args.path || "").trim()) {
+      throw new Error("当前是小说写作保存任务。请把文件保存到“小说名称/设定/文件名.md”或“小说名称/正文/文件名.md”这类路径后再执行。");
+    }
+    if (!isNovelWorkspacePath(args.path)) {
+      throw new Error("小说文档只能保存到当前工作区下的“小说名称/设定/”或“小说名称/正文/”目录中。请调整保存路径后再执行。");
+    }
+  }
+
+  return executeToolBeforeNovelSaveRule({
+    ...toolCall,
+    function: {
+      ...(toolCall?.function || {}),
+      arguments: JSON.stringify(args),
+    },
+  });
+};
+
+const executeToolBeforeNovelPathAutofill = executeTool;
+executeTool = async function executeToolWithNovelPathAutofill(toolCall) {
+  const name = toolCall?.function?.name || "unknown";
+  let args = {};
+
+  try {
+    args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    throw new Error("工具参数不是合法 JSON");
+  }
+
+  const latestUserText = state.lastRequestedUserText || "";
+  if (name === "write_file" && hasNovelWritingIntent(latestUserText)) {
+    args = fillNovelWorkspacePath(args, latestUserText);
+    if (!String(args.path || "").trim()) {
+      throw new Error("当前是小说写作保存任务。请提供小说名称，或把文件保存到“小说名称/设定/文件名.md”或“小说名称/正文/文件名.md”这类路径后再执行。");
+    }
+    if (!isNovelWorkspacePath(args.path)) {
+      throw new Error("小说文档只能保存到当前工作区下的“小说名称/设定/”或“小说名称/正文/”目录中。请调整保存路径后再执行。");
+    }
+  }
+
+  return executeToolBeforeNovelPathAutofill({
+    ...toolCall,
+    function: {
+      ...(toolCall?.function || {}),
+      arguments: JSON.stringify(args),
+    },
+  });
+};
+
+const canUseWriteToolsBeforeNovelDefaultSave = canUseWriteTools;
+canUseWriteTools = function canUseWriteToolsWithNovelDefaultSave(userText = "") {
+  return canUseWriteToolsBeforeNovelDefaultSave(userText) || hasNovelWritingIntent(userText);
+};
+
+const executeToolBeforeNovelDefaultSaveBypass = executeTool;
+executeTool = async function executeToolWithNovelDefaultSaveBypass(toolCall) {
+  const id = toolCall?.id || nowId();
+  const name = toolCall?.function?.name || "unknown";
+  let args = {};
+
+  try {
+    args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    throw new Error("工具参数不是合法 JSON");
+  }
+
+  const latestUserText = state.lastRequestedUserText || "";
+  const novelContextText = getNovelExecutionContextText(latestUserText);
+  const isNovelWrite = name === "write_file" && hasNovelWritingIntent(novelContextText);
+
+  if (!isNovelWrite) {
+    return executeToolBeforeNovelDefaultSaveBypass(toolCall);
+  }
+
+  args = fillNovelWorkspacePath(args, novelContextText);
+  if (!String(args.path || "").trim()) {
+    throw new Error("当前是小说写作保存任务。请提供小说名称，或把文件保存到“小说名称/设定/文件名.md”或“小说名称/正文/文件名.md”这类路径后再执行。");
+  }
+  if (!isNovelWorkspacePath(args.path)) {
+    throw new Error("小说文档只能保存到当前工作区下的“小说名称/设定/”或“小说名称/正文/”目录中。请调整保存路径后再执行。");
+  }
+
+  toolActivity(id, "running", name, "正在执行...");
+  const data = await j("/tools/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, arguments: args }),
+  });
+  toolActivity(id, "done", name, "执行完成");
+  return { role: "tool", tool_call_id: id, content: JSON.stringify(data.result, null, 2) };
+};
+
+const executeToolBeforeNovelDirectoryGuard = executeTool;
+executeTool = async function executeToolWithNovelDirectoryGuard(toolCall) {
+  const name = toolCall?.function?.name || "unknown";
+  let args = {};
+
+  try {
+    args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    throw new Error("工具参数不是合法 JSON");
+  }
+
+  const latestUserText = state.lastRequestedUserText || "";
+  const novelContextText = getNovelExecutionContextText(latestUserText);
+  if (name === "write_file" && hasNovelWritingIntent(novelContextText)) {
+    args = fillNovelWorkspacePath(args, novelContextText);
+    if (!String(args.path || "").trim()) {
+      throw new Error("当前是小说写作保存任务。请提供小说名称，或使用“小说名称/设定/文件名.md”或“小说名称/正文/文件名.md”这样的完整文件路径。");
+    }
+    if (isDirectoryLikePath(args.path)) {
+      throw new Error("当前保存路径还是目录，不是具体文件，所以无法写入。请使用“小说名称/设定/文件名.md”或“小说名称/正文/文件名.md”这样的完整文件路径。");
+    }
+  }
+
+  return executeToolBeforeNovelDirectoryGuard({
+    ...toolCall,
+    function: {
+      ...(toolCall?.function || {}),
+      arguments: JSON.stringify(args),
+    },
+  });
+};
+
 appendPendingMessage = function appendPendingMessageTyping() {
   const card = document.createElement("article");
   card.className = "message assistant pending";
@@ -4417,6 +4802,140 @@ askModel = async function askModelWithTurnDeleteDecorate(userText) {
   const result = await askModelBeforeTurnDeleteDecorate(userText);
   renderConversationFromMessages(state.messages);
   return result;
+};
+
+function isNovelExecutionReplyStalled(userText = "", replyText = "") {
+  if (!hasNovelWritingIntent(userText)) return false;
+  const normalized = String(replyText || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const planHints = [
+    "先让我看看",
+    "先查看",
+    "先看一下",
+    "我先看",
+    "我先查看",
+    "我先帮你查看",
+    "首先让我查看",
+    "先读取",
+    "先创建",
+    "我先创建",
+    "我来先看",
+    "first let me",
+    "let me check",
+    "i'll first",
+  ];
+  const actionHints = [
+    "已保存",
+    "已创建",
+    "已写入",
+    "已生成",
+    "完成",
+    "保存到",
+    "写入到",
+    "created",
+    "saved",
+    "written",
+  ];
+  return planHints.some((hint) => normalized.includes(hint.toLowerCase())) &&
+    !actionHints.some((hint) => normalized.includes(hint.toLowerCase()));
+}
+
+const askModelBeforeNovelExecutionPush = askModel;
+askModel = async function askModelWithNovelExecutionPush(userText) {
+  const firstReply = await askModelBeforeNovelExecutionPush(userText);
+  if (!isNovelExecutionReplyStalled(userText, firstReply)) {
+    return firstReply;
+  }
+
+  const nudgeText = `${userText}\n\n不要只说明下一步计划。请立即执行必要的读取、生成或写入操作；如果当前信息已足够，就直接完成本轮任务。`;
+  const secondReply = await askModelBeforeNovelExecutionPush(nudgeText);
+
+  if (state.messages.length >= 4) {
+    const latestAssistant = state.messages[state.messages.length - 1];
+    const latestUser = state.messages[state.messages.length - 2];
+    const previousAssistant = state.messages[state.messages.length - 3];
+    const previousUser = state.messages[state.messages.length - 4];
+    if (
+      latestAssistant?.role === "assistant" &&
+      latestUser?.role === "user" &&
+      previousAssistant?.role === "assistant" &&
+      previousUser?.role === "user" &&
+      previousUser.content === userText &&
+      latestUser.content === nudgeText
+    ) {
+      state.messages.splice(state.messages.length - 4, 2);
+      save();
+      renderConversationFromMessages(state.messages);
+    }
+  }
+
+  return secondReply;
+};
+
+function renderConversationFromMessagesStable(messages) {
+  chatHistoryRuntime.suppressAutoSave = true;
+  state.messages = Array.isArray(messages) ? JSON.parse(JSON.stringify(messages)) : [];
+  els.chatMessages?.replaceChildren();
+
+  if (!state.messages.length) {
+    appendMessage("assistant", "你好，我已经准备好连接本地 AI。你可以先测试连接、读取模型、上传文件，或者启用某个技能后再开始提问。");
+  } else {
+    state.messages.forEach((message) => {
+      appendMessage(
+        message.role,
+        typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+        message.role,
+        [],
+        message.timestamp || Date.now()
+      );
+    });
+  }
+
+  decorateConversationTurnDeleteButtons();
+  renderConversationTurnUndo();
+  refreshMetrics();
+  chatHistoryRuntime.suppressAutoSave = false;
+  updateCurrentChatTitle();
+}
+
+renderConversationFromMessages = function renderConversationFromMessagesFinalStable(messages) {
+  renderConversationFromMessagesStable(messages);
+};
+
+loadChatRecord = function loadChatRecordFinalStable(recordId) {
+  if (guardSessionOperationWhileSending("切换会话")) {
+    return;
+  }
+
+  const record = readChatHistoryRecords().find((item) => item.id === recordId);
+  if (!record) {
+    return;
+  }
+
+  clearPendingDeletedChat({ preserveUi: true });
+  clearPendingConversationTurnDelete();
+  resetConversationUsageMetrics();
+
+  state.sending = false;
+  state.lastRequestedUserText = "";
+  chatHistoryRuntime.currentId = record.id;
+  persistCurrentChatId();
+
+  if (els.userInput) {
+    els.userInput.value = "";
+  }
+  if (els.sendButton) {
+    els.sendButton.disabled = false;
+    els.sendButton.textContent = "发送消息";
+  }
+
+  clearFiles();
+  renderConversationFromMessagesStable(record.messages || []);
+  renderChatHistoryList();
+  updateChatHistoryMeta();
+  updateCurrentChatTitle();
+  refreshMetrics();
+  setStatus(`已加载聊天记录，并恢复会话上下文：${record.title || "未命名会话"}`);
 };
 
 renderConversationTurnUndo();
