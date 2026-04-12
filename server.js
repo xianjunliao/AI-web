@@ -11,6 +11,8 @@ const PORT = 8000;
 const TARGET_ORIGIN = "http://127.0.0.1:1234";
 const ROOT = __dirname;
 const SCHEDULED_TASKS_FILE = path.join(ROOT, "scheduled-tasks.json");
+const QQ_BOT_CONFIG_FILE = path.join(ROOT, "qq-bot-config.json");
+const QQ_BOT_SESSIONS_FILE = path.join(ROOT, "qq-bot-sessions.json");
 const PERSONA_PRESETS_DIR = path.join(ROOT, "人设");
 const SKILL_SOURCES = {
   workspace: path.join(ROOT, "skills"),
@@ -38,6 +40,23 @@ const SCHEDULER_TICK_MS = 30 * 1000;
 
 let scheduledTasks = [];
 const runningScheduledTaskIds = new Set();
+let qqBotConfig = {
+  enabled: false,
+  groupMentionOnly: true,
+  taskPushEnabled: false,
+  triggerPrefix: "",
+  allowedUsers: [],
+  allowedGroups: [],
+  persona: "",
+  bridgeUrl: "",
+  accessToken: "",
+  defaultTargetType: "private",
+  defaultTargetId: "",
+  model: "",
+  systemPrompt: "",
+  assistantName: "繁星",
+};
+let qqBotSessions = {};
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -77,6 +96,41 @@ async function writeJsonFile(filePath, value) {
   await fs.promises.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
+async function loadQqBotConfig() {
+  qqBotConfig = {
+    ...qqBotConfig,
+    ...(await readJsonFile(QQ_BOT_CONFIG_FILE, {})),
+  };
+}
+
+async function saveQqBotConfig(nextConfig = {}) {
+  qqBotConfig = {
+    ...qqBotConfig,
+    ...nextConfig,
+  };
+  await writeJsonFile(QQ_BOT_CONFIG_FILE, qqBotConfig);
+  return qqBotConfig;
+}
+
+async function loadQqBotSessions() {
+  const loaded = await readJsonFile(QQ_BOT_SESSIONS_FILE, {});
+  qqBotSessions = loaded && typeof loaded === "object" ? loaded : {};
+}
+
+async function saveQqBotSessions() {
+  await writeJsonFile(QQ_BOT_SESSIONS_FILE, qqBotSessions);
+}
+
+function parseQqIdList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  return String(value || "")
+    .split(/[\r\n,，;；\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function resolveWorkspacePath(targetPath = ".") {
   const normalizedInput = String(targetPath || ".").replace(/^[/\\]+/, "");
   const resolvedPath = path.resolve(ROOT, normalizedInput);
@@ -86,6 +140,103 @@ function resolveWorkspacePath(targetPath = ".") {
     throw error;
   }
   return resolvedPath;
+}
+
+function requestJson(targetUrl, options = {}, body = null) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(targetUrl);
+    const transport = url.protocol === "https:" ? https : http;
+    const payload = body ? Buffer.from(JSON.stringify(body), "utf8") : null;
+
+    const req = transport.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || (url.protocol === "https:" ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method: options.method || "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          ...(payload ? { "Content-Length": payload.length } : {}),
+          ...(options.headers || {}),
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          let parsed = null;
+          try {
+            parsed = raw ? JSON.parse(raw) : null;
+          } catch {
+            parsed = raw;
+          }
+          if (res.statusCode >= 400) {
+            const error = new Error(
+              parsed?.message || parsed?.msg || parsed?.error || `QQ bridge request failed: ${res.statusCode}`
+            );
+            error.statusCode = res.statusCode;
+            reject(error);
+            return;
+          }
+          resolve(parsed);
+        });
+      }
+    );
+
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function sendQqMessage(args = {}) {
+  const bridgeUrl = String(args.bridgeUrl || "").trim();
+  const targetType = String(args.targetType || "private").trim().toLowerCase();
+  const targetId = String(args.targetId || "").trim();
+  const message = String(args.message || "").trim();
+  const accessToken = String(args.accessToken || "").trim();
+
+  if (!bridgeUrl) {
+    const error = new Error("QQ bridge URL is required");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!targetId) {
+    const error = new Error("QQ target ID is required");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!message) {
+    const error = new Error("QQ message is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const action = targetType === "group" ? "send_group_msg" : "send_private_msg";
+  const apiUrl = new URL(action, bridgeUrl.endsWith("/") ? bridgeUrl : `${bridgeUrl}/`).toString();
+  const payload = targetType === "group"
+    ? { group_id: /^\d+$/.test(targetId) ? Number(targetId) : targetId, message }
+    : { user_id: /^\d+$/.test(targetId) ? Number(targetId) : targetId, message };
+
+  const data = await requestJson(
+    apiUrl,
+    {
+      method: "POST",
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    },
+    payload
+  );
+
+  return {
+    ok: true,
+    targetType,
+    targetId,
+    message,
+    bridgeUrl,
+    response: data,
+  };
 }
 
 async function callLocalModelForTask(task) {
@@ -166,6 +317,9 @@ async function executeToolCall(name, args = {}) {
         path: path.relative(ROOT, targetPath) || path.basename(targetPath),
         deleted: true,
       };
+    }
+    case "send_qq_message": {
+      return await sendQqMessage(args);
     }
     default: {
       const error = new Error(`Unsupported tool: ${name}`);
@@ -1826,6 +1980,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (pathname === "/qq-bot/config" && req.method === "GET") {
+    handleQqBotConfigGet(res);
+    return;
+  }
+
+  if (pathname === "/qq-bot/config" && req.method === "POST") {
+    handleQqBotConfigPost(req, res);
+    return;
+  }
+
+  if (pathname === "/qq/webhook" && req.method === "POST") {
+    handleQqWebhook(req, res);
+    return;
+  }
+
   if (pathname === "/scheduler/tasks" && req.method === "GET") {
     handleScheduledTasksList(res);
     return;
@@ -1865,12 +2034,337 @@ const server = http.createServer((req, res) => {
   serveStatic(req, res, pathname);
 });
 
-loadScheduledTasks()
+async function sendQqMessageFinal(args = {}) {
+  const bridgeUrl = String(args.bridgeUrl || "").trim();
+  const targetType = String(args.targetType || "private").trim().toLowerCase();
+  const targetId = String(args.targetId || "").trim();
+  const message = String(args.message || "").trim();
+  const accessToken = String(args.accessToken || "").trim();
+
+  if (!bridgeUrl) {
+    const error = new Error("QQ bridge URL is required");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!targetId) {
+    const error = new Error("QQ target ID is required");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!message) {
+    const error = new Error("QQ message is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const baseUrl = new URL(bridgeUrl.endsWith("/") ? bridgeUrl : `${bridgeUrl}/`);
+  const actionUrl = new URL(targetType === "group" ? "send_group_msg" : "send_private_msg", baseUrl);
+  const payload = targetType === "group"
+    ? { group_id: /^\d+$/.test(targetId) ? Number(targetId) : targetId, message }
+    : { user_id: /^\d+$/.test(targetId) ? Number(targetId) : targetId, message };
+
+  const response = await requestJson(actionUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return {
+    ok: true,
+    bridgeUrl: baseUrl.toString(),
+    targetType,
+    targetId,
+    message,
+    response,
+  };
+}
+
+function normalizeQqIncomingText(event = {}) {
+  if (typeof event.raw_message === "string" && event.raw_message.trim()) {
+    return event.raw_message.trim();
+  }
+
+  if (Array.isArray(event.message)) {
+    return event.message
+      .map((segment) => {
+        if (segment?.type === "text") return String(segment.data?.text || "");
+        if (segment?.type === "at") return "";
+        return "";
+      })
+      .join("")
+      .trim();
+  }
+
+  if (typeof event.message === "string") {
+    return event.message.trim();
+  }
+
+  return "";
+}
+
+function isGroupMentioned(event = {}) {
+  const selfId = String(event.self_id || "");
+  if (Array.isArray(event.message)) {
+    return event.message.some((segment) => segment?.type === "at" && String(segment.data?.qq || "") === selfId);
+  }
+  return typeof event.raw_message === "string" && selfId ? event.raw_message.includes(`[CQ:at,qq=${selfId}]`) : false;
+}
+
+function stripQqTriggerPrefix(text = "") {
+  const raw = String(text || "").trim();
+  const prefix = String(qqBotConfig.triggerPrefix || "").trim();
+  if (!prefix) return raw;
+  return raw.startsWith(prefix) ? raw.slice(prefix.length).trim() : "";
+}
+
+function isQqEventAllowed(event = {}) {
+  const userId = String(event.user_id || "").trim();
+  const groupId = String(event.group_id || "").trim();
+  const allowedUsers = parseQqIdList(qqBotConfig.allowedUsers);
+  const allowedGroups = parseQqIdList(qqBotConfig.allowedGroups);
+
+  if (allowedUsers.length && !allowedUsers.includes(userId)) {
+    return false;
+  }
+  if (event.message_type === "group" && allowedGroups.length && !allowedGroups.includes(groupId)) {
+    return false;
+  }
+  return true;
+}
+
+function getQqSessionKey(event = {}) {
+  if (event.message_type === "group") {
+    return `group:${event.group_id || "unknown"}:user:${event.user_id || "unknown"}`;
+  }
+  return `private:${event.user_id || "unknown"}`;
+}
+
+function isQqSessionResetCommand(text = "") {
+  const normalized = String(text || "").trim().toLowerCase();
+  return normalized === "/new" || normalized === "/reset";
+}
+
+async function clearQqSession(event = {}) {
+  const sessionKey = getQqSessionKey(event);
+  if (qqBotSessions[sessionKey]) {
+    delete qqBotSessions[sessionKey];
+    await saveQqBotSessions();
+  }
+}
+
+function trimSessionMessages(messages = []) {
+  return messages.slice(-24);
+}
+
+async function getFallbackModelId() {
+  const modelsUrl = new URL("/v1/models", TARGET_ORIGIN);
+  const data = await requestJson(modelsUrl, { method: "GET" });
+  return data?.data?.[0]?.id || "";
+}
+
+async function generateQqBotReply(event = {}) {
+  const sessionKey = getQqSessionKey(event);
+  const session = Array.isArray(qqBotSessions[sessionKey]?.messages) ? qqBotSessions[sessionKey].messages : [];
+  const rawUserText = normalizeQqIncomingText(event);
+  const userText = stripQqTriggerPrefix(rawUserText);
+  if (!userText) {
+    return "";
+  }
+
+  const model = qqBotConfig.model || await getFallbackModelId();
+  if (!model) {
+    const error = new Error("No model configured for QQ bot");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const systemPrompt = [
+    qqBotConfig.persona || qqBotConfig.systemPrompt || "",
+    `你当前正在作为 QQ 机器人“${qqBotConfig.assistantName || "繁星"}”回复消息。请直接回复用户，不要解释工具过程，不要输出多余系统说明。`,
+  ].filter(Boolean).join("\n\n");
+
+  const messages = [
+    ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
+    ...session,
+    { role: "user", content: userText },
+  ];
+
+  const chatUrl = new URL("/v1/chat/completions", TARGET_ORIGIN);
+  const data = await requestJson(chatUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.7,
+      stream: false,
+    }),
+  });
+
+  const message = data?.choices?.[0]?.message;
+  const reply =
+    typeof message?.content === "string"
+      ? message.content.trim()
+      : Array.isArray(message?.content)
+        ? message.content.map((item) => item?.text || "").join("\n").trim()
+        : "";
+
+  if (!reply) {
+    return "";
+  }
+
+  qqBotSessions[sessionKey] = {
+    updatedAt: Date.now(),
+    messages: trimSessionMessages([
+      ...session,
+      { role: "user", content: userText },
+      { role: "assistant", content: reply },
+    ]),
+  };
+  await saveQqBotSessions();
+  return reply;
+}
+
+async function handleQqWebhook(req, res) {
+  try {
+    const rawBody = await readRequestBody(req);
+    const event = rawBody ? JSON.parse(rawBody) : {};
+
+    if (!qqBotConfig.enabled) {
+      sendJson(res, 200, { ok: true, ignored: "bot_disabled" });
+      return;
+    }
+    if (event.post_type !== "message") {
+      sendJson(res, 200, { ok: true, ignored: "non_message_event" });
+      return;
+    }
+    if (String(event.user_id || "") === String(event.self_id || "")) {
+      sendJson(res, 200, { ok: true, ignored: "self_message" });
+      return;
+    }
+    if (!isQqEventAllowed(event)) {
+      sendJson(res, 200, { ok: true, ignored: "not_allowed" });
+      return;
+    }
+
+    if (event.message_type === "group" && qqBotConfig.groupMentionOnly && !isGroupMentioned(event)) {
+      sendJson(res, 200, { ok: true, ignored: "group_no_mention" });
+      return;
+    }
+    const normalizedIncomingText = normalizeQqIncomingText(event);
+    if (isQqSessionResetCommand(normalizedIncomingText)) {
+      await clearQqSession(event);
+      await sendQqMessageFinal({
+        bridgeUrl: qqBotConfig.bridgeUrl,
+        accessToken: qqBotConfig.accessToken,
+        targetType: event.message_type === "group" ? "group" : "private",
+        targetId: event.message_type === "group" ? String(event.group_id || "") : String(event.user_id || ""),
+        message: "当前 QQ 会话已重置，我们可以从新话题继续。",
+      });
+      sendJson(res, 200, { ok: true, reset: true });
+      return;
+    }
+    if (qqBotConfig.triggerPrefix && !stripQqTriggerPrefix(normalizedIncomingText)) {
+      sendJson(res, 200, { ok: true, ignored: "missing_prefix" });
+      return;
+    }
+
+    const reply = await generateQqBotReply(event);
+    if (!reply) {
+      sendJson(res, 200, { ok: true, ignored: "empty_reply" });
+      return;
+    }
+
+    await sendQqMessageFinal({
+      bridgeUrl: qqBotConfig.bridgeUrl,
+      accessToken: qqBotConfig.accessToken,
+      targetType: event.message_type === "group" ? "group" : "private",
+      targetId: event.message_type === "group" ? String(event.group_id || "") : String(event.user_id || ""),
+      message: reply,
+    });
+
+    sendJson(res, 200, { ok: true, replied: true });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, { error: error.message || "QQ webhook failed" });
+  }
+}
+
+function handleQqBotConfigGet(res) {
+  sendJson(res, 200, { ok: true, config: qqBotConfig });
+}
+
+async function handleQqBotConfigPost(req, res) {
+  try {
+    const rawBody = await readRequestBody(req);
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+    const config = await saveQqBotConfig({
+      enabled: Boolean(payload.enabled),
+      groupMentionOnly: payload.groupMentionOnly !== false,
+      taskPushEnabled: Boolean(payload.taskPushEnabled),
+      triggerPrefix: String(payload.triggerPrefix || "").trim(),
+      allowedUsers: parseQqIdList(payload.allowedUsers),
+      allowedGroups: parseQqIdList(payload.allowedGroups),
+      persona: String(payload.persona || "").trim(),
+      bridgeUrl: String(payload.bridgeUrl || "").trim(),
+      accessToken: String(payload.accessToken || "").trim(),
+      defaultTargetType: String(payload.defaultTargetType || "private").trim().toLowerCase() === "group" ? "group" : "private",
+      defaultTargetId: String(payload.defaultTargetId || "").trim(),
+      model: String(payload.model || "").trim(),
+      systemPrompt: String(payload.systemPrompt || "").trim(),
+      assistantName: String(payload.assistantName || "繁星").trim() || "繁星",
+    });
+    sendJson(res, 200, { ok: true, config });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, { error: error.message || "Failed to save QQ bot config" });
+  }
+}
+
+const executeToolCallBeforeQqFinal = executeToolCall;
+executeToolCall = async function executeToolCallWithQqFinal(name, args = {}) {
+  if (name === "send_qq_message") {
+    return await sendQqMessageFinal(args);
+  }
+  return executeToolCallBeforeQqFinal(name, args);
+};
+
+const runScheduledTaskBeforeQqPush = runScheduledTask;
+runScheduledTask = async function runScheduledTaskWithQqPush(taskId) {
+  const task = await runScheduledTaskBeforeQqPush(taskId);
+  if (
+    task &&
+    qqBotConfig.taskPushEnabled &&
+    qqBotConfig.bridgeUrl &&
+    qqBotConfig.defaultTargetId &&
+    task.lastStatus === "success" &&
+    task.lastResult
+  ) {
+    try {
+      await sendQqMessageFinal({
+        bridgeUrl: qqBotConfig.bridgeUrl,
+        accessToken: qqBotConfig.accessToken,
+        targetType: qqBotConfig.defaultTargetType || "private",
+        targetId: qqBotConfig.defaultTargetId,
+        message: String(task.lastResult || "").trim(),
+      });
+    } catch (error) {
+      console.error("Failed to push scheduled task result to QQ:", error);
+    }
+  }
+  return task;
+};
+
+Promise.all([loadScheduledTasks(), loadQqBotConfig(), loadQqBotSessions()])
   .then(() => {
     startScheduledTaskLoop();
     server.listen(PORT, HOST, () => {
       console.log(`Local AI workbench running at http://${HOST}:${PORT}`);
       console.log(`Proxy target: ${TARGET_ORIGIN}`);
+      console.log(`QQ bot webhook: http://${HOST}:${PORT}/qq/webhook`);
     });
   })
   .catch((error) => {

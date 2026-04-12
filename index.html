@@ -50,6 +50,11 @@
               </select>
             </label>
 
+            <label>
+              <span>总上下文上限 Token</span>
+              <input id="context-limit" name="contextLimit" type="number" min="1" step="1" value="32768" placeholder="例如 32768">
+            </label>
+
             <div id="model-selection-meta" class="inline-meta-card">当前未选择模型</div>
           </div>
         </details>
@@ -246,20 +251,115 @@
           </div>
         </details>
 
-        <details class="config-group" data-config-group="advanced-settings">
+        <details class="config-group" data-config-group="qq-settings">
           <summary class="config-group-summary">
-            <span class="config-group-icon" aria-hidden="true">△</span>
-            <span>高级参数</span>
-            <small>低频使用</small>
+            <span class="config-group-icon" aria-hidden="true">Q</span>
+            <span>QQ 机器人</span>
+            <small>消息桥接</small>
           </summary>
           <div class="config-group-body">
-            <label>
-              <span>总上下文上限 Token</span>
-              <input id="context-limit" name="contextLimit" type="number" min="1" step="1" value="32768" placeholder="例如 32768">
-            </label>
+            <div class="sub-config-block">
+              <div class="sub-config-head">
+                <strong>QQ 推送与机器人</strong>
+                <p>兼容 OneBot / NapCat 这类本机 HTTP 桥接，可主动推送消息，也可接收消息后自动回复。</p>
+              </div>
+
+              <label class="toggle-row">
+                <span>启用 QQ 推送</span>
+                <input id="qq-push-enabled" type="checkbox">
+              </label>
+
+              <label class="toggle-row">
+                <span>启用 QQ 机器人自动回复</span>
+                <input id="qq-bot-enabled" type="checkbox">
+              </label>
+
+              <label class="toggle-row">
+                <span>群聊仅在 @机器人 时回复</span>
+                <input id="qq-bot-group-mention-only" type="checkbox" checked>
+              </label>
+
+              <label class="toggle-row">
+                <span>定时任务结果自动推送到 QQ</span>
+                <input id="qq-task-push-enabled" type="checkbox">
+              </label>
+
+              <label>
+                <span>桥接地址</span>
+                <input id="qq-bridge-url" type="text" placeholder="例如 http://127.0.0.1:3000/">
+              </label>
+
+              <label>
+                <span>Access Token</span>
+                <input id="qq-access-token" type="password" placeholder="可留空">
+              </label>
+
+              <label>
+                <span>默认目标类型</span>
+                <select id="qq-target-type">
+                  <option value="private">私聊</option>
+                  <option value="group">群聊</option>
+                </select>
+              </label>
+
+              <label>
+                <span>默认目标 ID</span>
+                <input id="qq-target-id" type="text" placeholder="例如 QQ 号或群号">
+              </label>
+
+              <label>
+                <span>QQ 机器人模型</span>
+                <select id="qq-bot-model-select">
+                  <option value="">跟随基础连接当前模型</option>
+                </select>
+              </label>
+
+              <label>
+                <span>群聊触发前缀</span>
+                <input id="qq-bot-trigger-prefix" type="text" placeholder="例如 /ai，留空表示不限制前缀">
+              </label>
+
+              <label>
+                <span>允许的私聊 QQ</span>
+                <textarea id="qq-bot-allowed-users" rows="3" placeholder="每行一个 QQ 号；留空表示不限制"></textarea>
+              </label>
+
+              <label>
+                <span>允许的群号</span>
+                <textarea id="qq-bot-allowed-groups" rows="3" placeholder="每行一个群号；留空表示不限制"></textarea>
+              </label>
+
+              <label>
+                <span>QQ 机器人专属人设</span>
+                <textarea id="qq-bot-persona" rows="6" placeholder="只作用于 QQ 机器人回复，不影响网页聊天。"></textarea>
+              </label>
+
+              <input id="qq-bot-persona-file-input" type="file" accept=".md,.markdown,.txt" hidden>
+
+              <label>
+                <span>QQ 模板选择</span>
+                <select id="qq-bot-persona-preset">
+                  <option value="none">不使用预设</option>
+                </select>
+              </label>
+
+              <div id="qq-bot-persona-preset-description" class="persona-preset-description">选择模板后会立即应用到 QQ 机器人专属人设。</div>
+
+              <div class="button-row left wrap-row persona-actions">
+                <button id="import-qq-bot-persona" class="ghost-button mini-action-button" type="button">导入</button>
+                <button id="export-qq-bot-persona" class="ghost-button mini-action-button" type="button">导出</button>
+                <button id="clear-qq-bot-persona" class="ghost-button mini-action-button" type="button">清空</button>
+              </div>
+
+              <div class="button-row left wrap-row persona-actions">
+                <button id="test-qq-push" class="ghost-button mini-action-button" type="button">测试推送</button>
+              </div>
+
+              <div id="qq-push-meta" class="inline-meta-card">当前未配置 QQ 推送。</div>
+              <div id="qq-bot-meta" class="inline-meta-card">当前未启用 QQ 机器人自动回复。</div>
+            </div>
           </div>
         </details>
-
       </form>
     </aside>
 

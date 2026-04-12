@@ -70,6 +70,22 @@ TOOLS.push(
   {
     type: "function",
     function: {
+      name: "send_qq_message",
+      description: "Send a QQ message through a configured local OneBot or NapCat compatible HTTP bridge when the user explicitly asks to send or push to QQ.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string" },
+          targetType: { type: "string", enum: ["private", "group"] },
+          targetId: { type: "string" },
+        },
+        required: ["message"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_scheduled_task",
       description: "Create a scheduled task only when the user explicitly asks to create/schedule an automatic recurring task.",
       parameters: {
@@ -148,6 +164,7 @@ const WRITE_TOOL_NAMES = new Set(["write_file", "delete_file"]);
 const SKILL_DISCOVERY_TOOL_NAMES = new Set(["search_clawhub_skills"]);
 const SKILL_INSTALL_TOOL_NAMES = new Set(["install_clawhub_skill"]);
 const SCHEDULER_TOOL_NAMES = new Set(["create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task"]);
+const QQ_TOOL_NAMES = new Set(["send_qq_message"]);
 let workspacePersonaPresets = [];
 
 const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, settingBundle: null, sending: false, previewMaximized: false, toolActivities: [] };
@@ -156,6 +173,8 @@ const els = {
   chatForm: $("#chat-form"), chatMessages: $("#chat-messages"), userInput: $("#user-input"), sendButton: $("#send-button"),
   statusBar: $("#status-bar"), baseUrl: $("#base-url"), apiPath: $("#api-path"), modelSelect: $("#model-select"),
   assistantName: $("#assistant-name"), userName: $("#user-name"), systemPrompt: $("#system-prompt"), contextLimit: $("#context-limit"),
+  qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
+  qqBotEnabled: $("#qq-bot-enabled"), qqBotGroupMentionOnly: $("#qq-bot-group-mention-only"), qqTaskPushEnabled: $("#qq-task-push-enabled"), qqBotTriggerPrefix: $("#qq-bot-trigger-prefix"), qqBotAllowedUsers: $("#qq-bot-allowed-users"), qqBotAllowedGroups: $("#qq-bot-allowed-groups"), qqBotPersona: $("#qq-bot-persona"), qqBotPersonaPreset: $("#qq-bot-persona-preset"), qqBotPersonaPresetDescription: $("#qq-bot-persona-preset-description"), qqBotPersonaFileInput: $("#qq-bot-persona-file-input"), importQqBotPersona: $("#import-qq-bot-persona"), exportQqBotPersona: $("#export-qq-bot-persona"), clearQqBotPersona: $("#clear-qq-bot-persona"), qqBotMeta: $("#qq-bot-meta"), qqBotModelSelect: $("#qq-bot-model-select"),
   assistantAvatarInput: $("#assistant-avatar-input"), userAvatarInput: $("#user-avatar-input"),
   uploadAssistantAvatar: $("#upload-assistant-avatar"), uploadUserAvatar: $("#upload-user-avatar"),
   clearAssistantAvatar: $("#clear-assistant-avatar"), clearUserAvatar: $("#clear-user-avatar"),
@@ -278,6 +297,115 @@ function hasExplicitSchedulerIntent(text = "") {
   return keywords.some((keyword) => normalized.includes(keyword));
 }
 
+function hasExplicitQqIntent(text = "") {
+  const normalized = String(text).toLowerCase();
+  const keywords = [
+    "qq",
+    "发送到qq",
+    "推送到qq",
+    "发到qq",
+    "qq提醒",
+    "qq消息",
+    "send to qq",
+    "send qq",
+    "push to qq",
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function getQqPushSettings() {
+  const persisted = saved();
+  return {
+    enabled: Boolean(els.qqPushEnabled?.checked ?? persisted.qqPushEnabled),
+    bridgeUrl: els.qqBridgeUrl?.value?.trim() || persisted.qqBridgeUrl || "",
+    accessToken: els.qqAccessToken?.value?.trim() || persisted.qqAccessToken || "",
+    targetType: els.qqTargetType?.value || persisted.qqTargetType || "private",
+    targetId: els.qqTargetId?.value?.trim() || persisted.qqTargetId || "",
+  };
+}
+
+function isQqPushConfigured() {
+  const config = getQqPushSettings();
+  return Boolean(config.enabled && config.bridgeUrl && config.targetId);
+}
+
+function renderQqPushMeta() {
+  if (!els.qqPushMeta) return;
+  const config = getQqPushSettings();
+  if (!config.enabled) {
+    els.qqPushMeta.textContent = "当前未配置 QQ 推送。";
+    return;
+  }
+  const readiness = config.bridgeUrl && config.targetId ? "已就绪" : "配置未完成";
+  const targetText = config.targetType === "group" ? "群聊" : "私聊";
+  els.qqPushMeta.textContent = `QQ 推送${readiness} · ${targetText} · ${config.targetId || "未填写目标 ID"}`;
+}
+
+function getQqBotSettings() {
+  const persisted = saved();
+  return {
+    enabled: Boolean(els.qqBotEnabled?.checked ?? persisted.qqBotEnabled),
+    groupMentionOnly: Boolean(els.qqBotGroupMentionOnly?.checked ?? persisted.qqBotGroupMentionOnly ?? true),
+    taskPushEnabled: Boolean(els.qqTaskPushEnabled?.checked ?? persisted.qqTaskPushEnabled),
+    model: els.qqBotModelSelect?.value?.trim() || persisted.qqBotModel || "",
+    triggerPrefix: els.qqBotTriggerPrefix?.value?.trim() || persisted.qqBotTriggerPrefix || "",
+    allowedUsers: els.qqBotAllowedUsers?.value || persisted.qqBotAllowedUsers || "",
+    allowedGroups: els.qqBotAllowedGroups?.value || persisted.qqBotAllowedGroups || "",
+    persona: els.qqBotPersona?.value || persisted.qqBotPersona || "",
+  };
+}
+
+function renderQqBotMeta() {
+  if (!els.qqBotMeta) return;
+  const config = getQqBotSettings();
+  if (!config.enabled) {
+    els.qqBotMeta.textContent = "当前未启用 QQ 机器人自动回复。";
+    return;
+  }
+  const prefixText = config.triggerPrefix ? ` · 前缀：${config.triggerPrefix}` : "";
+  const taskPushText = config.taskPushEnabled ? " · 定时任务推送已开启" : "";
+  els.qqBotMeta.textContent = `QQ 机器人已启用 · 群聊模式：${config.groupMentionOnly ? "仅 @ 时回复" : "允许直接回复"}${prefixText}${taskPushText}`;
+}
+
+function renderQqBotPersonaPresetDescription() {
+  if (!els.qqBotPersonaPresetDescription) return;
+  const presetId = els.qqBotPersonaPreset?.value || "none";
+  els.qqBotPersonaPresetDescription.textContent = presetById(presetId).description || "选择模板后会立即应用到 QQ 机器人专属人设。";
+}
+
+function renderQqBotPersonaPresets() {
+  if (!els.qqBotPersonaPreset) return;
+  const nodes = [];
+  const builtInGroup = document.createElement("optgroup");
+  builtInGroup.label = "内置模板";
+  builtInGroup.append(...PERSONA_PRESETS.map((preset) => {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    return option;
+  }));
+  nodes.push(builtInGroup);
+
+  if (workspacePersonaPresets.length) {
+    const workspaceGroup = document.createElement("optgroup");
+    workspaceGroup.label = "工作区人设";
+    workspaceGroup.append(...workspacePersonaPresets.map((preset) => {
+      const option = document.createElement("option");
+      option.value = preset.id;
+      option.textContent = preset.name;
+      return option;
+    }));
+    nodes.push(workspaceGroup);
+  }
+
+  const persistedValue = saved().qqBotPersonaPreset || "none";
+  const currentValue = els.qqBotPersonaPreset.value || persistedValue || "none";
+  const optionValues = ["none", ...PERSONA_PRESETS.map((preset) => preset.id), ...workspacePersonaPresets.map((preset) => preset.id)];
+  els.qqBotPersonaPreset.replaceChildren(...nodes);
+  els.qqBotPersonaPreset.value = optionValues.includes(currentValue) ? currentValue : "none";
+  renderQqBotPersonaPresetDescription();
+}
+
 function hasSkillDiscoveryIntent(text = "") {
   const normalized = String(text).toLowerCase();
   const keywords = [
@@ -333,12 +461,14 @@ function canInstallSkillTools(userText = "") {
 function getAllowedToolsForUserText(userText = "") {
   const allowWrite = canUseWriteTools(userText);
   const allowScheduler = hasExplicitSchedulerIntent(userText);
+  const allowQqPush = hasExplicitQqIntent(userText) && isQqPushConfigured();
   const allowSkillDiscovery = hasSkillDiscoveryIntent(userText);
   const allowSkillInstall = canInstallSkillTools(userText);
   return TOOLS.filter((tool) => {
     const name = tool.function.name;
     if (READ_ONLY_TOOL_NAMES.has(name)) return true;
     if (WRITE_TOOL_NAMES.has(name)) return allowWrite;
+    if (QQ_TOOL_NAMES.has(name)) return allowQqPush;
     if (SKILL_DISCOVERY_TOOL_NAMES.has(name)) return allowSkillDiscovery;
     if (SKILL_INSTALL_TOOL_NAMES.has(name)) return allowSkillInstall;
     if (SCHEDULER_TOOL_NAMES.has(name)) return allowScheduler;
@@ -471,6 +601,11 @@ function save() {
     baseUrl: els.baseUrl?.value.trim() || "", apiPath: els.apiPath?.value.trim() || "/api/v1/chat/completions", model: selectedModel(), modelHistory: history,
     assistantName: els.assistantName?.value.trim() || "繁星", userName: els.userName?.value.trim() || "文远", systemPrompt: els.systemPrompt?.value.trim() || "",
     personaPrompt: els.personaPrompt?.value.trim() || "", personaPreset: els.personaPreset?.value || "none", contextLimit: els.contextLimit?.value.trim() || "32768",
+    qqPushEnabled: Boolean(els.qqPushEnabled?.checked),
+    qqBridgeUrl: els.qqBridgeUrl?.value.trim() || "",
+    qqAccessToken: els.qqAccessToken?.value.trim() || "",
+    qqTargetType: els.qqTargetType?.value || "private",
+    qqTargetId: els.qqTargetId?.value.trim() || "",
     assistantAvatar: old.assistantAvatar || "",
     userAvatar: old.userAvatar || "",
     configGroupState,
@@ -480,7 +615,7 @@ function save() {
     settingBundle: cloneSettingBundleForStorage(state.settingBundle),
     ...getResizableTextareaState(),
   }));
-  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderSettingBundlePreview();
+  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderSettingBundlePreview(); renderQqPushMeta();
 }
 function load() {
   const s = saved();
@@ -491,6 +626,11 @@ function load() {
   if (els.systemPrompt) els.systemPrompt.value = s.systemPrompt || "";
   if (els.personaPrompt) els.personaPrompt.value = s.personaPrompt || "";
   if (els.contextLimit) els.contextLimit.value = s.contextLimit || "32768";
+  if (els.qqPushEnabled) els.qqPushEnabled.checked = Boolean(s.qqPushEnabled);
+  if (els.qqBridgeUrl) els.qqBridgeUrl.value = s.qqBridgeUrl || "";
+  if (els.qqAccessToken) els.qqAccessToken.value = s.qqAccessToken || "";
+  if (els.qqTargetType) els.qqTargetType.value = s.qqTargetType || "private";
+  if (els.qqTargetId) els.qqTargetId.value = s.qqTargetId || "";
   if (els.personaPreset) els.personaPreset.value = s.personaPreset || "none";
   if (els.modelSelect && s.model) { const o = document.createElement("option"); o.value = s.model; o.textContent = s.model; els.modelSelect.replaceChildren(o); els.modelSelect.value = s.model; }
   state.skills = Array.isArray(s.skillsCache) ? s.skillsCache.filter(Boolean) : [];
@@ -504,6 +644,7 @@ function load() {
   renderSkillPreview();
   renderSettingBundlePreview();
   renderAllAvatarPreviews();
+  renderQqPushMeta();
 }
 
 function applyConfigGroupState(configGroupState = {}) {
@@ -1921,6 +2062,379 @@ renderChatHistoryList = function renderChatHistoryListGrouped() {
 
 renderChatHistoryList();
 
+function collectQqSettingsSnapshot() {
+  return {
+    qqPushEnabled: Boolean(els.qqPushEnabled?.checked),
+    qqBridgeUrl: els.qqBridgeUrl?.value?.trim() || "",
+    qqAccessToken: els.qqAccessToken?.value?.trim() || "",
+    qqTargetType: els.qqTargetType?.value || "private",
+    qqTargetId: els.qqTargetId?.value?.trim() || "",
+    qqBotEnabled: Boolean(els.qqBotEnabled?.checked),
+    qqBotGroupMentionOnly: Boolean(els.qqBotGroupMentionOnly?.checked),
+    qqTaskPushEnabled: Boolean(els.qqTaskPushEnabled?.checked),
+    qqBotModel: els.qqBotModelSelect?.value || "",
+    qqBotTriggerPrefix: els.qqBotTriggerPrefix?.value?.trim() || "",
+    qqBotAllowedUsers: els.qqBotAllowedUsers?.value || "",
+    qqBotAllowedGroups: els.qqBotAllowedGroups?.value || "",
+    qqBotPersona: els.qqBotPersona?.value || "",
+    qqBotPersonaPreset: els.qqBotPersonaPreset?.value || "none",
+  };
+}
+
+function restoreQqSettingsSnapshot(snapshot = {}) {
+  if (els.qqPushEnabled) els.qqPushEnabled.checked = Boolean(snapshot.qqPushEnabled);
+  if (els.qqBridgeUrl) els.qqBridgeUrl.value = snapshot.qqBridgeUrl || "";
+  if (els.qqAccessToken) els.qqAccessToken.value = snapshot.qqAccessToken || "";
+  if (els.qqTargetType) els.qqTargetType.value = snapshot.qqTargetType || "private";
+  if (els.qqTargetId) els.qqTargetId.value = snapshot.qqTargetId || "";
+  if (els.qqBotEnabled) els.qqBotEnabled.checked = Boolean(snapshot.qqBotEnabled);
+  if (els.qqBotGroupMentionOnly) els.qqBotGroupMentionOnly.checked = snapshot.qqBotGroupMentionOnly !== false;
+  if (els.qqTaskPushEnabled) els.qqTaskPushEnabled.checked = Boolean(snapshot.qqTaskPushEnabled);
+  if (els.qqBotModelSelect) els.qqBotModelSelect.value = snapshot.qqBotModel || "";
+  if (els.qqBotTriggerPrefix) els.qqBotTriggerPrefix.value = snapshot.qqBotTriggerPrefix || "";
+  if (els.qqBotAllowedUsers) els.qqBotAllowedUsers.value = snapshot.qqBotAllowedUsers || "";
+  if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = snapshot.qqBotAllowedGroups || "";
+  if (els.qqBotPersona) els.qqBotPersona.value = snapshot.qqBotPersona || "";
+  if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = snapshot.qqBotPersonaPreset || "none";
+  renderQqPushMeta();
+  renderQqBotMeta();
+  renderQqBotPersonaPresetDescription();
+}
+
+function persistQqSettingsIndependently() {
+  const current = saved();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    ...collectQqSettingsSnapshot(),
+  }));
+}
+
+function restoreQqSettingsIndependently() {
+  restoreQqSettingsSnapshot(saved());
+}
+
+function bindQqSettingsPersistence() {
+  const targets = [
+    els.qqPushEnabled,
+    els.qqBridgeUrl,
+    els.qqAccessToken,
+    els.qqTargetType,
+    els.qqTargetId,
+    els.qqBotEnabled,
+    els.qqBotGroupMentionOnly,
+    els.qqTaskPushEnabled,
+    els.qqBotModelSelect,
+    els.qqBotTriggerPrefix,
+    els.qqBotAllowedUsers,
+    els.qqBotAllowedGroups,
+    els.qqBotPersona,
+    els.qqBotPersonaPreset,
+  ].filter(Boolean);
+
+  targets.forEach((el) => {
+    if (el.dataset.qqPersistenceBound === "true") return;
+    el.dataset.qqPersistenceBound = "true";
+    ["input", "change", "blur"].forEach((eventName) => {
+      el.addEventListener(eventName, () => {
+        persistQqSettingsIndependently();
+        renderQqPushMeta();
+        renderQqBotMeta();
+        renderQqBotPersonaPresetDescription();
+      });
+    });
+  });
+}
+
+bindQqSettingsPersistence();
+restoreQqSettingsIndependently();
+window.setTimeout(() => {
+  restoreQqSettingsIndependently();
+  bindQqSettingsPersistence();
+}, 0);
+
+renderQqBotPersonaPresets = function renderQqBotPersonaPresetsMirrorMain() {
+  if (!els.qqBotPersonaPreset) return;
+
+  const persistedValue = saved().qqBotPersonaPreset || "none";
+  const currentValue = els.qqBotPersonaPreset.value || persistedValue || "none";
+
+  if (els.personaPreset) {
+    const sourceNodes = Array.from(els.personaPreset.children || []).map((node) => node.cloneNode(true));
+    const optionValues = Array.from(els.personaPreset.querySelectorAll("option")).map((option) => option.value);
+    if (sourceNodes.length) {
+      els.qqBotPersonaPreset.replaceChildren(...sourceNodes);
+      els.qqBotPersonaPreset.value = optionValues.includes(currentValue) ? currentValue : "none";
+      renderQqBotPersonaPresetDescription();
+      return;
+    }
+  }
+
+  const fallback = document.createElement("option");
+  fallback.value = "none";
+  fallback.textContent = "不使用预设";
+  els.qqBotPersonaPreset.replaceChildren(fallback);
+  els.qqBotPersonaPreset.value = "none";
+  renderQqBotPersonaPresetDescription();
+};
+
+renderQqBotPersonaPresets();
+
+const renderPersonaPresetsBeforeQqMirrorFinal = renderPersonaPresets;
+renderPersonaPresets = function renderPersonaPresetsWithQqMirrorFinal() {
+  renderPersonaPresetsBeforeQqMirrorFinal();
+  renderQqBotPersonaPresets();
+};
+
+const loadWorkspacePersonaPresetsBeforeQqMirrorFinal = loadWorkspacePersonaPresets;
+loadWorkspacePersonaPresets = async function loadWorkspacePersonaPresetsWithQqMirrorFinal() {
+  await loadWorkspacePersonaPresetsBeforeQqMirrorFinal();
+  renderQqBotPersonaPresets();
+};
+
+const loadBeforeQqMirrorFinal = load;
+load = function loadWithQqMirrorFinal() {
+  loadBeforeQqMirrorFinal();
+  renderQqBotPersonaPresets();
+};
+
+let qqBotPersonaPresetMirrorObserver = null;
+
+function syncQqBotPersonaPresetsFromMainSelect() {
+  if (!els.personaPreset || !els.qqBotPersonaPreset) return;
+  const preservedValue = saved().qqBotPersonaPreset || els.qqBotPersonaPreset.value || "none";
+  renderQqBotPersonaPresets();
+  const availableValues = Array.from(els.qqBotPersonaPreset.querySelectorAll("option")).map((option) => option.value);
+  els.qqBotPersonaPreset.value = availableValues.includes(preservedValue) ? preservedValue : "none";
+  renderQqBotPersonaPresetDescription();
+}
+
+function bindQqBotPersonaPresetMirrorObserver() {
+  if (!els.personaPreset || !els.qqBotPersonaPreset) return;
+  if (qqBotPersonaPresetMirrorObserver) {
+    qqBotPersonaPresetMirrorObserver.disconnect();
+  }
+  qqBotPersonaPresetMirrorObserver = new MutationObserver(() => {
+    syncQqBotPersonaPresetsFromMainSelect();
+  });
+  qqBotPersonaPresetMirrorObserver.observe(els.personaPreset, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["label", "value"],
+  });
+  syncQqBotPersonaPresetsFromMainSelect();
+}
+
+bindQqBotPersonaPresetMirrorObserver();
+window.setTimeout(() => {
+  bindQqBotPersonaPresetMirrorObserver();
+  syncQqBotPersonaPresetsFromMainSelect();
+}, 0);
+window.setTimeout(() => {
+  syncQqBotPersonaPresetsFromMainSelect();
+}, 400);
+window.setTimeout(() => {
+  syncQqBotPersonaPresetsFromMainSelect();
+}, 1200);
+
+function renderQqBotModelOptions() {
+  if (!els.qqBotModelSelect || !els.modelSelect) return;
+  const persistedValue = saved().qqBotModel || els.qqBotModelSelect.value || "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "跟随基础连接当前模型";
+  const sourceNodes = Array.from(els.modelSelect.querySelectorAll("option"))
+    .filter((option) => option.value)
+    .map((option) => option.cloneNode(true));
+  els.qqBotModelSelect.replaceChildren(placeholder, ...sourceNodes);
+  const validValues = ["", ...sourceNodes.map((option) => option.value)];
+  els.qqBotModelSelect.value = validValues.includes(persistedValue) ? persistedValue : "";
+}
+
+let qqBotModelMirrorObserver = null;
+
+function bindQqBotModelMirrorObserver() {
+  if (!els.qqBotModelSelect || !els.modelSelect) return;
+  if (qqBotModelMirrorObserver) {
+    qqBotModelMirrorObserver.disconnect();
+  }
+  qqBotModelMirrorObserver = new MutationObserver(() => {
+    renderQqBotModelOptions();
+    renderQqBotMeta();
+  });
+  qqBotModelMirrorObserver.observe(els.modelSelect, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["label", "value"],
+  });
+  renderQqBotModelOptions();
+}
+
+bindQqBotModelMirrorObserver();
+window.setTimeout(() => {
+  bindQqBotModelMirrorObserver();
+  renderQqBotModelOptions();
+  renderQqBotMeta();
+}, 0);
+window.setTimeout(() => {
+  renderQqBotModelOptions();
+  renderQqBotMeta();
+}, 600);
+
+renderQqBotMeta = function renderQqBotMetaFinal() {
+  if (!els.qqBotMeta) return;
+  const config = getQqBotSettings();
+  if (!config.enabled) {
+    els.qqBotMeta.textContent = "当前未启用 QQ 机器人自动回复。";
+    return;
+  }
+  const modelText = config.model || selectedModel() || "未选择";
+  const prefixText = config.triggerPrefix ? ` · 前缀：${config.triggerPrefix}` : "";
+  const taskPushText = config.taskPushEnabled ? " · 定时任务推送已开启" : "";
+  els.qqBotMeta.textContent = `QQ 机器人已启用 · 模型：${modelText} · 群聊模式：${config.groupMentionOnly ? "仅 @ 时回复" : "允许直接回复"}${prefixText}${taskPushText}`;
+};
+renderQqBotMeta();
+els.modelSelect?.addEventListener("change", () => {
+  renderQqBotModelOptions();
+  renderQqBotMeta();
+  syncQqBotConfig().catch(() => {});
+});
+
+const systemMessagesBeforeQqRuleFinal = systemMessages;
+systemMessages = function systemMessagesWithQqRuleFinal() {
+  const list = systemMessagesBeforeQqRuleFinal().filter((message) => !String(message?.content || "").includes("当前已配置 QQ 推送通道"));
+  const config = getQqPushSettings();
+  if (config.enabled && config.bridgeUrl && config.targetId) {
+    list.push({
+      role: "system",
+      content: `当前已配置 QQ 推送通道。若用户明确要求发送到 QQ、推送到 QQ 或发 QQ 提醒，你可以调用 send_qq_message。默认目标类型：${config.targetType === "group" ? "group" : "private"}；默认目标 ID：${config.targetId}。`,
+    });
+  }
+  return list;
+};
+
+const renderPersonaPresetsBeforeQqBotPresets = renderPersonaPresets;
+renderPersonaPresets = function renderPersonaPresetsWithQqBotPresets() {
+  renderPersonaPresetsBeforeQqBotPresets();
+  renderQqBotPersonaPresets();
+};
+
+const loadWorkspacePersonaPresetsBeforeQqBotPresets = loadWorkspacePersonaPresets;
+loadWorkspacePersonaPresets = async function loadWorkspacePersonaPresetsWithQqBotPresets() {
+  await loadWorkspacePersonaPresetsBeforeQqBotPresets();
+  renderQqBotPersonaPresets();
+};
+
+const initBeforeQqBotPersonaPresetRefresh = init;
+init = async function initWithQqBotPersonaPresetRefresh() {
+  await initBeforeQqBotPersonaPresetRefresh();
+  renderQqBotPersonaPresets();
+};
+
+window.setTimeout(() => {
+  renderQqBotPersonaPresets();
+}, 0);
+
+const executeToolBeforeQqInjectionFinal = executeTool;
+executeTool = async function executeToolWithQqConfigInjectionFinal(toolCall) {
+  const name = toolCall?.function?.name || "unknown";
+  if (!QQ_TOOL_NAMES.has(name)) {
+    return executeToolBeforeQqInjectionFinal(toolCall);
+  }
+
+  let args = {};
+  try {
+    args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    throw new Error("QQ 工具参数不是合法 JSON");
+  }
+
+  const config = getQqPushSettings();
+  if (!config.enabled || !config.bridgeUrl || !config.targetId) {
+    throw new Error("QQ 推送未配置完成，请先在基础连接配置里填写桥接地址和目标 ID。");
+  }
+
+  const mergedArgs = {
+    ...args,
+    bridgeUrl: config.bridgeUrl,
+    accessToken: config.accessToken,
+    targetType: args.targetType || config.targetType || "private",
+    targetId: args.targetId || config.targetId,
+  };
+
+  return executeToolBeforeQqInjectionFinal({
+    ...toolCall,
+    function: {
+      ...(toolCall?.function || {}),
+      arguments: JSON.stringify(mergedArgs),
+    },
+  });
+};
+
+const buildToolOnlyFallbackReplyBeforeQqFinal = buildToolOnlyFallbackReply;
+buildToolOnlyFallbackReply = function buildToolOnlyFallbackReplyWithQqFinal(messages = []) {
+  const original = buildToolOnlyFallbackReplyBeforeQqFinal(messages);
+  if (typeof original === "string" && original.trim()) {
+    return original.trim();
+  }
+
+  const parsed = parseLastToolResult(messages);
+  if (parsed?.ok && parsed?.targetId && parsed?.message && parsed?.bridgeUrl) {
+    return `已经帮你把消息发送到 QQ 了。\n目标：${parsed.targetType === "group" ? "群" : "QQ"} ${parsed.targetId}`;
+  }
+
+  return "";
+};
+
+const saveBeforeQqPersistence = save;
+save = function saveWithQqPersistence() {
+  saveBeforeQqPersistence();
+  const current = saved();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    qqPushEnabled: Boolean(els.qqPushEnabled?.checked),
+    qqBridgeUrl: els.qqBridgeUrl?.value.trim() || "",
+    qqAccessToken: els.qqAccessToken?.value.trim() || "",
+    qqTargetType: els.qqTargetType?.value || "private",
+    qqTargetId: els.qqTargetId?.value.trim() || "",
+    qqBotEnabled: Boolean(els.qqBotEnabled?.checked),
+    qqBotGroupMentionOnly: Boolean(els.qqBotGroupMentionOnly?.checked),
+    qqTaskPushEnabled: Boolean(els.qqTaskPushEnabled?.checked),
+    qqBotModel: els.qqBotModelSelect?.value || "",
+    qqBotTriggerPrefix: els.qqBotTriggerPrefix?.value.trim() || "",
+    qqBotAllowedUsers: els.qqBotAllowedUsers?.value || "",
+    qqBotAllowedGroups: els.qqBotAllowedGroups?.value || "",
+    qqBotPersona: els.qqBotPersona?.value || "",
+    qqBotPersonaPreset: els.qqBotPersonaPreset?.value || "none",
+  }));
+  renderQqPushMeta();
+  renderQqBotMeta();
+};
+
+const loadBeforeQqPersistence = load;
+load = function loadWithQqPersistence() {
+  loadBeforeQqPersistence();
+  const current = saved();
+  if (els.qqPushEnabled) els.qqPushEnabled.checked = Boolean(current.qqPushEnabled);
+  if (els.qqBridgeUrl) els.qqBridgeUrl.value = current.qqBridgeUrl || "";
+  if (els.qqAccessToken) els.qqAccessToken.value = current.qqAccessToken || "";
+  if (els.qqTargetType) els.qqTargetType.value = current.qqTargetType || "private";
+  if (els.qqTargetId) els.qqTargetId.value = current.qqTargetId || "";
+  if (els.qqBotEnabled) els.qqBotEnabled.checked = Boolean(current.qqBotEnabled);
+  if (els.qqBotGroupMentionOnly) els.qqBotGroupMentionOnly.checked = current.qqBotGroupMentionOnly !== false;
+  if (els.qqTaskPushEnabled) els.qqTaskPushEnabled.checked = Boolean(current.qqTaskPushEnabled);
+  if (els.qqBotModelSelect) els.qqBotModelSelect.value = current.qqBotModel || "";
+  if (els.qqBotTriggerPrefix) els.qqBotTriggerPrefix.value = current.qqBotTriggerPrefix || "";
+  if (els.qqBotAllowedUsers) els.qqBotAllowedUsers.value = current.qqBotAllowedUsers || "";
+  if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = current.qqBotAllowedGroups || "";
+  if (els.qqBotPersona) els.qqBotPersona.value = current.qqBotPersona || "";
+  if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = current.qqBotPersonaPreset || "none";
+  renderQqPushMeta();
+  renderQqBotMeta();
+  renderQqBotPersonaPresetDescription();
+};
+
 function collectStructuredContentText(content, parts = []) {
   if (content == null) return parts;
 
@@ -2007,6 +2521,263 @@ buildToolOnlyFallbackReply = function buildToolOnlyFallbackReplyWithFileResult(m
   }
 
   return "";
+};
+
+const explicitContextResetRuntime = {
+  allowResetChat: false,
+};
+
+els.clearChat?.addEventListener("click", () => {
+  explicitContextResetRuntime.allowResetChat = true;
+}, true);
+
+const resetChatBeforeExplicitOnlyGuard = resetChat;
+resetChat = function resetChatExplicitOnly() {
+  const hasRecoverableConversation =
+    state.messages.length > 0 ||
+    readChatHistoryRecords().length > 0 ||
+    Boolean(localStorage.getItem(CURRENT_CHAT_KEY));
+
+  const allowReset = explicitContextResetRuntime.allowResetChat || !hasRecoverableConversation;
+  explicitContextResetRuntime.allowResetChat = false;
+
+  if (!allowReset) {
+    refreshMetrics();
+    renderChatHistoryList();
+    updateChatHistoryMeta();
+    updateCurrentChatTitle();
+    setStatus("已阻止非显式触发的会话清空，当前上下文保持不变。");
+    return;
+  }
+
+  resetChatBeforeExplicitOnlyGuard();
+};
+
+function wireQqPushFeature() {
+  [els.qqPushEnabled, els.qqBridgeUrl, els.qqAccessToken, els.qqTargetType, els.qqTargetId, els.qqBotEnabled, els.qqBotGroupMentionOnly, els.qqTaskPushEnabled, els.qqBotModelSelect, els.qqBotTriggerPrefix, els.qqBotAllowedUsers, els.qqBotAllowedGroups, els.qqBotPersona].forEach((el) => {
+    el?.addEventListener("change", () => {
+      save();
+      renderQqPushMeta();
+      renderQqBotMeta();
+      syncQqBotConfig().catch(() => {});
+    });
+    el?.addEventListener("input", () => {
+      renderQqPushMeta();
+      renderQqBotMeta();
+    });
+  });
+
+  els.testQqPush?.addEventListener("click", async () => {
+    spark(els.testQqPush);
+    const config = getQqPushSettings();
+    if (!config.enabled || !config.bridgeUrl || !config.targetId) {
+      setStatus("请先完整填写 QQ 推送配置后再测试");
+      return;
+    }
+    try {
+      await j("/tools/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "send_qq_message",
+          arguments: {
+            ...config,
+            message: `本地 AI QQ 推送测试成功。时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+          },
+        }),
+      });
+      appendMessage("system", `QQ 测试推送已发送到${config.targetType === "group" ? "群" : "QQ"}：${config.targetId}`, "success");
+      setStatus("QQ 推送测试成功");
+    } catch (error) {
+      appendMessage("system", `QQ 推送测试失败：${error.message}`, "error");
+      setStatus("QQ 推送测试失败");
+    }
+  });
+
+  renderQqPushMeta();
+  renderQqBotMeta();
+  syncQqBotConfig().catch(() => {});
+}
+
+wireQqPushFeature();
+
+els.qqBotPersonaPreset?.addEventListener("change", () => {
+  const preset = presetById(els.qqBotPersonaPreset?.value || "none");
+  if (els.qqBotPersona) {
+    els.qqBotPersona.value = preset.prompt || "";
+  }
+  renderQqBotPersonaPresetDescription();
+  save();
+  syncQqBotConfig().catch(() => {});
+  setStatus(preset.prompt ? `已应用 QQ 机器人模板：${preset.name}` : "当前 QQ 预设不会覆盖现有专属人设");
+});
+
+els.importQqBotPersona?.addEventListener("click", () => {
+  spark(els.importQqBotPersona);
+  els.qqBotPersonaFileInput?.click();
+});
+
+els.qqBotPersonaFileInput?.addEventListener("change", async (event) => {
+  try {
+    const [file] = Array.from(event.target.files || []);
+    if (file && els.qqBotPersona) {
+      els.qqBotPersona.value = await file.text();
+      if (els.qqBotPersonaPreset) {
+        els.qqBotPersonaPreset.value = "none";
+      }
+      renderQqBotPersonaPresetDescription();
+      save();
+      await syncQqBotConfig();
+      setStatus(`已导入 QQ 机器人人设：${file.name || ""}`);
+    }
+  } catch (error) {
+    appendMessage("system", `导入 QQ 机器人人设失败：${error.message}`, "error");
+  } finally {
+    event.target.value = "";
+  }
+});
+
+els.exportQqBotPersona?.addEventListener("click", () => {
+  spark(els.exportQqBotPersona);
+  const blob = new Blob([els.qqBotPersona?.value || "# QQ 机器人人设\n\n"], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "qq-bot-persona.md";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
+  setStatus("已导出 QQ 机器人人设");
+});
+
+els.clearQqBotPersona?.addEventListener("click", async () => {
+  spark(els.clearQqBotPersona);
+  if (els.qqBotPersona) {
+    els.qqBotPersona.value = "";
+  }
+  if (els.qqBotPersonaPreset) {
+    els.qqBotPersonaPreset.value = "none";
+  }
+  renderQqBotPersonaPresetDescription();
+  save();
+  await syncQqBotConfig().catch(() => {});
+  setStatus("已清空 QQ 机器人人设");
+});
+
+async function syncQqBotConfig() {
+  const push = getQqPushSettings();
+  const bot = getQqBotSettings();
+  await j("/qq-bot/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: bot.enabled,
+      groupMentionOnly: bot.groupMentionOnly,
+      taskPushEnabled: bot.taskPushEnabled,
+      triggerPrefix: bot.triggerPrefix,
+      allowedUsers: bot.allowedUsers,
+      allowedGroups: bot.allowedGroups,
+      persona: bot.persona,
+      bridgeUrl: push.bridgeUrl,
+      accessToken: push.accessToken,
+      defaultTargetType: push.targetType,
+      defaultTargetId: push.targetId,
+      model: bot.model || selectedModel(),
+      systemPrompt: els.systemPrompt?.value.trim() || "",
+      assistantName: els.assistantName?.value.trim() || "繁星",
+    }),
+  });
+}
+
+const systemMessagesBeforeQqRule = systemMessages;
+systemMessages = function systemMessagesWithQqRule() {
+  const list = systemMessagesBeforeQqRule();
+  const config = getQqPushSettings();
+  if (config.enabled && config.bridgeUrl && config.targetId) {
+    list.push({
+      role: "system",
+      content: `当前已配置 QQ 推送通道。若用户明确要求发送到 QQ、推送到 QQ 或发 QQ 提醒，你可以调用 send_qq_message。默认目标类型：${config.targetType === "group" ? "group" : "private"}；默认目标 ID：${config.targetId}。`,
+    });
+  }
+  return list;
+};
+
+const executeToolBeforeQqInjection = executeTool;
+executeTool = async function executeToolWithQqConfigInjection(toolCall) {
+  const name = toolCall?.function?.name || "unknown";
+  if (!QQ_TOOL_NAMES.has(name)) {
+    return executeToolBeforeQqInjection(toolCall);
+  }
+
+  let args = {};
+  try {
+    args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    throw new Error("QQ 工具参数不是合法 JSON");
+  }
+
+  const config = getQqPushSettings();
+  if (!config.enabled || !config.bridgeUrl || !config.targetId) {
+    throw new Error("QQ 推送未配置完成，请先在基础连接配置里填写桥接地址和目标 ID。");
+  }
+
+  const mergedArgs = {
+    ...args,
+    bridgeUrl: config.bridgeUrl,
+    accessToken: config.accessToken,
+    targetType: args.targetType || config.targetType || "private",
+    targetId: args.targetId || config.targetId,
+  };
+
+  return executeToolBeforeQqInjection({
+    ...toolCall,
+    function: {
+      ...(toolCall?.function || {}),
+      arguments: JSON.stringify(mergedArgs),
+    },
+  });
+};
+
+const buildToolOnlyFallbackReplyBeforeQq = buildToolOnlyFallbackReply;
+buildToolOnlyFallbackReply = function buildToolOnlyFallbackReplyWithQq(messages = []) {
+  const original = buildToolOnlyFallbackReplyBeforeQq(messages);
+  if (typeof original === "string" && original.trim()) {
+    return original.trim();
+  }
+
+  const parsed = parseLastToolResult(messages);
+  if (parsed?.ok && parsed?.targetId && parsed?.message && parsed?.bridgeUrl) {
+    return `已经帮你把消息发送到 QQ 了。\n目标：${parsed.targetType === "group" ? "群" : "QQ"} ${parsed.targetId}`;
+  }
+
+  return "";
+};
+
+const refreshMetricsBeforeStableContextUsage = refreshMetrics;
+refreshMetrics = function refreshMetricsStableContextUsage(usage = null, elapsedMs = null) {
+  refreshMetricsBeforeStableContextUsage(usage, elapsedMs);
+
+  const limit = getConfiguredContextLimit();
+  const totalValue = Number(usage?.total_tokens ?? els.metricTotal?.dataset.value);
+  const estimatedCurrentContext = Math.ceil((
+    [
+      els.systemPrompt?.value || "",
+      els.personaPrompt?.value || "",
+      state.activeSkill ? JSON.stringify(state.activeSkill).slice(0, 3000) : "",
+      state.settingBundle ? JSON.stringify(state.settingBundle).slice(0, 6000) : "",
+      state.messages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n"),
+      state.files.map((f) => (f.isImage ? f.name || "image" : f.content || "")).join("\n"),
+      els.userInput?.value || "",
+    ].join("\n").length
+  ) / 4);
+
+  const stableUsage = Math.max(
+    Number.isFinite(totalValue) ? totalValue : 0,
+    Number.isFinite(estimatedCurrentContext) ? estimatedCurrentContext : 0
+  );
+  const usageText = `${stableUsage} / ${limit} 路 ${Math.min(stableUsage / limit * 100, 100).toFixed(1)}%`;
+  setMetricChip(els.metricContextUsage, "上下文使用情况", usageText);
+  if (els.usageBarFill) {
+    els.usageBarFill.style.width = `${Math.min(stableUsage / limit * 100, 100)}%`;
+  }
 };
 
 function buildChatTitle(messages = state.messages) {

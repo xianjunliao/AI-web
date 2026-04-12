@@ -482,6 +482,10 @@ label span,
   background: linear-gradient(90deg, rgba(161, 171, 255, 0.5), rgba(161, 171, 255, 0.04));
 }
 
+.config-group[data-config-group="qq-settings"]::before {
+  background: linear-gradient(90deg, rgba(122, 255, 187, 0.55), rgba(122, 255, 187, 0.04));
+}
+
 .config-group + .config-group {
   margin-top: 6px;
 }
@@ -547,6 +551,12 @@ label span,
   border-color: rgba(161, 171, 255, 0.18);
   background: rgba(161, 171, 255, 0.08);
   color: #e2e6ff;
+}
+
+.config-group[data-config-group="qq-settings"] .config-group-icon {
+  border-color: rgba(122, 255, 187, 0.18);
+  background: rgba(122, 255, 187, 0.09);
+  color: #dcffea;
 }
 
 .config-group-summary::-webkit-details-marker {
