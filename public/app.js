@@ -70,6 +70,23 @@ TOOLS.push(
   {
     type: "function",
     function: {
+      name: "run_workspace_skill",
+      description: "Run a workspace skill entry script in the local skills directory. Only use this for explicitly-enabled local automation skills that need script execution, such as lxj.",
+      parameters: {
+        type: "object",
+        properties: {
+          skillName: { type: "string" },
+          username: { type: "string" },
+          headless: { type: "boolean" },
+          notify: { type: "boolean" },
+        },
+        required: ["skillName"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "send_qq_message",
       description: "Send a QQ message through a configured local OneBot or NapCat compatible HTTP bridge when the user explicitly asks to send or push to QQ.",
       parameters: {
@@ -163,17 +180,19 @@ const READ_ONLY_TOOL_NAMES = new Set(["list_dir", "read_file", "get_weather"]);
 const WRITE_TOOL_NAMES = new Set(["write_file", "delete_file"]);
 const SKILL_DISCOVERY_TOOL_NAMES = new Set(["search_clawhub_skills"]);
 const SKILL_INSTALL_TOOL_NAMES = new Set(["install_clawhub_skill"]);
+const SKILL_EXECUTION_TOOL_NAMES = new Set(["run_workspace_skill"]);
 const SCHEDULER_TOOL_NAMES = new Set(["create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task"]);
 const QQ_TOOL_NAMES = new Set(["send_qq_message"]);
+const SUPPORTED_TOOL_NAMES = new Set(TOOLS.map((tool) => tool?.function?.name).filter(Boolean));
 let workspacePersonaPresets = [];
 
-const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, settingBundle: null, sending: false, previewMaximized: false, toolActivities: [] };
+const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, sending: false, previewMaximized: false, toolActivities: [] };
 const $ = (s) => document.querySelector(s);
 const els = {
   chatForm: $("#chat-form"), chatMessages: $("#chat-messages"), userInput: $("#user-input"), sendButton: $("#send-button"),
   statusBar: $("#status-bar"), baseUrl: $("#base-url"), apiPath: $("#api-path"), modelSelect: $("#model-select"),
   assistantName: $("#assistant-name"), userName: $("#user-name"), systemPrompt: $("#system-prompt"), contextLimit: $("#context-limit"),
-  qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
+  qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqTargetProfileSelect: $("#qq-target-profile-select"), qqTargetProfileMeta: $("#qq-target-profile-meta"), saveQqTargetProfile: $("#save-qq-target-profile"), deleteQqTargetProfile: $("#delete-qq-target-profile"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
   qqBotEnabled: $("#qq-bot-enabled"), qqBotGroupMentionOnly: $("#qq-bot-group-mention-only"), qqTaskPushEnabled: $("#qq-task-push-enabled"), qqBotTriggerPrefix: $("#qq-bot-trigger-prefix"), qqBotAllowedUsers: $("#qq-bot-allowed-users"), qqBotAllowedGroups: $("#qq-bot-allowed-groups"), qqBotPersona: $("#qq-bot-persona"), qqBotPersonaPreset: $("#qq-bot-persona-preset"), qqBotPersonaPresetDescription: $("#qq-bot-persona-preset-description"), qqBotPersonaFileInput: $("#qq-bot-persona-file-input"), importQqBotPersona: $("#import-qq-bot-persona"), exportQqBotPersona: $("#export-qq-bot-persona"), clearQqBotPersona: $("#clear-qq-bot-persona"), qqBotMeta: $("#qq-bot-meta"), qqBotModelSelect: $("#qq-bot-model-select"),
   assistantAvatarInput: $("#assistant-avatar-input"), userAvatarInput: $("#user-avatar-input"),
   uploadAssistantAvatar: $("#upload-assistant-avatar"), uploadUserAvatar: $("#upload-user-avatar"),
@@ -184,11 +203,12 @@ const els = {
   fileInput: $("#file-input"), fileList: $("#file-list"), composerFiles: $("#composer-files"), clearFiles: $("#clear-files"), attachFilesInline: $("#attach-files-inline"),
   clearChat: $("#clear-chat"), deleteChatSession: $("#delete-chat-session"), testConnection: $("#test-connection"), loadModels: $("#load-models"),
   personaPrompt: $("#persona-prompt"), personaPreset: $("#persona-preset"), personaPresetDescription: $("#persona-preset-description"),
-  applyPersonaPreset: $("#apply-persona-preset"), importPersona: $("#import-persona"), exportPersona: $("#export-persona"), clearPersona: $("#clear-persona"), personaFileInput: $("#persona-file-input"),
-  importSettingFolder: $("#import-setting-folder"), clearSettingFolder: $("#clear-setting-folder"), settingFolderInput: $("#setting-folder-input"), settingFolderSummary: $("#setting-folder-summary"), settingFolderPreview: $("#setting-folder-preview"),
-  loadSkills: $("#load-skills"), applySkill: $("#apply-skill"), disableSkill: $("#disable-skill"), skillsList: $("#skills-list"), skillPreview: $("#skill-preview"),
+  applyPersonaPreset: $("#apply-persona-preset"), importPersona: $("#import-persona"), exportPersona: $("#export-persona"), clearPersona: $("#clear-persona"), savePersonaPreset: $("#save-persona-preset"), deletePersonaPreset: $("#delete-persona-preset"), personaFileInput: $("#persona-file-input"),
+  loadSkills: $("#load-skills"), uploadSkillZip: $("#upload-skill-zip"), downloadSkillZip: $("#download-skill-zip"), skillZipInput: $("#skill-zip-input"), applySkill: $("#apply-skill"), clearSkillSelection: $("#clear-skill-selection"), disableSkill: $("#disable-skill"), skillsList: $("#skills-list"), skillPreview: $("#skill-preview"),
   toolActivityTrigger: $("#tool-activity-trigger"), toolActivitySummary: $("#tool-activity-summary"), toolActivityList: $("#tool-activity-list"), toolActivityStatus: $("#tool-activity-status"),
   toolActivityModal: $("#tool-activity-modal"), toolActivityBackdrop: $("#tool-activity-backdrop"), toolActivityClose: $("#tool-activity-close"),
+  settingsTrigger: $("#settings-trigger"), settingsModal: $("#settings-modal"), settingsBackdrop: $("#settings-backdrop"), settingsClose: $("#settings-close"),
+  inlinePromptModal: $("#inline-prompt-modal"), inlinePromptBackdrop: $("#inline-prompt-backdrop"), inlinePromptEyebrow: $("#inline-prompt-eyebrow"), inlinePromptTitle: $("#inline-prompt-title"), inlinePromptDescription: $("#inline-prompt-description"), inlinePromptInput: $("#inline-prompt-input"), inlinePromptCancel: $("#inline-prompt-cancel"), inlinePromptConfirm: $("#inline-prompt-confirm"),
   workspaceBody: $(".workspace-body"), previewPanel: $("#preview-panel"), previewResizer: $("#preview-resizer"), previewFrame: $("#preview-frame"), previewEmpty: $("#preview-empty"),
   togglePreviewSize: $("#toggle-preview-size"), closePreview: $("#close-preview"),
 };
@@ -199,9 +219,62 @@ const endpoint = (path, base = (els.baseUrl?.value.trim() || location.origin)) =
 const chatEndpoint = () => endpoint(els.apiPath?.value.trim() || "/api/v1/chat/completions");
 const modelsEndpoint = () => endpoint("/api/v1/models");
 const selectedModel = () => els.modelSelect?.value?.trim() || "";
+function getSavedModelContextLimits() {
+  const s = saved();
+  const mapping = s.modelContextLimits;
+  return mapping && typeof mapping === "object" ? { ...mapping } : {};
+}
+function getDefaultContextLimitValue() {
+  const s = saved();
+  const legacy = String(s.contextLimit || "").trim();
+  return legacy || "32768";
+}
+function getContextLimitForModel(modelName = selectedModel()) {
+  const normalized = String(modelName || "").trim();
+  const limits = getSavedModelContextLimits();
+  if (normalized && String(limits[normalized] || "").trim()) {
+    return String(limits[normalized]).trim();
+  }
+  return getDefaultContextLimitValue();
+}
+function applyContextLimitForModel(modelName = selectedModel()) {
+  if (!els.contextLimit) return;
+  els.contextLimit.value = getContextLimitForModel(modelName);
+}
+function persistContextLimitForSelectedModel() {
+  const modelName = selectedModel();
+  if (!modelName || !els.contextLimit) return;
+  const old = saved();
+  const nextLimits = {
+    ...(old.modelContextLimits && typeof old.modelContextLimits === "object" ? old.modelContextLimits : {}),
+    [modelName]: els.contextLimit.value.trim() || "32768",
+  };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...old,
+    modelContextLimits: nextLimits,
+  }));
+}
 const roleName = (r) => r === "user" ? (els.userName?.value.trim() || "文远") : r === "assistant" ? (els.assistantName?.value.trim() || "繁星") : "系统";
 const formatBytes = (n) => !n ? "0 B" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
-const setStatus = (t) => { if (els.statusBar) els.statusBar.textContent = t; };
+function statusTextFromContent(content = "") {
+  const text = String(content || "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text || "就绪";
+}
+
+const setStatus = (t, tone = "default") => {
+  if (!els.statusBar) return;
+  els.statusBar.textContent = statusTextFromContent(t);
+  if (tone && tone !== "default") {
+    els.statusBar.dataset.tone = tone;
+  } else {
+    delete els.statusBar.dataset.tone;
+  }
+};
 const spark = (b) => { if (!b) return; b.classList.remove("is-sparking"); void b.offsetWidth; b.classList.add("is-sparking"); setTimeout(() => b.classList.remove("is-sparking"), 400); };
 const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -352,6 +425,7 @@ function getQqBotSettings() {
     allowedUsers: els.qqBotAllowedUsers?.value || persisted.qqBotAllowedUsers || "",
     allowedGroups: els.qqBotAllowedGroups?.value || persisted.qqBotAllowedGroups || "",
     persona: els.qqBotPersona?.value || persisted.qqBotPersona || "",
+    personaPreset: els.qqBotPersonaPreset?.value || persisted.qqBotPersonaPreset || "none",
   };
 }
 
@@ -458,23 +532,25 @@ function canInstallSkillTools(userText = "") {
   return explicitKeywords.some((keyword) => normalized.includes(keyword)) || hasVerbAndSkill || (isAffirmativeConfirmation(userText) && lastAssistantAskedForSkillInstallConfirmation());
 }
 
-function getAllowedToolsForUserText(userText = "") {
-  const allowWrite = canUseWriteTools(userText);
-  const allowScheduler = hasExplicitSchedulerIntent(userText);
-  const allowQqPush = hasExplicitQqIntent(userText) && isQqPushConfigured();
-  const allowSkillDiscovery = hasSkillDiscoveryIntent(userText);
-  const allowSkillInstall = canInstallSkillTools(userText);
-  return TOOLS.filter((tool) => {
-    const name = tool.function.name;
-    if (READ_ONLY_TOOL_NAMES.has(name)) return true;
-    if (WRITE_TOOL_NAMES.has(name)) return allowWrite;
-    if (QQ_TOOL_NAMES.has(name)) return allowQqPush;
-    if (SKILL_DISCOVERY_TOOL_NAMES.has(name)) return allowSkillDiscovery;
-    if (SKILL_INSTALL_TOOL_NAMES.has(name)) return allowSkillInstall;
-    if (SCHEDULER_TOOL_NAMES.has(name)) return allowScheduler;
-    return false;
-  });
-}
+  function getAllowedToolsForUserText(userText = "") {
+    const allowWrite = canUseWriteTools(userText);
+    const allowScheduler = hasExplicitSchedulerIntent(userText);
+    const allowQqPush = hasExplicitQqIntent(userText) && isQqPushConfigured();
+    const allowSkillDiscovery = hasSkillDiscoveryIntent(userText);
+    const allowSkillInstall = canInstallSkillTools(userText);
+    const allowSkillExecution = getActiveSkills().length > 0;
+    return TOOLS.filter((tool) => {
+      const name = tool.function.name;
+      if (READ_ONLY_TOOL_NAMES.has(name)) return true;
+      if (WRITE_TOOL_NAMES.has(name)) return allowWrite;
+      if (QQ_TOOL_NAMES.has(name)) return allowQqPush;
+      if (SKILL_DISCOVERY_TOOL_NAMES.has(name)) return allowSkillDiscovery;
+      if (SKILL_INSTALL_TOOL_NAMES.has(name)) return allowSkillInstall;
+      if (SKILL_EXECUTION_TOOL_NAMES.has(name)) return allowSkillExecution;
+      if (SCHEDULER_TOOL_NAMES.has(name)) return allowScheduler;
+      return false;
+    });
+  }
 
 function saved() { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); } catch { return {}; } }
 function getResizableTextareaState() {
@@ -590,6 +666,12 @@ function renderSkillPreview(skill = state.selectedSkill) {
 function save() {
   const old = saved();
   const history = [selectedModel(), ...(old.modelHistory || [])].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, MODEL_HISTORY_LIMIT);
+  const contextLimits = {
+    ...(old.modelContextLimits && typeof old.modelContextLimits === "object" ? old.modelContextLimits : {}),
+  };
+  if (selectedModel() && els.contextLimit) {
+    contextLimits[selectedModel()] = els.contextLimit.value.trim() || "32768";
+  }
   const configGroupState = Object.fromEntries(
     Array.from(document.querySelectorAll(".config-group[data-config-group]")).map((group) => [
       group.dataset.configGroup,
@@ -600,22 +682,30 @@ function save() {
     ...old,
     baseUrl: els.baseUrl?.value.trim() || "", apiPath: els.apiPath?.value.trim() || "/api/v1/chat/completions", model: selectedModel(), modelHistory: history,
     assistantName: els.assistantName?.value.trim() || "繁星", userName: els.userName?.value.trim() || "文远", systemPrompt: els.systemPrompt?.value.trim() || "",
-    personaPrompt: els.personaPrompt?.value.trim() || "", personaPreset: els.personaPreset?.value || "none", contextLimit: els.contextLimit?.value.trim() || "32768",
+    personaPrompt: els.personaPrompt?.value.trim() || "", personaPreset: els.personaPreset?.value || "none", contextLimit: els.contextLimit?.value.trim() || "32768", modelContextLimits: contextLimits,
     qqPushEnabled: Boolean(els.qqPushEnabled?.checked),
     qqBridgeUrl: els.qqBridgeUrl?.value.trim() || "",
     qqAccessToken: els.qqAccessToken?.value.trim() || "",
     qqTargetType: els.qqTargetType?.value || "private",
     qqTargetId: els.qqTargetId?.value.trim() || "",
+    qqBotEnabled: Boolean(els.qqBotEnabled?.checked),
+    qqBotGroupMentionOnly: Boolean(els.qqBotGroupMentionOnly?.checked),
+    qqTaskPushEnabled: Boolean(els.qqTaskPushEnabled?.checked),
+    qqBotModel: els.qqBotModelSelect?.value || "",
+    qqBotTriggerPrefix: els.qqBotTriggerPrefix?.value.trim() || "",
+    qqBotAllowedUsers: els.qqBotAllowedUsers?.value || "",
+    qqBotAllowedGroups: els.qqBotAllowedGroups?.value || "",
+    qqBotPersona: els.qqBotPersona?.value || "",
+    qqBotPersonaPreset: els.qqBotPersonaPreset?.value || "none",
     assistantAvatar: old.assistantAvatar || "",
     userAvatar: old.userAvatar || "",
     configGroupState,
     skillsCache: state.skills.map((skill) => cloneSkillForStorage(skill)).filter(Boolean),
     selectedSkill: cloneSkillForStorage(state.selectedSkill),
     activeSkill: cloneSkillForStorage(state.activeSkill),
-    settingBundle: cloneSettingBundleForStorage(state.settingBundle),
     ...getResizableTextareaState(),
   }));
-  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderSettingBundlePreview(); renderQqPushMeta();
+  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderQqPushMeta();
 }
 function load() {
   const s = saved();
@@ -625,24 +715,32 @@ function load() {
   if (els.userName) els.userName.value = s.userName || "文远";
   if (els.systemPrompt) els.systemPrompt.value = s.systemPrompt || "";
   if (els.personaPrompt) els.personaPrompt.value = s.personaPrompt || "";
-  if (els.contextLimit) els.contextLimit.value = s.contextLimit || "32768";
+  if (els.contextLimit) els.contextLimit.value = getContextLimitForModel(s.model || "");
   if (els.qqPushEnabled) els.qqPushEnabled.checked = Boolean(s.qqPushEnabled);
   if (els.qqBridgeUrl) els.qqBridgeUrl.value = s.qqBridgeUrl || "";
   if (els.qqAccessToken) els.qqAccessToken.value = s.qqAccessToken || "";
   if (els.qqTargetType) els.qqTargetType.value = s.qqTargetType || "private";
   if (els.qqTargetId) els.qqTargetId.value = s.qqTargetId || "";
+  if (els.qqBotEnabled) els.qqBotEnabled.checked = Boolean(s.qqBotEnabled);
+  if (els.qqBotGroupMentionOnly) els.qqBotGroupMentionOnly.checked = s.qqBotGroupMentionOnly !== false;
+  if (els.qqTaskPushEnabled) els.qqTaskPushEnabled.checked = Boolean(s.qqTaskPushEnabled);
+  if (els.qqBotModelSelect) els.qqBotModelSelect.value = s.qqBotModel || "";
+  if (els.qqBotTriggerPrefix) els.qqBotTriggerPrefix.value = s.qqBotTriggerPrefix || "";
+  if (els.qqBotAllowedUsers) els.qqBotAllowedUsers.value = s.qqBotAllowedUsers || "";
+  if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = s.qqBotAllowedGroups || "";
+  if (els.qqBotPersona) els.qqBotPersona.value = s.qqBotPersona || "";
+  if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = s.qqBotPersonaPreset || "none";
   if (els.personaPreset) els.personaPreset.value = s.personaPreset || "none";
   if (els.modelSelect && s.model) { const o = document.createElement("option"); o.value = s.model; o.textContent = s.model; els.modelSelect.replaceChildren(o); els.modelSelect.value = s.model; }
+  applyContextLimitForModel(s.model || "");
   state.skills = Array.isArray(s.skillsCache) ? s.skillsCache.filter(Boolean) : [];
   state.selectedSkill = cloneSkillForStorage(s.selectedSkill);
   state.activeSkill = cloneSkillForStorage(s.activeSkill);
-  state.settingBundle = cloneSettingBundleForStorage(s.settingBundle);
   if (!state.selectedSkill && state.activeSkill) state.selectedSkill = cloneSkillForStorage(state.activeSkill);
   applyConfigGroupState(s.configGroupState || {});
   applyResizableTextareaState(s);
   renderSkills();
   renderSkillPreview();
-  renderSettingBundlePreview();
   renderAllAvatarPreviews();
   renderQqPushMeta();
 }
@@ -727,6 +825,15 @@ function messageAvatarMarkup(role) {
   return avatar;
 }
 function appendMessage(role, content, cls = role, images = [], timestamp = Date.now()) {
+  if (role === "system") {
+    setStatus(content, cls === "error" ? "error" : cls === "success" ? "success" : "default");
+    return null;
+  }
+  if (role === "system" && cls === "error" && isDesktopAutomationRestrictionMessage(content)) {
+    content = String(content || "")
+      .split(/\n\s*\n/)
+      .find((part) => isDesktopAutomationRestrictionMessage(part)) || String(content || "");
+  }
   const card = document.createElement("article"); card.className = `message ${cls}`;
   const avatar = messageAvatarMarkup(role);
   const bubble = document.createElement("div"); bubble.className = "message-bubble";
@@ -809,7 +916,25 @@ function setToolActivityModal(open) {
   els.toolActivityModal.classList.toggle("is-hidden", !open);
   els.toolActivityModal.setAttribute("aria-hidden", open ? "false" : "true");
   els.toolActivityTrigger?.setAttribute("aria-expanded", open ? "true" : "false");
-  document.body.classList.toggle("activity-modal-open", open);
+  syncOverlayModalState();
+}
+
+function isDesktopAutomationRestrictionMessage(message = "") {
+  const text = String(message || "");
+  return /受限运行身份|本机正常桌面用户会话|codexsandbox|scripts\/skill-runner\.ps1/i.test(text);
+}
+
+function setSettingsModal(open) {
+  if (!els.settingsModal) return;
+  els.settingsModal.classList.toggle("is-hidden", !open);
+  els.settingsModal.setAttribute("aria-hidden", open ? "false" : "true");
+  els.settingsTrigger?.setAttribute("aria-expanded", open ? "true" : "false");
+  syncOverlayModalState();
+}
+
+function syncOverlayModalState() {
+  const anyOpen = !els.toolActivityModal?.classList.contains("is-hidden") || !els.settingsModal?.classList.contains("is-hidden");
+  document.body.classList.toggle("activity-modal-open", Boolean(anyOpen));
 }
 
 function setPreview(show) { els.workspaceBody?.classList.toggle("preview-active", show); els.previewPanel?.classList.toggle("is-hidden", !show); els.previewResizer?.classList.toggle("is-hidden", !show); }
@@ -856,7 +981,19 @@ function renderPersonaPresets() {
 }
 function allPersonaPresets() { return [...PERSONA_PRESETS, ...workspacePersonaPresets]; }
 function presetById(id) { return allPersonaPresets().find((p) => p.id === id) || PERSONA_PRESETS[0]; }
-function renderPersonaPresetDescription() { if (els.personaPresetDescription) els.personaPresetDescription.textContent = presetById(els.personaPreset?.value || "none").description; }
+function selectedWorkspacePersonaPreset() {
+  const presetId = els.personaPreset?.value || "none";
+  const preset = allPersonaPresets().find((item) => item.id === presetId);
+  return preset?.source === "workspace" ? preset : null;
+}
+function syncPersonaPresetActions() {
+  if (!els.deletePersonaPreset) return;
+  els.deletePersonaPreset.disabled = !selectedWorkspacePersonaPreset();
+}
+function renderPersonaPresetDescription() {
+  if (els.personaPresetDescription) els.personaPresetDescription.textContent = presetById(els.personaPreset?.value || "none").description;
+  syncPersonaPresetActions();
+}
 async function loadWorkspacePersonaPresets() {
   try {
     const data = await j("/personas/list");
@@ -874,6 +1011,82 @@ async function loadWorkspacePersonaPresets() {
 
 async function readText(file) { return await file.text(); }
 async function readImage(file) { return await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "")); r.onerror = () => reject(new Error(`读取图片失败：${file.name}`)); r.readAsDataURL(file); }); }
+function arrayBufferToBase64(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  const chunkSize = 32768;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+function pathExt(name = "") {
+  const normalized = String(name || "").trim().toLowerCase();
+  const index = normalized.lastIndexOf(".");
+  return index >= 0 ? normalized.slice(index) : "";
+}
+function isZipFileName(name = "") {
+  return pathExt(name) === ".zip";
+}
+function isZipUrlCandidate(value = "") {
+  try {
+    const target = new URL(String(value || "").trim());
+    const fileName = decodeURIComponent(target.pathname.split("/").pop() || "");
+    const extension = fileName.includes(".") ? pathExt(fileName) : "";
+    return !extension || extension === ".zip";
+  } catch {
+    return false;
+  }
+}
+async function uploadSkillZipFile(file) {
+  if (!file) return;
+  if (!isZipFileName(file.name)) {
+    setStatus("技能上传仅支持 ZIP 格式");
+    return;
+  }
+  const suggestedName = String(file.name || "").replace(/\.zip$/i, "").trim();
+  const targetNameInput = window.prompt("请输入安装后的技能名称（可留空自动识别）：", suggestedName);
+  if (targetNameInput == null) return;
+  const targetName = String(targetNameInput || "").trim();
+  const contentBase64 = arrayBufferToBase64(await file.arrayBuffer());
+  const data = await j("/skills/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileName: file.name, contentBase64, targetName }),
+  });
+  await loadSkills();
+  setStatus(`已上传技能：${data.result.name}`);
+}
+async function downloadSkillZipFromLink() {
+  const input = window.prompt("请输入技能 ZIP 下载链接：", "");
+  if (input == null) return;
+  const url = String(input || "").trim();
+  if (!url) {
+    setStatus("请输入技能下载链接");
+    return;
+  }
+  if (!isZipUrlCandidate(url)) {
+    setStatus("技能下载仅支持 ZIP 格式链接");
+    return;
+  }
+  let suggestedName = "";
+  try {
+    const parsed = new URL(url);
+    const lastSegment = decodeURIComponent(parsed.pathname.split("/").pop() || "");
+    suggestedName = isZipFileName(lastSegment) ? lastSegment.replace(/\.zip$/i, "") : "";
+  } catch {}
+  const targetNameInput = window.prompt("请输入安装后的技能名称（可留空自动识别）：", suggestedName);
+  if (targetNameInput == null) return;
+  const targetName = String(targetNameInput || "").trim();
+  const data = await j("/skills/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, targetName }),
+  });
+  await loadSkills();
+  setStatus(`已下载技能：${data.result.name}`);
+}
 async function consumeFiles(files) {
   for (const file of Array.from(files || [])) {
     const isImage = file.type.startsWith("image/");
@@ -935,6 +1148,23 @@ function userPayload(text) {
 async function executeTool(toolCall) {
   const id = toolCall?.id || nowId(); const name = toolCall?.function?.name || "unknown"; let args = {};
   try { args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {}; } catch { throw new Error("工具参数不是合法 JSON"); }
+  if (!SUPPORTED_TOOL_NAMES.has(name)) {
+    const activeSkillName = String(state.activeSkill?.name || "").trim().toLowerCase();
+    const normalizedName = String(name || "").trim().toLowerCase();
+    const reason = activeSkillName && normalizedName === activeSkillName
+      ? `技能「${state.activeSkill.name}」是执行说明，不是工具名。请改用受支持的工具完成任务，或直接输出结果。`
+      : `工具「${name}」当前不存在。只能调用系统已提供的真实工具。`;
+    toolActivity(id, "done", name, "未支持的工具调用已拦截");
+    return {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        ignored: true,
+        reason: "unsupported-tool-name",
+        message: reason,
+      }),
+    };
+  }
   if (name === "delete_file" && args.path && !window.confirm(`AI 请求删除文件：${args.path}\n\n是否允许继续？`)) return { role: "tool", tool_call_id: id, content: JSON.stringify({ cancelled: true }) };
   toolActivity(id, "running", name, "正在执行...");
   const data = await j("/tools/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, arguments: args }) });
@@ -971,6 +1201,7 @@ function renderModels(models) {
   const current = selectedModel(); const history = saved().modelHistory || []; const names = [...history, ...models].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
   els.modelSelect.replaceChildren(...(names.length ? names : [""]).map((name) => { const o = document.createElement("option"); o.value = name; o.textContent = name || "未读取到模型"; return o; }));
   els.modelSelect.value = names.includes(current) ? current : (names[0] || "");
+  applyContextLimitForModel(selectedModel());
 }
 async function loadModels() {
   spark(els.loadModels); setStatus("正在读取模型列表...");
@@ -1010,7 +1241,7 @@ async function installSkill(skill) {
 }
 function applySelectedSkill() { if (!state.selectedSkill) return setStatus("请先读取一个技能"); state.activeSkill = state.selectedSkill; appendMessage("system", `已启用技能：${state.selectedSkill.name}\n后续对话会自动附带该技能内容。`, "success"); refreshMetrics(); setStatus(`已启用技能：${state.selectedSkill.name}`); }
 
-function resetChat() { state.messages = []; els.chatMessages.replaceChildren(); appendMessage("assistant", "你好，我已经准备好连接本地 AI。你可以先测试连接、读取模型、上传文件，或者启用某个技能后再开始提问。"); refreshMetrics(); setStatus("会话已清空"); }
+function resetChat() { state.messages = []; els.chatMessages.replaceChildren(); refreshMetrics(); setStatus("已清空"); }
 
 const lightboxState = { images: [], index: 0 };
 function drawLightbox() { const img = $("#lightbox-image"), cap = $("#lightbox-caption"), box = $("#image-lightbox"), cur = lightboxState.images[lightboxState.index]; if (!img || !cap || !box || !cur) return; img.src = cur.dataUrl; cap.textContent = cur.name || "图片预览"; box.classList.remove("is-hidden"); }
@@ -1032,6 +1263,9 @@ function bind() {
   els.chatForm?.addEventListener("submit", submit);
   els.userInput?.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); els.chatForm?.requestSubmit(); } });
   els.userInput?.addEventListener("input", () => refreshMetrics());
+  els.settingsTrigger?.addEventListener("click", () => setSettingsModal(true));
+  els.settingsClose?.addEventListener("click", () => setSettingsModal(false));
+  els.settingsBackdrop?.addEventListener("click", () => setSettingsModal(false));
   els.toolActivityTrigger?.addEventListener("click", () => setToolActivityModal(true));
   els.toolActivityClose?.addEventListener("click", () => setToolActivityModal(false));
   els.toolActivityBackdrop?.addEventListener("click", () => setToolActivityModal(false));
@@ -1039,11 +1273,28 @@ function bind() {
     group.addEventListener("toggle", () => save());
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !els.toolActivityModal?.classList.contains("is-hidden")) {
+    if (e.key === "Escape" && !els.settingsModal?.classList.contains("is-hidden")) {
+      setSettingsModal(false);
+    } else if (e.key === "Escape" && !els.toolActivityModal?.classList.contains("is-hidden")) {
       setToolActivityModal(false);
     }
   });
-  [els.baseUrl, els.apiPath, els.modelSelect, els.assistantName, els.userName, els.systemPrompt, els.contextLimit].forEach((el) => el?.addEventListener("change", () => { save(); setStatus(`已保存配置，当前接口：${chatEndpoint()}`); }));
+  [els.baseUrl, els.apiPath, els.assistantName, els.userName, els.systemPrompt].forEach((el) => el?.addEventListener("change", () => { save(); setStatus(`已保存配置，当前接口：${chatEndpoint()}`); }));
+  els.contextLimit?.addEventListener("change", () => {
+    persistContextLimitForSelectedModel();
+    save();
+    refreshMetrics();
+    setStatus(`已保存模型上下文上限：${selectedModel() || "未选择模型"}`);
+  });
+  els.modelSelect?.addEventListener("focus", () => {
+    persistContextLimitForSelectedModel();
+  });
+  els.modelSelect?.addEventListener("change", () => {
+    applyContextLimitForModel(selectedModel());
+    save();
+    refreshMetrics();
+    setStatus(`已切换模型：${selectedModel() || "未选择模型"}`);
+  });
   [els.assistantName, els.userName].forEach((el) => el?.addEventListener("input", () => renderAllAvatarPreviews()));
   els.personaPrompt?.addEventListener("input", () => { save(); refreshMetrics(); });
   [els.systemPrompt, els.personaPrompt].forEach((el) => {
@@ -1105,7 +1356,31 @@ function bind() {
   els.clearFiles?.addEventListener("click", () => { spark(els.clearFiles); clearFiles(); });
   els.clearChat?.addEventListener("click", () => { spark(els.clearChat); resetChat(); });
   els.testConnection?.addEventListener("click", testConnection); els.loadModels?.addEventListener("click", loadModels);
-  els.loadSkills?.addEventListener("click", () => { spark(els.loadSkills); loadSkills(); }); els.applySkill?.addEventListener("click", () => { spark(els.applySkill); applySelectedSkill(); });
+  els.loadSkills?.addEventListener("click", () => { spark(els.loadSkills); loadSkills(); });
+  els.uploadSkillZip?.addEventListener("click", () => { spark(els.uploadSkillZip); els.skillZipInput?.click(); });
+  els.skillZipInput?.addEventListener("change", async (event) => {
+    try {
+      const [file] = Array.from(event.target.files || []);
+      if (file) {
+        await uploadSkillZipFile(file);
+      }
+    } catch (error) {
+      appendMessage("system", `上传技能失败：${error.message}`, "error");
+      setStatus("上传技能失败");
+    } finally {
+      event.target.value = "";
+    }
+  });
+  els.downloadSkillZip?.addEventListener("click", async () => {
+    spark(els.downloadSkillZip);
+    try {
+      await downloadSkillZipFromLink();
+    } catch (error) {
+      appendMessage("system", `下载技能失败：${error.message}`, "error");
+      setStatus("下载技能失败");
+    }
+  });
+  els.applySkill?.addEventListener("click", () => { spark(els.applySkill); applySelectedSkill(); });
   els.closePreview?.addEventListener("click", () => { spark(els.closePreview); closePreview(); }); els.togglePreviewSize?.addEventListener("click", () => { spark(els.togglePreviewSize); setPreviewMax(!state.previewMaximized); });
   document.addEventListener("paste", async (e) => { if (e.clipboardData?.files?.length) await consumeFiles(e.clipboardData.files); });
   ["dragenter", "dragover"].forEach((t) => document.addEventListener(t, (e) => e.preventDefault()));
@@ -1115,7 +1390,7 @@ function bind() {
 }
 
 async function init() {
-  renderPersonaPresets(); load(); renderPersonaPresetDescription(); renderModelMeta(); loadToolActivity(); initPreviewResizer(); closePreview(); setToolActivityModal(false); bind(); renderFiles(); resetChat(); refreshMetrics(); setStatus(`准备就绪，当前接口：${chatEndpoint()}`);
+  renderPersonaPresets(); load(); renderPersonaPresetDescription(); renderModelMeta(); loadToolActivity(); initPreviewResizer(); closePreview(); setToolActivityModal(false); setSettingsModal(false); bind(); renderFiles(); resetChat(); refreshMetrics(); setStatus("就绪");
   try { const data = await j(modelsEndpoint()); const models = (data.data || []).map((x) => x.id).filter(Boolean); if (models.length) { renderModels(models); save(); setStatus("连接正常，模型已加载"); } } catch {}
 }
 
@@ -1208,10 +1483,78 @@ const conversationTurnDeleteRuntime = {
   countdownTimer: null,
 };
 
+function collectHistoryMessageText(content, parts = []) {
+  if (content == null) return parts;
+  if (typeof content === "string" || typeof content === "number" || typeof content === "boolean") {
+    parts.push(String(content));
+    return parts;
+  }
+  if (Array.isArray(content)) {
+    content.forEach((item) => collectHistoryMessageText(item, parts));
+    return parts;
+  }
+  if (typeof content === "object") {
+    if (typeof content.text === "string") {
+      parts.push(content.text);
+    }
+    if (typeof content.content === "string") {
+      parts.push(content.content);
+    } else if (content.content != null) {
+      collectHistoryMessageText(content.content, parts);
+    }
+    if (typeof content.output_text === "string") {
+      parts.push(content.output_text);
+    }
+    if (typeof content.input_text === "string") {
+      parts.push(content.input_text);
+    }
+    if (content.type === "text" && typeof content.value === "string") {
+      parts.push(content.value);
+    }
+  }
+  return parts;
+}
+
+function sanitizeHistoryMessage(message) {
+  if (!message || typeof message !== "object") return null;
+  const normalizedRole = typeof message.role === "string" ? message.role : "assistant";
+  const rawContent = Object.prototype.hasOwnProperty.call(message, "content") ? message.content : "";
+  const normalizedContent = typeof rawContent === "string"
+    ? rawContent
+    : collectHistoryMessageText(rawContent, []).join("\n").replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  return {
+    ...message,
+    role: normalizedRole,
+    content: normalizedContent || "",
+    timestamp: Number(message.timestamp || 0) || Date.now(),
+  };
+}
+
+function sanitizeChatHistoryRecord(record) {
+  if (!record || typeof record !== "object") return null;
+  const messages = Array.isArray(record.messages)
+    ? record.messages.map((message) => sanitizeHistoryMessage(message)).filter(Boolean)
+    : [];
+  return {
+    ...record,
+    id: String(record.id || nowId()),
+    title: typeof record.title === "string" ? record.title : "未命名会话",
+    createdAt: Number(record.createdAt || 0) || Date.now(),
+    updatedAt: Number(record.updatedAt || 0) || Date.now(),
+    messages,
+  };
+}
+
 function readChatHistoryRecords() {
   try {
     const records = JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) || "[]");
-    return Array.isArray(records) ? records : [];
+    if (!Array.isArray(records)) return [];
+    const sanitized = records.map((record) => sanitizeChatHistoryRecord(record)).filter(Boolean);
+    if (JSON.stringify(records) !== JSON.stringify(sanitized)) {
+      localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(sanitized));
+    }
+    return sanitized;
   } catch {
     return [];
   }
@@ -1679,7 +2022,7 @@ function renderConversationFromMessages(messages) {
   els.chatMessages?.replaceChildren();
 
   if (!state.messages.length) {
-    appendMessage("assistant", "你好，我已经准备好连接本地 AI。你可以先测试连接、读取模型、上传文件，或者启用某个技能后再开始提问。");
+    els.chatMessages?.replaceChildren();
   } else {
     state.messages.forEach((message) => {
       appendMessage(
@@ -2762,7 +3105,6 @@ refreshMetrics = function refreshMetricsStableContextUsage(usage = null, elapsed
       els.systemPrompt?.value || "",
       els.personaPrompt?.value || "",
       state.activeSkill ? JSON.stringify(state.activeSkill).slice(0, 3000) : "",
-      state.settingBundle ? JSON.stringify(state.settingBundle).slice(0, 6000) : "",
       state.messages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n"),
       state.files.map((f) => (f.isImage ? f.name || "image" : f.content || "")).join("\n"),
       els.userInput?.value || "",
@@ -3258,8 +3600,27 @@ load = function loadWithSettingBundle() {
   renderSettingBundlePreview();
 };
 
-state.settingBundle = cloneSettingBundleForStorage(saved().settingBundle);
-renderSettingBundlePreview();
+state.settingBundle = null;
+
+const saveBeforeSettingBundleRemoval = save;
+save = function saveWithoutSettingBundle() {
+  saveBeforeSettingBundleRemoval();
+  const current = saved();
+  if (current && Object.prototype.hasOwnProperty.call(current, "settingBundle")) {
+    const { settingBundle, ...rest } = current;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(rest));
+  }
+};
+
+const loadBeforeSettingBundleRemoval = load;
+load = function loadWithoutSettingBundle() {
+  loadBeforeSettingBundleRemoval();
+  state.settingBundle = null;
+};
+
+systemMessages = function systemMessagesWithoutSettingBundle() {
+  return systemMessagesBeforeSettingBundle();
+};
 
 renderPersonaPresets = function renderPersonaPresetsPersistSelection() {
   if (!els.personaPreset) return;
@@ -3498,7 +3859,13 @@ systemMessages = function systemMessagesSkillMdOnly() {
   if (state.activeSkill?.content) {
     list.push({
       role: "system",
-      content: `你当前启用了技能：${state.activeSkill.name}\n技能来源：${state.activeSkill.source}\n接下来只按该技能的 SKILL.md 要求执行，不要额外带入技能目录中的其他文件内容。\n\nSKILL.md:\n${state.activeSkill.content}`,
+      content: `你当前启用了技能：${state.activeSkill.name}
+技能来源：${state.activeSkill.source}
+技能只是执行说明，不是可调用工具名。不要把“${state.activeSkill.name}”当作 tool name 发起调用。
+你只能调用当前系统已提供的真实工具；如果技能要求的是流程执行，请依据 SKILL.md 理解步骤，然后使用受支持的工具完成，或直接输出执行结果。
+
+SKILL.md:
+${state.activeSkill.content}`,
     });
   }
   return list;
@@ -5649,12 +6016,15 @@ function renderConversationFromMessagesStable(messages) {
   els.chatMessages?.replaceChildren();
 
   if (!state.messages.length) {
-    appendMessage("assistant", "你好，我已经准备好连接本地 AI。你可以先测试连接、读取模型、上传文件，或者启用某个技能后再开始提问。");
+    els.chatMessages?.replaceChildren();
   } else {
     state.messages.forEach((message) => {
+      const restoredContent = typeof message.content === "string"
+        ? message.content
+        : normalizeContent(message.content) || JSON.stringify(message.content ?? "");
       appendMessage(
         message.role,
-        typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+        restoredContent,
         message.role,
         [],
         message.timestamp || Date.now()
@@ -5816,4 +6186,997 @@ renderChatHistoryList = function renderChatHistoryListGroupedWithUndo() {
   updateCurrentChatTitle();
 };
 
+async function savePersonaPresetToWorkspace() {
+  const prompt = String(els.personaPrompt?.value || "").trim();
+  if (!prompt) {
+    setStatus("请先填写人设内容");
+    return;
+  }
+
+  const suggestedName = String(els.personaPreset?.selectedOptions?.[0]?.textContent || "")
+    .trim()
+    .replace(/^不使用预设$/, "") || "新建人设";
+  const inputName = window.prompt("请输入模板名称：", suggestedName);
+  if (inputName == null) return;
+
+  const name = inputName.trim();
+  if (!name) {
+    setStatus("模板名称不能为空");
+    return;
+  }
+
+  await j("/personas/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, prompt }),
+  });
+
+  await loadWorkspacePersonaPresets();
+  const workspaceId = `workspace:${name.replace(/\\/g, "/")}.md`;
+  const fallbackPreset = allPersonaPresets().find((preset) => preset.name === name && preset.source === "workspace");
+  if (els.personaPreset) {
+    els.personaPreset.value = fallbackPreset?.id || workspaceId || els.personaPreset.value;
+  }
+  rememberedPersonaPresetId = els.personaPreset?.value || rememberedPersonaPresetId;
+  renderPersonaPresetDescription();
+  save();
+  setStatus(`已保存人设模板：${name}`);
+}
+
+async function deleteSelectedPersonaPresetFromWorkspace() {
+  const preset = selectedWorkspacePersonaPreset();
+  if (!preset) {
+    setStatus("当前选择的不是本地人设模板");
+    return;
+  }
+
+  const confirmed = window.confirm(`确认删除本地人设模板“${preset.name}”吗？`);
+  if (!confirmed) return;
+
+  await j("/personas/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: preset.id, path: preset.path }),
+  });
+
+  rememberedPersonaPresetId = "none";
+  await loadWorkspacePersonaPresets();
+  if (els.personaPreset) {
+    els.personaPreset.value = "none";
+  }
+  renderPersonaPresetDescription();
+  save();
+  setStatus(`已删除人设模板：${preset.name}`);
+}
+
+function normalizeActiveSkills(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  const normalized = [];
+  list.forEach((skill) => {
+    const cloned = cloneSkillForStorage(skill);
+    if (!cloned || !cloned.name) return;
+    if (normalized.some((item) => sameSkill(item, cloned))) return;
+    normalized.push(cloned);
+  });
+  return normalized;
+}
+
+function getActiveSkills() {
+  return normalizeActiveSkills(state.activeSkills || (state.activeSkill ? [state.activeSkill] : []));
+}
+
+function isSkillActive(skill) {
+  return getActiveSkills().some((item) => sameSkill(item, skill));
+}
+
+function syncActiveSkillAlias() {
+  state.activeSkills = normalizeActiveSkills(state.activeSkills || (state.activeSkill ? [state.activeSkill] : []));
+  state.activeSkill = state.activeSkills[0] || null;
+}
+
+function buildActiveSkillsSummaryLines() {
+  const activeSkills = getActiveSkills();
+  if (!activeSkills.length) {
+    return ["当前未启用技能。"];
+  }
+  const names = activeSkills.map((skill) => skill.name);
+  const summary = names.length <= 3 ? names.join("、") : `${names.slice(0, 3).join("、")} 等 ${names.length} 个技能`;
+  return [
+    `已启用技能：${summary}`,
+    ...activeSkills.map((skill, index) => `${index + 1}. ${skill.name} · ${skill.source}`),
+  ];
+}
+
+state.activeSkills = normalizeActiveSkills(saved().activeSkills || (state.activeSkill ? [state.activeSkill] : []));
+syncActiveSkillAlias();
+
+const saveBeforeMultiSkillState = save;
+save = function saveWithMultiSkillState() {
+  saveBeforeMultiSkillState();
+  syncActiveSkillAlias();
+  const current = saved();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    activeSkills: state.activeSkills,
+    activeSkill: state.activeSkill,
+  }));
+};
+
+const loadBeforeMultiSkillState = load;
+load = function loadWithMultiSkillState() {
+  loadBeforeMultiSkillState();
+  const current = saved();
+  state.activeSkills = normalizeActiveSkills(current.activeSkills || (current.activeSkill ? [current.activeSkill] : []));
+  syncActiveSkillAlias();
+};
+
+renderSkillPreview = function renderSkillPreviewWithMultiSkill(skill = state.selectedSkill) {
+  if (!els.skillPreview) return;
+  const normalized = reduceSkillToSkillMdOnly(skill);
+  const summaryLines = buildActiveSkillsSummaryLines();
+  if (!normalized?.content) {
+    els.skillPreview.textContent = [...summaryLines, "", "选择一个技能后，这里会显示该技能的 SKILL.md 摘要。"].join("\n");
+    return;
+  }
+  els.skillPreview.textContent = [...summaryLines, "", `当前查看：${normalized.name}`, `来源：${normalized.source}`, "", "# SKILL.md", "", normalized.content].join("\n");
+};
+
+renderSkills = function renderSkillsWithMultiSkill() {
+  if (!els.skillsList) return;
+  syncActiveSkillAlias();
+  const activeSkills = getActiveSkills();
+  if (!state.skills.length) {
+    els.skillsList.innerHTML = '<div class="file-empty">当前还没有读取到技能列表。</div>';
+    if (els.disableSkill) els.disableSkill.disabled = !activeSkills.length;
+    return;
+  }
+  els.skillsList.replaceChildren(...state.skills.map((skill) => {
+    const item = document.createElement("div");
+    item.className = `skill-item${sameSkill(skill, state.selectedSkill) ? " is-selected" : ""}${isSkillActive(skill) ? " is-active" : ""}`;
+    const head = document.createElement("div");
+    head.className = "skill-item-head";
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = skill.name;
+    const meta = document.createElement("div");
+    meta.className = "skill-summary";
+    meta.textContent = [skill.source, skill.summary].filter(Boolean).join(" · ");
+    titleWrap.append(title, meta);
+    const status = document.createElement("div");
+    status.className = "button-row left wrap-row";
+    if (sameSkill(skill, state.selectedSkill)) {
+      const readBadge = document.createElement("span");
+      readBadge.className = "mini-status-tag";
+      readBadge.textContent = "已读取";
+      status.append(readBadge);
+    }
+    if (isSkillActive(skill)) {
+      const activeBadge = document.createElement("span");
+      activeBadge.className = "mini-status-tag active";
+      activeBadge.textContent = `已启用 ${activeSkills.findIndex((item) => sameSkill(item, skill)) + 1}`;
+      status.append(activeBadge);
+    }
+    head.append(titleWrap, status);
+    const actions = document.createElement("div");
+    actions.className = "button-row left wrap-row";
+    const readButton = document.createElement("button");
+    readButton.type = "button";
+    readButton.className = "ghost-button mini-action-button";
+    readButton.textContent = skill.source === "workspace" ? "读取" : "安装到当前目录";
+    readButton.onclick = async () => {
+      spark(readButton);
+      if (skill.source === "workspace") {
+        await readSkill(skill);
+      } else {
+        await installSkill(skill);
+      }
+    };
+    actions.append(readButton);
+    if (skill.source === "workspace") {
+      const enableButton = document.createElement("button");
+      enableButton.type = "button";
+      enableButton.className = "ghost-button mini-action-button";
+      enableButton.textContent = isSkillActive(skill) ? "查看摘要" : "加入启用";
+      enableButton.onclick = async () => {
+        spark(enableButton);
+        if (!sameSkill(skill, state.selectedSkill)) {
+          await readSkill(skill);
+        }
+        if (isSkillActive(skill)) {
+          renderSkillPreview(skill);
+          return;
+        }
+        applySelectedSkill();
+      };
+      actions.append(enableButton);
+      if (isSkillActive(skill)) {
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "ghost-button mini-action-button";
+        removeButton.textContent = "移除启用";
+        removeButton.onclick = () => {
+          spark(removeButton);
+          disableActiveSkill(skill);
+        };
+        actions.append(removeButton);
+      }
+    }
+    item.append(head, actions);
+    return item;
+  }));
+  if (els.disableSkill) {
+    els.disableSkill.disabled = !activeSkills.length;
+  }
+};
+
+applySelectedSkill = function applySelectedSkillWithMultiSkill() {
+  if (!state.selectedSkill) {
+    setStatus("请先读取一个技能");
+    return;
+  }
+  const normalized = reduceSkillToSkillMdOnly(state.selectedSkill);
+  const activeSkills = getActiveSkills();
+  if (!activeSkills.some((skill) => sameSkill(skill, normalized))) {
+    activeSkills.push(normalized);
+  }
+  state.activeSkills = normalizeActiveSkills(activeSkills);
+  syncActiveSkillAlias();
+  renderSkills();
+  renderSkillPreview(normalized);
+  save();
+  appendMessage("system", `已加入技能：${normalized.name}\n${buildActiveSkillsSummaryLines()[0]}`, "success");
+  refreshMetrics();
+  setStatus(`已启用 ${state.activeSkills.length} 个技能`);
+};
+
+disableActiveSkill = function disableActiveSkillWithMultiSkill(targetSkill = null) {
+  const activeSkills = getActiveSkills();
+  if (!activeSkills.length) {
+    setStatus("当前没有启用中的技能");
+    return;
+  }
+  const skillToRemove = targetSkill || state.selectedSkill || activeSkills[activeSkills.length - 1];
+  state.activeSkills = activeSkills.filter((skill) => !sameSkill(skill, skillToRemove));
+  syncActiveSkillAlias();
+  renderSkills();
+  renderSkillPreview(state.selectedSkill);
+  save();
+  refreshMetrics();
+  setStatus(`已移除技能：${skillToRemove.name}`);
+};
+
+const systemMessagesBeforeMultiSkill = systemMessages;
+systemMessages = function systemMessagesWithMultiSkill() {
+  const list = systemMessagesBeforeMultiSkill().filter((message) => !String(message?.content || "").includes("你当前启用了技能：") && !String(message?.content || "").includes("当前已启用"));
+  const activeSkills = getActiveSkills();
+  if (activeSkills.length) {
+    list.push({
+      role: "system",
+      content: `当前已启用 ${activeSkills.length} 个技能。\n技能只是执行说明，不是可调用工具名。不要把技能名当作 tool name 发起调用。你只能调用系统已提供的真实工具；如果技能要求的是流程执行，请依据各自的 SKILL.md 理解步骤，然后使用受支持的工具完成，或直接输出结果。\n\n${activeSkills.map((skill, index) => {
+        const normalized = reduceSkillToSkillMdOnly(skill);
+        return `技能 ${index + 1}：${normalized.name}\n来源：${normalized.source}\nSKILL.md:\n${normalized.content}`;
+      }).join("\n\n---\n\n")}`,
+    });
+  }
+  return list;
+};
+
+function clearSkillSelectionState() {
+  state.selectedSkill = null;
+  state.activeSkill = null;
+  state.activeSkills = [];
+  renderSkillPreview(null);
+  renderSkills();
+  save();
+  refreshMetrics();
+  setStatus("已清空技能状态");
+}
+
+els.savePersonaPreset?.addEventListener("click", async () => {
+  spark(els.savePersonaPreset);
+  try {
+    await savePersonaPresetToWorkspace();
+  } catch (error) {
+    appendMessage("system", `保存人设模板失败：${error.message}`, "error");
+    setStatus("保存人设模板失败");
+  }
+});
+
+els.deletePersonaPreset?.addEventListener("click", async () => {
+  spark(els.deletePersonaPreset);
+  try {
+    await deleteSelectedPersonaPresetFromWorkspace();
+  } catch (error) {
+    const message = String(error?.message || "");
+    if (/not found/i.test(message)) {
+      appendMessage("system", "当前运行中的服务还没有加载人设模板删除接口，请重启 `node server.js` 后再试。", "error");
+      setStatus("删除接口未生效，请重启服务");
+      return;
+    }
+    appendMessage("system", `删除人设模板失败：${error.message}`, "error");
+    setStatus("删除人设模板失败");
+  }
+});
+
+els.clearSkillSelection?.addEventListener("click", () => {
+  spark(els.clearSkillSelection);
+  clearSkillSelectionState();
+});
+
+const executeToolBeforeUnsupportedNameFinalGuard = executeTool;
+executeTool = async function executeToolWithUnsupportedNameFinalGuard(toolCall) {
+  const id = toolCall?.id || nowId();
+  const name = toolCall?.function?.name || "unknown";
+  if (!SUPPORTED_TOOL_NAMES.has(name)) {
+    const activeSkillNames = getActiveSkills().map((skill) => skill.name).filter(Boolean);
+    const activeSkillHint = activeSkillNames.length ? `当前已启用技能：${activeSkillNames.join("、")}。` : "";
+    toolActivity(id, "done", name, "未支持的工具调用已拦截");
+    return {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        ignored: true,
+        reason: "unsupported-tool-name",
+        message: `${activeSkillHint}工具「${name}」当前不存在。只能调用系统已提供的真实工具，例如 run_workspace_skill，而不能调用 exec_command 这类未实现工具。`,
+      }),
+    };
+  }
+  return executeToolBeforeUnsupportedNameFinalGuard(toolCall);
+};
+
 renderChatHistoryList();
+
+const qqTargetProfileRuntime = {
+  profiles: {},
+  baseConfig: {},
+};
+
+const inlinePromptRuntime = {
+  resolve: null,
+  mode: "prompt",
+};
+
+function closeInlinePrompt(result = null) {
+  if (els.inlinePromptModal) {
+    els.inlinePromptModal.classList.add("is-hidden");
+    els.inlinePromptModal.setAttribute("aria-hidden", "true");
+  }
+  const resolver = inlinePromptRuntime.resolve;
+  inlinePromptRuntime.resolve = null;
+  inlinePromptRuntime.mode = "prompt";
+  if (resolver) resolver(result);
+}
+
+function openInlinePrompt({ title = "重命名", description = "请输入内容", value = "", placeholder = "请输入内容", confirmText = "确定" } = {}) {
+  return new Promise((resolve) => {
+    inlinePromptRuntime.resolve = resolve;
+    if (els.inlinePromptTitle) els.inlinePromptTitle.textContent = title;
+    if (els.inlinePromptDescription) els.inlinePromptDescription.textContent = description;
+    if (els.inlinePromptInput) {
+      els.inlinePromptInput.value = value;
+      els.inlinePromptInput.placeholder = placeholder;
+    }
+    if (els.inlinePromptConfirm) els.inlinePromptConfirm.textContent = confirmText;
+    if (els.inlinePromptModal) {
+      els.inlinePromptModal.classList.remove("is-hidden");
+      els.inlinePromptModal.setAttribute("aria-hidden", "false");
+    }
+    requestAnimationFrame(() => {
+      els.inlinePromptInput?.focus();
+      els.inlinePromptInput?.select();
+    });
+  });
+}
+
+els.inlinePromptBackdrop?.addEventListener("click", () => closeInlinePrompt(null));
+els.inlinePromptCancel?.addEventListener("click", () => closeInlinePrompt(null));
+els.inlinePromptConfirm?.addEventListener("click", () => closeInlinePrompt(inlinePromptRuntime.mode === "confirm" ? true : (els.inlinePromptInput?.value ?? "")));
+els.inlinePromptInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    closeInlinePrompt(els.inlinePromptInput?.value ?? "");
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeInlinePrompt(null);
+  }
+});
+
+function openInlinePrompt({
+  title = "重命名",
+  description = "请输入内容",
+  value = "",
+  placeholder = "请输入内容",
+  confirmText = "确定",
+  cancelText = "取消",
+  eyebrow = "EDIT",
+  mode = "prompt",
+} = {}) {
+  return new Promise((resolve) => {
+    inlinePromptRuntime.resolve = resolve;
+    inlinePromptRuntime.mode = mode === "confirm" ? "confirm" : "prompt";
+    if (els.inlinePromptEyebrow) els.inlinePromptEyebrow.textContent = eyebrow;
+    if (els.inlinePromptTitle) els.inlinePromptTitle.textContent = title;
+    if (els.inlinePromptDescription) {
+      els.inlinePromptDescription.textContent = description;
+      els.inlinePromptDescription.hidden = !description;
+    }
+    if (els.inlinePromptInput) {
+      els.inlinePromptInput.value = value;
+      els.inlinePromptInput.placeholder = placeholder;
+      els.inlinePromptInput.closest(".inline-prompt-body")?.classList.toggle("is-hidden", inlinePromptRuntime.mode !== "prompt");
+    }
+    if (els.inlinePromptConfirm) els.inlinePromptConfirm.textContent = confirmText;
+    if (els.inlinePromptCancel) els.inlinePromptCancel.textContent = cancelText;
+    if (els.inlinePromptModal) {
+      els.inlinePromptModal.classList.remove("is-hidden");
+      els.inlinePromptModal.setAttribute("aria-hidden", "false");
+    }
+    requestAnimationFrame(() => {
+      if (inlinePromptRuntime.mode === "prompt") {
+        els.inlinePromptInput?.focus();
+        els.inlinePromptInput?.select();
+      } else {
+        els.inlinePromptConfirm?.focus();
+      }
+    });
+  });
+}
+
+function openInlineConfirm({
+  title = "确认操作",
+  description = "",
+  confirmText = "确定",
+  cancelText = "取消",
+  eyebrow = "ACTION",
+} = {}) {
+  return openInlinePrompt({
+    title,
+    description,
+    confirmText,
+    cancelText,
+    eyebrow,
+    mode: "confirm",
+  }).then((result) => result === true);
+}
+
+function qqTargetProfileKey(targetType = els.qqTargetType?.value || "private", targetId = els.qqTargetId?.value || "") {
+  const normalizedType = String(targetType || "").trim().toLowerCase() === "group" ? "group" : "private";
+  const normalizedId = String(targetId || "").trim();
+  return normalizedId ? `${normalizedType}:${normalizedId}` : "";
+}
+
+function getSavedQqTargetProfiles() {
+  const persisted = saved();
+  const profiles = persisted.qqTargetProfiles;
+  return profiles && typeof profiles === "object" ? { ...profiles } : {};
+}
+
+function persistQqTargetProfiles(nextProfiles = qqTargetProfileRuntime.profiles) {
+  qqTargetProfileRuntime.profiles = { ...nextProfiles };
+  const current = saved();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    qqTargetProfiles: qqTargetProfileRuntime.profiles,
+  }));
+}
+
+function collectCurrentQqTargetProfile() {
+  const targetType = els.qqTargetType?.value || "private";
+  const targetId = els.qqTargetId?.value?.trim() || "";
+  if (!targetId) return null;
+  const key = qqTargetProfileKey(targetType, targetId);
+  return {
+    key,
+    name: `${targetType === "group" ? "群" : "QQ"} ${targetId}`,
+    targetType,
+    targetId,
+    defaultTargetType: targetType,
+    defaultTargetId: targetId,
+    model: els.qqBotModelSelect?.value || "",
+    triggerPrefix: els.qqBotTriggerPrefix?.value?.trim() || "",
+    allowedUsers: els.qqBotAllowedUsers?.value || "",
+    allowedGroups: els.qqBotAllowedGroups?.value || "",
+    persona: els.qqBotPersona?.value || "",
+    personaPreset: els.qqBotPersonaPreset?.value || "none",
+    assistantName: els.assistantName?.value?.trim() || "Assistant",
+    systemPrompt: els.systemPrompt?.value?.trim() || "",
+  };
+}
+
+function applyQqTargetProfile(profile = null) {
+  const fallback = qqTargetProfileRuntime.baseConfig || {};
+  const resolved = profile || {};
+  if (els.qqBotModelSelect) els.qqBotModelSelect.value = resolved.model || fallback.model || "";
+  if (els.qqBotTriggerPrefix) els.qqBotTriggerPrefix.value = resolved.triggerPrefix || fallback.triggerPrefix || "";
+  if (els.qqBotAllowedUsers) els.qqBotAllowedUsers.value = Array.isArray(resolved.allowedUsers) ? resolved.allowedUsers.join("\n") : (resolved.allowedUsers || fallback.allowedUsers || "");
+  if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = Array.isArray(resolved.allowedGroups) ? resolved.allowedGroups.join("\n") : (resolved.allowedGroups || fallback.allowedGroups || "");
+  if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = resolved.personaPreset || fallback.personaPreset || "none";
+  if (els.qqBotPersona) els.qqBotPersona.value = resolved.persona || fallback.persona || "";
+  renderQqPushMeta();
+  renderQqBotMeta();
+  renderQqBotPersonaPresetDescription();
+}
+
+function renderQqTargetProfileMeta() {
+  if (!els.qqTargetProfileMeta) return;
+  const key = qqTargetProfileKey();
+  if (!key) {
+    els.qqTargetProfileMeta.textContent = "请先填写 QQ 或群号，再为该对象保存独立配置。";
+    return;
+  }
+  const profile = qqTargetProfileRuntime.profiles[key];
+  els.qqTargetProfileMeta.textContent = profile
+    ? `当前目标已使用独立配置：${profile.name || key}`
+    : "当前目标将使用全局 QQ 配置。";
+}
+
+function renderQqTargetProfilesSelect() {
+  if (!els.qqTargetProfileSelect) return;
+  const currentKey = qqTargetProfileKey();
+  const firstOption = document.createElement("option");
+  firstOption.value = "";
+  firstOption.textContent = "当前目标未保存为独立配置";
+  const options = Object.entries(qqTargetProfileRuntime.profiles)
+    .sort((left, right) => left[0].localeCompare(right[0], "zh-CN"))
+    .map(([key, profile]) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = profile.name || key;
+      return option;
+    });
+  els.qqTargetProfileSelect.replaceChildren(firstOption, ...options);
+  els.qqTargetProfileSelect.value = currentKey && qqTargetProfileRuntime.profiles[currentKey] ? currentKey : "";
+  if (els.deleteQqTargetProfile) {
+    els.deleteQqTargetProfile.disabled = !(currentKey && qqTargetProfileRuntime.profiles[currentKey]);
+  }
+  renderQqTargetProfileMeta();
+}
+
+function applyCurrentQqTargetProfileIfExists() {
+  const key = qqTargetProfileKey();
+  if (!key) {
+    renderQqTargetProfilesSelect();
+    renderQqTargetProfileMeta();
+    return;
+  }
+  applyQqTargetProfile(qqTargetProfileRuntime.profiles[key] || null);
+  renderQqTargetProfilesSelect();
+}
+
+const saveBeforeQqTargetProfiles = save;
+save = function saveWithQqTargetProfiles() {
+  saveBeforeQqTargetProfiles();
+  persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+};
+
+const loadBeforeQqTargetProfiles = load;
+load = function loadWithQqTargetProfiles() {
+  loadBeforeQqTargetProfiles();
+  qqTargetProfileRuntime.profiles = getSavedQqTargetProfiles();
+  renderQqTargetProfilesSelect();
+};
+
+const getQqPushSettingsBeforeProfiles = getQqPushSettings;
+getQqPushSettings = function getQqPushSettingsWithProfiles() {
+  const current = getQqPushSettingsBeforeProfiles();
+  return {
+    ...current,
+    targetProfiles: { ...qqTargetProfileRuntime.profiles },
+  };
+};
+
+const getQqBotSettingsBeforeProfiles = getQqBotSettings;
+getQqBotSettings = function getQqBotSettingsWithProfiles() {
+  const current = getQqBotSettingsBeforeProfiles();
+  return {
+    ...current,
+    targetProfiles: { ...qqTargetProfileRuntime.profiles },
+  };
+};
+
+const syncQqBotConfigBeforeProfiles = syncQqBotConfig;
+syncQqBotConfig = async function syncQqBotConfigWithProfiles() {
+  const push = getQqPushSettingsBeforeProfiles();
+  const bot = getQqBotSettingsBeforeProfiles();
+  qqTargetProfileRuntime.baseConfig = {
+    enabled: Boolean(push.enabled),
+    bridgeUrl: push.bridgeUrl,
+    accessToken: push.accessToken,
+    groupMentionOnly: bot.groupMentionOnly,
+    taskPushEnabled: bot.taskPushEnabled,
+    triggerPrefix: bot.triggerPrefix,
+    allowedUsers: bot.allowedUsers,
+    allowedGroups: bot.allowedGroups,
+    persona: bot.persona,
+    personaPreset: els.qqBotPersonaPreset?.value || saved().qqBotPersonaPreset || "none",
+    model: bot.model || selectedModel(),
+    systemPrompt: els.systemPrompt?.value.trim() || "",
+    assistantName: els.assistantName?.value.trim() || "Assistant",
+  };
+  await j("/qq-bot/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: bot.enabled,
+      groupMentionOnly: bot.groupMentionOnly,
+      taskPushEnabled: bot.taskPushEnabled,
+      triggerPrefix: bot.triggerPrefix,
+      allowedUsers: bot.allowedUsers,
+      allowedGroups: bot.allowedGroups,
+      persona: bot.persona,
+      bridgeUrl: push.bridgeUrl,
+      accessToken: push.accessToken,
+      defaultTargetType: push.targetType,
+      defaultTargetId: push.targetId,
+      model: bot.model || selectedModel(),
+      systemPrompt: els.systemPrompt?.value.trim() || "",
+      assistantName: els.assistantName?.value.trim() || "Assistant",
+      targetProfiles: qqTargetProfileRuntime.profiles,
+    }),
+  });
+};
+
+async function loadQqTargetProfilesFromServer() {
+  try {
+    const response = await j("/qq-bot/config");
+    const config = response?.config || {};
+    qqTargetProfileRuntime.profiles = config.targetProfiles && typeof config.targetProfiles === "object"
+      ? { ...config.targetProfiles }
+      : getSavedQqTargetProfiles();
+    qqTargetProfileRuntime.baseConfig = {
+      enabled: Boolean(config.enabled),
+      bridgeUrl: config.bridgeUrl || "",
+      accessToken: config.accessToken || "",
+      groupMentionOnly: config.groupMentionOnly !== false,
+      taskPushEnabled: Boolean(config.taskPushEnabled),
+      triggerPrefix: config.triggerPrefix || "",
+      allowedUsers: Array.isArray(config.allowedUsers) ? config.allowedUsers.join("\n") : (config.allowedUsers || ""),
+      allowedGroups: Array.isArray(config.allowedGroups) ? config.allowedGroups.join("\n") : (config.allowedGroups || ""),
+      persona: config.persona || "",
+      personaPreset: saved().qqBotPersonaPreset || "none",
+      model: config.model || "",
+      systemPrompt: config.systemPrompt || "",
+      assistantName: config.assistantName || "Assistant",
+    };
+    persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+    applyCurrentQqTargetProfileIfExists();
+  } catch {
+    qqTargetProfileRuntime.profiles = getSavedQqTargetProfiles();
+    renderQqTargetProfilesSelect();
+  }
+}
+
+els.saveQqTargetProfile?.addEventListener("click", async () => {
+  spark(els.saveQqTargetProfile);
+  const profile = collectCurrentQqTargetProfile();
+  if (!profile) {
+    setStatus("请先填写 QQ 或群号");
+    return;
+  }
+  qqTargetProfileRuntime.profiles[profile.key] = profile;
+  persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+  renderQqTargetProfilesSelect();
+  await syncQqBotConfig().catch(() => {});
+  setStatus(`已保存对象配置：${profile.name}`);
+});
+
+els.deleteQqTargetProfile?.addEventListener("click", async () => {
+  spark(els.deleteQqTargetProfile);
+  const key = qqTargetProfileKey();
+  if (!key || !qqTargetProfileRuntime.profiles[key]) {
+    setStatus("当前目标没有独立配置");
+    return;
+  }
+  delete qqTargetProfileRuntime.profiles[key];
+  persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+  renderQqTargetProfilesSelect();
+  applyQqTargetProfile(null);
+  await syncQqBotConfig().catch(() => {});
+  setStatus("已删除当前对象配置");
+});
+
+els.qqTargetProfileSelect?.addEventListener("change", () => {
+  const key = els.qqTargetProfileSelect?.value || "";
+  if (!key) {
+    applyCurrentQqTargetProfileIfExists();
+    return;
+  }
+  const profile = qqTargetProfileRuntime.profiles[key];
+  if (!profile) return;
+  if (els.qqTargetType) els.qqTargetType.value = profile.targetType || "private";
+  if (els.qqTargetId) els.qqTargetId.value = profile.targetId || "";
+  applyQqTargetProfile(profile);
+  renderQqTargetProfilesSelect();
+});
+
+[els.qqTargetType, els.qqTargetId].forEach((el) => {
+  el?.addEventListener("change", () => {
+    applyCurrentQqTargetProfileIfExists();
+  });
+  el?.addEventListener("input", () => {
+    renderQqTargetProfilesSelect();
+  });
+});
+
+loadQqTargetProfilesFromServer().catch(() => {});
+
+function compactChatHistoryActionButtons() {
+  document.querySelectorAll(".history-rename-button").forEach((button) => {
+    button.textContent = "✎";
+    button.title = "重命名";
+    button.setAttribute("aria-label", "重命名");
+  });
+  document.querySelectorAll(".history-delete-button").forEach((button) => {
+    button.textContent = "×";
+    button.title = "删除";
+    button.setAttribute("aria-label", "删除");
+  });
+}
+
+const renderChatHistoryListBeforeCompactActionIcons = renderChatHistoryList;
+renderChatHistoryList = function renderChatHistoryListWithCompactActionIcons() {
+  const result = renderChatHistoryListBeforeCompactActionIcons();
+  compactChatHistoryActionButtons();
+  return result;
+};
+
+compactChatHistoryActionButtons();
+
+renameChatRecord = async function renameChatRecordWithInlinePrompt(recordId) {
+  const records = readChatHistoryRecords();
+  const target = records.find((record) => record.id === recordId);
+  if (!target) {
+    setStatus("未找到对应的聊天记录", "error");
+    return;
+  }
+
+  const nextTitle = await openInlinePrompt({
+    title: "重命名会话",
+    description: "输入新的会话名称",
+    value: target.title || "未命名会话",
+    placeholder: "请输入会话名称",
+    confirmText: "保存",
+  });
+
+  if (nextTitle == null) {
+    return;
+  }
+
+  const trimmed = String(nextTitle || "").trim();
+  if (!trimmed) {
+    setStatus("聊天记录名称不能为空", "error");
+    return;
+  }
+
+  target.title = trimmed;
+  writeChatHistoryRecords(records);
+  renderChatHistoryList();
+  setStatus(`已重命名聊天记录：${trimmed}`, "success");
+};
+
+saveCurrentChatAsManualRecord = async function saveCurrentChatAsManualRecordWithInlinePrompt() {
+  if (!state.messages.length) {
+    setStatus("当前会话还没有可保存的内容", "error");
+    return;
+  }
+
+  const defaultTitle = buildChatTitle();
+  const title = await openInlinePrompt({
+    title: "保存会话",
+    description: "为这条聊天记录输入一个名称",
+    value: defaultTitle,
+    placeholder: "请输入会话名称",
+    confirmText: "保存",
+  });
+  if (title == null) return;
+
+  const record = upsertChatRecord({
+    title: String(title || "").trim() || defaultTitle,
+    forceNew: true,
+  });
+  if (record) {
+    setStatus(`已保存聊天记录：${record.title}`, "success");
+  }
+};
+
+uploadSkillZipFile = async function uploadSkillZipFileWithInlinePrompt(file) {
+  if (!file) return;
+  if (!isZipFileName(file.name)) {
+    setStatus("技能上传仅支持 ZIP 格式", "error");
+    return;
+  }
+  const suggestedName = String(file.name || "").replace(/\.zip$/i, "").trim();
+  const targetNameInput = await openInlinePrompt({
+    title: "安装技能",
+    description: "输入安装后的技能名称，留空则自动识别",
+    value: suggestedName,
+    placeholder: "技能名称",
+    confirmText: "继续",
+  });
+  if (targetNameInput == null) return;
+  const targetName = String(targetNameInput || "").trim();
+  const contentBase64 = arrayBufferToBase64(await file.arrayBuffer());
+  const data = await j("/skills/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileName: file.name, contentBase64, targetName }),
+  });
+  await loadSkills();
+  setStatus(`已上传技能：${data.result.name}`, "success");
+};
+
+downloadSkillZipFromLink = async function downloadSkillZipFromLinkWithInlinePrompt() {
+  const input = await openInlinePrompt({
+    title: "链接下载技能",
+    description: "输入技能 ZIP 下载链接",
+    value: "",
+    placeholder: "https://...",
+    confirmText: "继续",
+  });
+  if (input == null) return;
+  const url = String(input || "").trim();
+  if (!url) {
+    setStatus("请输入技能下载链接", "error");
+    return;
+  }
+  if (!isZipUrlCandidate(url)) {
+    setStatus("技能下载仅支持 ZIP 格式链接", "error");
+    return;
+  }
+  let suggestedName = "";
+  try {
+    const parsed = new URL(url);
+    const lastSegment = decodeURIComponent(parsed.pathname.split("/").pop() || "");
+    suggestedName = isZipFileName(lastSegment) ? lastSegment.replace(/\.zip$/i, "") : "";
+  } catch {}
+  const targetNameInput = await openInlinePrompt({
+    title: "安装技能",
+    description: "输入安装后的技能名称，留空则自动识别",
+    value: suggestedName,
+    placeholder: "技能名称",
+    confirmText: "下载并安装",
+  });
+  if (targetNameInput == null) return;
+  const targetName = String(targetNameInput || "").trim();
+  const data = await j("/skills/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, targetName }),
+  });
+  await loadSkills();
+  setStatus(`已下载技能：${data.result.name}`, "success");
+};
+
+savePersonaPresetToWorkspace = async function savePersonaPresetToWorkspaceWithInlinePrompt() {
+  const prompt = String(els.personaPrompt?.value || "").trim();
+  if (!prompt) {
+    setStatus("请先填写人设内容", "error");
+    return;
+  }
+
+  const suggestedName = String(els.personaPreset?.selectedOptions?.[0]?.textContent || "")
+    .trim()
+    .replace(/^不使用预设/, "") || "新建人设";
+  const inputName = await openInlinePrompt({
+    title: "保存人设模板",
+    description: "输入模板名称",
+    value: suggestedName,
+    placeholder: "模板名称",
+    confirmText: "保存",
+  });
+  if (inputName == null) return;
+
+  const name = String(inputName || "").trim();
+  if (!name) {
+    setStatus("模板名称不能为空", "error");
+    return;
+  }
+
+  await j("/personas/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, prompt }),
+  });
+
+  await loadWorkspacePersonaPresets();
+  const workspaceId = `workspace:${name.replace(/\\/g, "/")}.md`;
+  const fallbackPreset = allPersonaPresets().find((preset) => preset.name === name && preset.source === "workspace");
+  if (els.personaPreset) {
+    els.personaPreset.value = fallbackPreset?.id || workspaceId || els.personaPreset.value;
+  }
+  rememberedPersonaPresetId = els.personaPreset?.value || rememberedPersonaPresetId;
+  renderPersonaPresetDescription();
+  save();
+  setStatus(`已保存人设模板：${name}`, "success");
+};
+deleteChatRecord = async function deleteChatRecordWithInlineConfirm(recordId) {
+  const records = readChatHistoryRecords();
+  const target = records.find((record) => record.id === recordId);
+  if (!target) return;
+
+  const confirmed = await openInlineConfirm({
+    title: "删除聊天记录",
+    description: `确定删除“${target.title || "未命名会话"}”吗？删除后 15 秒内可以撤销。`,
+    confirmText: "删除",
+    cancelText: "取消",
+    eyebrow: "DELETE",
+  });
+  if (!confirmed) return;
+
+  writeChatHistoryRecords(records.filter((record) => record.id !== recordId));
+  const wasCurrent = chatHistoryRuntime.currentId === recordId;
+  if (wasCurrent) {
+    clearDeletedChatContext();
+  }
+
+  beginDeletedChatUndo(target, { wasCurrent });
+  renderChatHistoryList();
+  updateChatHistoryMeta();
+  updateCurrentChatTitle();
+  setStatus(`已删除聊天记录：${target.title || "未命名会话"}`, "success");
+};
+
+deleteChatRecord = async function deleteChatRecordWithInlineConfirmFinal(recordId) {
+  const records = readChatHistoryRecords();
+  const target = records.find((record) => record.id === recordId);
+  if (!target) return;
+
+  const confirmed = await openInlineConfirm({
+    title: "删除聊天记录",
+    description: `确定删除“${target.title || "未命名会话"}”吗？删除后 15 秒内可以撤销。`,
+    confirmText: "删除",
+    cancelText: "取消",
+    eyebrow: "DELETE",
+  });
+  if (!confirmed) return;
+
+  writeChatHistoryRecords(records.filter((record) => record.id !== recordId));
+  const wasCurrent = chatHistoryRuntime.currentId === recordId;
+  if (wasCurrent) {
+    clearDeletedChatContext();
+  }
+
+  beginDeletedChatUndo(target, { wasCurrent });
+  renderChatHistoryList();
+  updateChatHistoryMeta();
+  updateCurrentChatTitle();
+  setStatus(`已删除聊天记录：${target.title || "未命名会话"}`, "success");
+};
+
+renderQqTargetProfileMeta = function renderQqTargetProfileMetaByConfigType() {
+  if (!els.qqTargetProfileMeta) return;
+  const key = qqTargetProfileKey();
+  if (!key) {
+    els.qqTargetProfileMeta.textContent = "请先填写 QQ 或群号，再为该对象保存独立行为配置。";
+    return;
+  }
+  const profile = qqTargetProfileRuntime.profiles[key];
+  els.qqTargetProfileMeta.textContent = profile
+    ? `当前对象已保存独立行为配置：${profile.name || key}`
+    : "当前对象尚未保存独立配置，将使用当前填写的对象行为。";
+};
+
+renderQqTargetProfilesSelect = function renderQqTargetProfilesSelectByConfigType() {
+  if (!els.qqTargetProfileSelect) return;
+  const currentKey = qqTargetProfileKey();
+  const firstOption = document.createElement("option");
+  firstOption.value = "";
+  firstOption.textContent = "当前对象未保存独立配置";
+  const options = Object.entries(qqTargetProfileRuntime.profiles)
+    .sort((left, right) => left[0].localeCompare(right[0], "zh-CN"))
+    .map(([key, profile]) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = profile.name || key;
+      return option;
+    });
+  els.qqTargetProfileSelect.replaceChildren(firstOption, ...options);
+  els.qqTargetProfileSelect.value = currentKey && qqTargetProfileRuntime.profiles[currentKey] ? currentKey : "";
+  if (els.deleteQqTargetProfile) {
+    els.deleteQqTargetProfile.disabled = !(currentKey && qqTargetProfileRuntime.profiles[currentKey]);
+  }
+  renderQqTargetProfileMeta();
+};
+
+renderQqTargetProfilesSelect();

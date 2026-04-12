@@ -1,3 +1,11 @@
-Local AI workbench running at http://127.0.0.1:8000
-Proxy target: http://127.0.0.1:1234
-QQ bot webhook: http://127.0.0.1:8000/qq/webhook
+2026-04-12 12:31:48 started pid=26240
+2026-04-12 12:32:14 started pid=18004
+2026-04-12 14:11:19 started server pid=31576 runner pid=24604
+2026-04-12 14:15:36 started server pid=7828 runner pid=6964
+2026-04-12 14:25:05 started server pid=14176 runner pid=28388
+2026-04-12 14:42:35 started server pid=9948 runner pid=15160
+2026-04-12 14:58:25 started server pid=33032 runner pid=23656
+2026-04-12 15:09:34 started server pid=23664 runner pid=3784
+2026-04-12 15:41:20 started server pid=31196 runner pid=24480
+2026-04-12 15:47:11 started server pid=32288 runner pid=32968
+2026-04-12 15:54:03 started server pid=35008 runner pid=34564

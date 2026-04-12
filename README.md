@@ -2,7 +2,7 @@
 
 一个面向本地模型的单页聊天工作台。
 
-它提供聊天、会话管理、人设模板、设定文件夹、技能启用、定时任务、文件工具与代码展示等能力，适合在本地模型服务基础上做持续对话和轻量自动化。
+它提供聊天、会话管理、persona 模板、设定文件夹、技能启用、定时任务、文件工具与代码展示等能力，适合在本地模型服务基础上做持续对话和轻量自动化。
 
 ## 启动方式
 
@@ -15,6 +15,23 @@ node server.js
 启动后访问：
 
 `http://127.0.0.1:8000`
+
+运行数据现在默认保存在 `data/` 目录：
+
+- `data/scheduled-tasks.json`
+- `data/qq-bot-config.json`
+- `data/qq-bot-sessions.json`
+
+如果根目录下仍存在旧版同名 JSON 文件，服务启动时会自动迁移到 `data/`。
+
+目录现在按职责分层：
+
+- `public/`：前端静态文件
+- `server/`：后端辅助模块
+- `data/`：运行时 JSON 数据
+- `scripts/`：启动脚本
+- `tests/`：本地验证脚本
+- 根目录：启动入口、说明文档、项目级配置
 
 默认会通过同源代理把请求转发到本地模型服务：
 
@@ -48,7 +65,7 @@ node server.js
 - 支持直接编辑系统提示词和人设内容
 - 支持从文件导入 / 导出 / 清空人设
 - 模板选择为“选择即应用”，不需要额外点击应用按钮
-- 支持读取工作区 `人设` 目录下的 `.md` 文件作为工作区人设模板
+- 支持读取 `data/personas/` 目录下的 `.md` 文件作为工作区 persona 模板
 - 会记住上次选择的人设模板，刷新后自动恢复
 - 支持导入“设定文件夹”，适合小说设定、世界观、角色设定等长期上下文
 - 设定文件夹内容会持久化保存，并在后续对话中自动带入
@@ -86,7 +103,7 @@ node server.js
 - 可通过自然语言让模型创建定时任务
 - 定时任务结果默认以普通 AI 回复的方式推送到当前聊天会话
 - 若当前没有可用会话，会自动创建会话承接任务结果
-- 定时任务数据保存在 `scheduled-tasks.json`
+- 定时任务数据保存在 `data/scheduled-tasks.json`
 
 ## 页面结构
 
@@ -103,18 +120,23 @@ node server.js
 
 ## 目录说明
 
-- [index.html](/e:/AI文件/AI%20web/index.html)：页面结构
-- [styles.css](/e:/AI文件/AI%20web/styles.css)：界面样式
-- [app.js](/e:/AI文件/AI%20web/app.js)：前端逻辑
-- [server.js](/e:/AI文件/AI%20web/server.js)：本地 HTTP 服务与代理
-- [scheduled-tasks.json](/e:/AI文件/AI%20web/scheduled-tasks.json)：定时任务持久化文件
+- `public/index.html`：页面结构
+- `public/styles.css`：界面样式
+- `public/app.js`：前端逻辑
+- `server.js`：本地 HTTP 服务与代理入口
+- `server/`：服务端模块
+- `data/scheduled-tasks.json`：定时任务持久化文件
+- `data/qq-bot-config.json`：QQ 机器人配置
+- `data/qq-bot-sessions.json`：QQ 会话持久化文件
 - `skills/`：工作区技能目录
-- `人设/`：工作区人设模板目录
+- `data/personas/`：工作区 persona 模板目录
+- `scripts/`：启动脚本目录
+- `tests/`：本地测试脚本目录
 - `temp-files/`：临时文件目录
 
 ## 使用说明
 
-### 人设模板
+### Persona 模板
 
 - 内置模板和工作区模板会一起显示在“模板选择”中
 - 选择某个人设模板后会立即覆盖到人设输入框
@@ -169,11 +191,11 @@ node server.js
 
 请检查：
 
-- 当前目录下是否存在 `人设/` 目录
+- 当前目录下是否存在 `data/personas/` 目录
 - 目录中是否为 `.md` 文件
 - 是否已经重启过 `node server.js`
 
-工作区人设模板由后端扫描 `人设/` 目录后返回，新增或删除模板后通常需要重启服务再刷新页面。
+工作区 persona 模板由后端扫描 `data/personas/` 目录后返回，新增或删除模板后通常需要重启服务再刷新页面。
 
 ### 3. 人设模板刷新后没有保持选中
 
@@ -197,7 +219,7 @@ node server.js
 
 - 是否已重启 [server.js](/e:/AI文件/AI%20web/server.js)
 - 当前页面是否访问 `http://127.0.0.1:8000`
-- `scheduled-tasks.json` 是否存在异常内容
+- `data/scheduled-tasks.json` 是否存在异常内容
 
 ### 5. 定时任务执行了，但页面里没看到推送
 

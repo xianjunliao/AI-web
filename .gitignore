@@ -1,1 +1,8 @@
 logs/server.log
+logs/*.log
+data/*.json
+public/temp-files/
+skills/*
+node_modules/*
+data/runner-browser-profiles/*
+.history/*

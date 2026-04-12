@@ -1,0 +1,13 @@
+{
+  "name": "ai-web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "skill-runner": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/skill-runner.ps1",
+    "test": "node tests/run-tests.js"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

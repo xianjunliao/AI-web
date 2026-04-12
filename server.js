@@ -5,15 +5,35 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { URL } = require("url");
+const {
+  createStaticPathGuard,
+  migrateLegacyDataFile,
+  readJsonFile,
+  readRequestBody,
+  resolveWorkspacePath,
+  writeJsonFileAtomic,
+} = require("./server/server-utils");
+const { createExecuteToolCall } = require("./server/server-tool-dispatcher");
+const { createQqModule } = require("./server/server-qq");
+const { createTaskModelInvoker } = require("./server/server-task-model");
+const { createPersonaHandlers } = require("./server/server-personas");
+const { createScheduler } = require("./server/server-scheduler");
 
 const HOST = "127.0.0.1";
 const PORT = 8000;
 const TARGET_ORIGIN = "http://127.0.0.1:1234";
 const ROOT = __dirname;
-const SCHEDULED_TASKS_FILE = path.join(ROOT, "scheduled-tasks.json");
-const QQ_BOT_CONFIG_FILE = path.join(ROOT, "qq-bot-config.json");
-const QQ_BOT_SESSIONS_FILE = path.join(ROOT, "qq-bot-sessions.json");
-const PERSONA_PRESETS_DIR = path.join(ROOT, "人设");
+const PUBLIC_DIR = path.join(ROOT, "public");
+const DATA_DIR = path.join(ROOT, "data");
+const LOGS_DIR = path.join(ROOT, "logs");
+const LEGACY_PERSONA_PRESETS_DIR = path.join(ROOT, "人设");
+const LEGACY_SCHEDULED_TASKS_FILE = path.join(ROOT, "scheduled-tasks.json");
+const LEGACY_QQ_BOT_CONFIG_FILE = path.join(ROOT, "qq-bot-config.json");
+const LEGACY_QQ_BOT_SESSIONS_FILE = path.join(ROOT, "qq-bot-sessions.json");
+const SCHEDULED_TASKS_FILE = path.join(DATA_DIR, "scheduled-tasks.json");
+const QQ_BOT_CONFIG_FILE = path.join(DATA_DIR, "qq-bot-config.json");
+const QQ_BOT_SESSIONS_FILE = path.join(DATA_DIR, "qq-bot-sessions.json");
+const PERSONA_PRESETS_DIR = path.join(DATA_DIR, "personas");
 const SKILL_SOURCES = {
   workspace: path.join(ROOT, "skills"),
   codex: path.join(os.homedir(), ".codex", "skills"),
@@ -36,11 +56,62 @@ const SKILL_TEXT_EXTENSIONS = new Set([
 ]);
 const MAX_SKILL_FILES = 24;
 const MAX_SKILL_FILE_SIZE = 64 * 1024;
+const MAX_SKILL_ARCHIVE_BYTES = 25 * 1024 * 1024;
+const SKILL_ARCHIVE_REQUEST_LIMIT = 40 * 1024 * 1024;
+const SKILL_RUN_TIMEOUT_MS = 5 * 60 * 1000;
 const SCHEDULER_TICK_MS = 30 * 1000;
+const SKILL_RUNNER_POLL_MS = 1500;
+const SKILL_RUNNER_PROTOCOL_VERSION = "2";
+const PUBLIC_STATIC_PATHS = new Set(["/"]);
+const isPublicStaticPath = createStaticPathGuard(ROOT, {
+  exactPaths: PUBLIC_STATIC_PATHS,
+  publicDir: "public",
+});
+
+function getRuntimeIdentityName() {
+  try {
+    return String(process.env.USERNAME || os.userInfo().username || "").trim();
+  } catch {
+    return String(process.env.USERNAME || "").trim();
+  }
+}
+
+function isRestrictedDesktopAutomationIdentity() {
+  const identity = getRuntimeIdentityName().toLowerCase();
+  return identity.includes("codexsandbox");
+}
+
+function buildRestrictedDesktopAutomationMessage(skillName = "当前技能") {
+  const identity = getRuntimeIdentityName() || "unknown";
+  return `${skillName} 需要在本机正常桌面用户会话中运行浏览器自动化。当前服务身份为 ${identity}，属于受限运行身份，浏览器进程会被系统拒绝。请在你自己的 Windows 用户终端中手动启动 \`node server.js\` 和 \`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/skill-runner.ps1\` 后再试。`;
+}
+
+function appendServerDebugLog(message) {
+  try {
+    fs.mkdirSync(LOGS_DIR, { recursive: true });
+    fs.appendFileSync(path.join(LOGS_DIR, "server-debug.log"), `${new Date().toISOString()} ${message}\n`, "utf8");
+  } catch {}
+}
 
 let scheduledTasks = [];
 const runningScheduledTaskIds = new Set();
-let qqBotConfig = {
+let loadScheduledTasks;
+let saveScheduledTasks;
+let listScheduledTasks;
+let findEquivalentScheduledTask;
+let ensureScheduledTask;
+let resolveScheduledTask;
+let validateScheduledTaskPayload;
+let computeNextRunAt;
+let sanitizeScheduledTask;
+let runScheduledTask;
+let startScheduledTaskLoop;
+let handleScheduledTasksList;
+let handleScheduledTasksCreate;
+let handleScheduledTaskUpdate;
+let handleScheduledTaskDelete;
+let handleScheduledTaskRun;
+let legacyQqBotConfigState = {
   enabled: false,
   groupMentionOnly: true,
   taskPushEnabled: false,
@@ -56,7 +127,15 @@ let qqBotConfig = {
   systemPrompt: "",
   assistantName: "繁星",
 };
-let qqBotSessions = {};
+let legacyQqBotSessionsState = {};
+let loadQqBotConfig;
+let loadQqBotSessions;
+let sendQqMessage;
+let handleQqBotConfigGet;
+let handleQqBotConfigPost;
+let handleQqWebhook;
+let getQqBotConfig;
+let skillRunnerJobs = [];
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -71,57 +150,32 @@ const MIME_TYPES = {
   ".ico": "image/x-icon",
 };
 
-function readRequestBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
-
-async function readJsonFile(filePath, fallbackValue) {
-  try {
-    const raw = await fs.promises.readFile(filePath, "utf8");
-    return JSON.parse(raw);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return fallbackValue;
-    }
-    throw error;
-  }
-}
-
-async function writeJsonFile(filePath, value) {
-  await fs.promises.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
-}
-
-async function loadQqBotConfig() {
-  qqBotConfig = {
-    ...qqBotConfig,
+async function legacyLoadQqBotConfigV1() {
+  legacyQqBotConfigState = {
+    ...legacyQqBotConfigState,
     ...(await readJsonFile(QQ_BOT_CONFIG_FILE, {})),
   };
 }
 
-async function saveQqBotConfig(nextConfig = {}) {
-  qqBotConfig = {
-    ...qqBotConfig,
+async function legacySaveQqBotConfigV1(nextConfig = {}) {
+  legacyQqBotConfigState = {
+    ...legacyQqBotConfigState,
     ...nextConfig,
   };
-  await writeJsonFile(QQ_BOT_CONFIG_FILE, qqBotConfig);
-  return qqBotConfig;
+  await writeJsonFileAtomic(QQ_BOT_CONFIG_FILE, legacyQqBotConfigState);
+  return legacyQqBotConfigState;
 }
 
-async function loadQqBotSessions() {
+async function legacyLoadQqBotSessionsV1() {
   const loaded = await readJsonFile(QQ_BOT_SESSIONS_FILE, {});
-  qqBotSessions = loaded && typeof loaded === "object" ? loaded : {};
+  legacyQqBotSessionsState = loaded && typeof loaded === "object" ? loaded : {};
 }
 
-async function saveQqBotSessions() {
-  await writeJsonFile(QQ_BOT_SESSIONS_FILE, qqBotSessions);
+async function legacySaveQqBotSessionsV1() {
+  await writeJsonFileAtomic(QQ_BOT_SESSIONS_FILE, legacyQqBotSessionsState);
 }
 
-function parseQqIdList(value) {
+function legacyParseQqIdListV1(value) {
   if (Array.isArray(value)) {
     return value.map((item) => String(item || "").trim()).filter(Boolean);
   }
@@ -129,17 +183,6 @@ function parseQqIdList(value) {
     .split(/[\r\n,，;；\s]+/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function resolveWorkspacePath(targetPath = ".") {
-  const normalizedInput = String(targetPath || ".").replace(/^[/\\]+/, "");
-  const resolvedPath = path.resolve(ROOT, normalizedInput);
-  if (!resolvedPath.startsWith(ROOT)) {
-    const error = new Error("Path escapes workspace");
-    error.statusCode = 403;
-    throw error;
-  }
-  return resolvedPath;
 }
 
 function requestJson(targetUrl, options = {}, body = null) {
@@ -191,7 +234,7 @@ function requestJson(targetUrl, options = {}, body = null) {
   });
 }
 
-async function sendQqMessage(args = {}) {
+async function legacySendQqMessageV1(args = {}) {
   const bridgeUrl = String(args.bridgeUrl || "").trim();
   const targetType = String(args.targetType || "private").trim().toLowerCase();
   const targetId = String(args.targetId || "").trim();
@@ -239,7 +282,7 @@ async function sendQqMessage(args = {}) {
   };
 }
 
-async function callLocalModelForTask(task) {
+async function legacyCallLocalModelForTaskV1(task) {
   const taskTools = [
     {
       type: "function",
@@ -273,10 +316,10 @@ async function callLocalModelForTask(task) {
   });
 }
 
-async function executeToolCall(name, args = {}) {
+async function legacyExecuteToolCallV1(name, args = {}) {
   switch (name) {
     case "list_dir": {
-      const targetPath = resolveWorkspacePath(args.path || ".");
+      const targetPath = resolveWorkspacePath(ROOT, args.path || ".");
       const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
       return {
         path: path.relative(ROOT, targetPath) || ".",
@@ -287,7 +330,7 @@ async function executeToolCall(name, args = {}) {
       };
     }
     case "read_file": {
-      const targetPath = resolveWorkspacePath(args.path);
+      const targetPath = resolveWorkspacePath(ROOT, args.path);
       const content = await fs.promises.readFile(targetPath, "utf8");
       return {
         path: path.relative(ROOT, targetPath) || path.basename(targetPath),
@@ -295,7 +338,7 @@ async function executeToolCall(name, args = {}) {
       };
     }
     case "write_file": {
-      const targetPath = resolveWorkspacePath(args.path);
+      const targetPath = resolveWorkspacePath(ROOT, args.path);
       const content = String(args.content ?? "");
       await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.promises.writeFile(targetPath, content, "utf8");
@@ -305,7 +348,7 @@ async function executeToolCall(name, args = {}) {
       };
     }
     case "delete_file": {
-      const targetPath = resolveWorkspacePath(args.path);
+      const targetPath = resolveWorkspacePath(ROOT, args.path);
       const stat = await fs.promises.stat(targetPath);
       if (stat.isDirectory()) {
         const error = new Error("delete_file only supports files");
@@ -512,6 +555,355 @@ async function copyDirectoryRecursive(sourceDir, targetDir) {
   }
 }
 
+function sanitizeSkillDirectoryName(name = "") {
+  const normalized = String(name || "")
+    .trim()
+    .replace(/\.zip$/i, "")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized || `skill-${Date.now()}`;
+}
+
+function isZipArchiveBuffer(buffer) {
+  return Buffer.isBuffer(buffer)
+    && buffer.length >= 4
+    && buffer[0] === 0x50
+    && buffer[1] === 0x4b;
+}
+
+function escapePowerShellLiteral(value) {
+  return String(value || "").replace(/'/g, "''");
+}
+
+async function runPowerShellCommand(command) {
+  await new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const error = new Error(stderr.trim() || `PowerShell command failed with exit code ${code}`);
+      error.statusCode = 500;
+      reject(error);
+    });
+  });
+}
+
+async function extractZipArchive(zipPath, destinationDir) {
+  await fs.promises.mkdir(destinationDir, { recursive: true });
+  const command = `Expand-Archive -LiteralPath '${escapePowerShellLiteral(zipPath)}' -DestinationPath '${escapePowerShellLiteral(destinationDir)}' -Force`;
+  await runPowerShellCommand(command);
+}
+
+async function collectSkillRootCandidates(rootDir, currentDir = rootDir, candidates = []) {
+  const skillFilePath = path.join(currentDir, "SKILL.md");
+  try {
+    const stat = await fs.promises.stat(skillFilePath);
+    if (stat.isFile()) {
+      candidates.push(path.relative(rootDir, currentDir).replace(/\\/g, "/") || ".");
+      return candidates;
+    }
+  } catch {}
+
+  const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "__MACOSX") {
+      continue;
+    }
+    await collectSkillRootCandidates(rootDir, path.join(currentDir, entry.name), candidates);
+  }
+
+  return candidates;
+}
+
+async function resolveExtractedSkillDirectory(extractRoot) {
+  const candidates = await collectSkillRootCandidates(extractRoot);
+  if (!candidates.length) {
+    const error = new Error("压缩包中未找到 SKILL.md，无法识别为技能");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (candidates.length > 1) {
+    const error = new Error("压缩包中包含多个技能目录，请保持一个 ZIP 只包含一个技能");
+    error.statusCode = 400;
+    throw error;
+  }
+  const relativeDir = candidates[0];
+  return {
+    relativeDir,
+    absoluteDir: relativeDir === "." ? extractRoot : path.join(extractRoot, relativeDir),
+  };
+}
+
+async function ensureSkillDestinationDirectory(destinationDir) {
+  try {
+    await fs.promises.access(destinationDir, fs.constants.F_OK);
+    const error = new Error("同名技能已存在，请先删除旧技能或更换目录名");
+    error.statusCode = 409;
+    throw error;
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function detectSkillNameFromSkillMarkdown(skillDir) {
+  try {
+    const skillMdPath = path.join(skillDir, "SKILL.md");
+    const content = await fs.promises.readFile(skillMdPath, "utf8");
+    const firstTitle = content.split(/\r?\n/).find((line) => line.trim().startsWith("#"));
+    if (!firstTitle) return "";
+    return firstTitle.replace(/^#+\s*/, "").split("-")[0].trim();
+  } catch {
+    return "";
+  }
+}
+
+function createSkillRunnerJob(args = {}) {
+  const skillName = String(args.skillName || args.name || "").trim();
+  if (!skillName) {
+    const error = new Error("Missing workspace skill name");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const workspaceSkillsRoot = getSkillRoot("workspace");
+  const skillDir = resolveWorkspacePath(workspaceSkillsRoot, skillName);
+  const payload = {
+    skillName,
+    username: typeof args.username === "string" ? args.username.trim() : "",
+    headless: args.headless === true ? true : (args.headless === false ? false : null),
+    notify: args.notify === false ? false : true,
+    skillDir: path.relative(ROOT, skillDir).replace(/\\/g, "/"),
+  };
+
+  const job = {
+    id: `skill-job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    status: "pending",
+    payload,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    startedAt: null,
+    completedAt: null,
+    result: null,
+    error: "",
+  };
+  skillRunnerJobs.unshift(job);
+  skillRunnerJobs = skillRunnerJobs.slice(0, 100);
+  return job;
+}
+
+function getNextPendingSkillRunnerJob() {
+  const job = skillRunnerJobs.find((item) => item.status === "pending");
+  if (!job) return null;
+  job.status = "running";
+  job.startedAt = Date.now();
+  job.updatedAt = Date.now();
+  return job;
+}
+
+function completeSkillRunnerJob(jobId, payload = {}) {
+  const job = skillRunnerJobs.find((item) => item.id === jobId);
+  if (!job) {
+    const error = new Error("Skill runner job not found");
+    error.statusCode = 404;
+    throw error;
+  }
+  job.status = payload.ok === false ? "failed" : "done";
+  job.updatedAt = Date.now();
+  job.completedAt = Date.now();
+  job.result = payload.result || null;
+  job.error = String(payload.error || "").trim();
+  return job;
+}
+
+async function waitForSkillRunnerJob(jobId, timeoutMs = SKILL_RUN_TIMEOUT_MS) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const job = skillRunnerJobs.find((item) => item.id === jobId);
+    if (!job) {
+      const error = new Error("Skill runner job disappeared");
+      error.statusCode = 500;
+      throw error;
+    }
+    if (job.status === "done") {
+      return job.result || {};
+    }
+    if (job.status === "failed") {
+      const error = new Error(job.error || "Skill runner execution failed");
+      error.statusCode = 500;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, SKILL_RUNNER_POLL_MS));
+  }
+  const timedOutJob = skillRunnerJobs.find((item) => item.id === jobId);
+  if (timedOutJob && (timedOutJob.status === "pending" || timedOutJob.status === "running")) {
+    timedOutJob.status = "failed";
+    timedOutJob.updatedAt = Date.now();
+    timedOutJob.completedAt = Date.now();
+    timedOutJob.error = "Skill runner execution timed out";
+  }
+  const error = new Error("Skill runner execution timed out");
+  error.statusCode = 504;
+  throw error;
+}
+
+async function handleSkillRunnerNextJobRequest(req, res) {
+  const runnerVersion = String(req.headers["x-skill-runner-version"] || "").trim();
+  if (runnerVersion !== SKILL_RUNNER_PROTOCOL_VERSION) {
+    sendJson(res, 200, { ok: true, job: null });
+    return;
+  }
+  const job = getNextPendingSkillRunnerJob();
+  sendJson(res, 200, { ok: true, job });
+}
+
+async function handleSkillRunnerJobResultRequest(req, res, jobId) {
+  try {
+    const runnerVersion = String(req.headers["x-skill-runner-version"] || "").trim();
+    if (runnerVersion !== SKILL_RUNNER_PROTOCOL_VERSION) {
+      appendServerDebugLog(`skill runner result rejected: unsupported version job=${jobId} version=${runnerVersion || "empty"}`);
+      sendJson(res, 403, { error: "Unsupported skill runner version" });
+      return;
+    }
+    const rawBody = await readRequestBody(req);
+    appendServerDebugLog(`skill runner result raw body: job=${jobId} body=${(rawBody || "").slice(0, 600)}`);
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+    appendServerDebugLog(`skill runner result received: job=${jobId} ok=${payload?.ok} keys=${Object.keys(payload || {}).join(",")}`);
+    const job = completeSkillRunnerJob(jobId, payload);
+    appendServerDebugLog(`skill runner result stored: job=${jobId} status=${job.status}`);
+    sendJson(res, 200, { ok: true, job });
+  } catch (error) {
+    appendServerDebugLog(`skill runner result failed: job=${jobId} error=${error.message || "unknown"}`);
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || "Failed to store skill runner result",
+    });
+  }
+}
+
+async function installSkillArchiveToWorkspace({ buffer, archiveName = "", targetName = "", source = "upload", sourceUrl = "" }) {
+  if (!isZipArchiveBuffer(buffer)) {
+    const error = new Error("技能安装仅支持 ZIP 格式");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const workspaceRoot = getSkillRoot("workspace");
+  await fs.promises.mkdir(workspaceRoot, { recursive: true });
+
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ai-web-skill-"));
+  const archivePath = path.join(tempRoot, sanitizeSkillDirectoryName(archiveName || "skill") + ".zip");
+  const extractDir = path.join(tempRoot, "extracted");
+
+  try {
+    await fs.promises.writeFile(archivePath, buffer);
+    await extractZipArchive(archivePath, extractDir);
+
+    const extracted = await resolveExtractedSkillDirectory(extractDir);
+    const extractedDirName = extracted.relativeDir === "." ? "" : path.basename(extracted.relativeDir);
+    const skillMarkdownName = await detectSkillNameFromSkillMarkdown(extracted.absoluteDir);
+    const fallbackArchiveName = path.basename(archiveName || "skill");
+    const derivedName = sanitizeSkillDirectoryName(
+      targetName
+      || extractedDirName
+      || skillMarkdownName
+      || fallbackArchiveName
+    );
+    const destinationDir = path.resolve(workspaceRoot, derivedName);
+    if (!destinationDir.startsWith(workspaceRoot)) {
+      const error = new Error("Skill path escapes workspace root");
+      error.statusCode = 403;
+      throw error;
+    }
+
+    await ensureSkillDestinationDirectory(destinationDir);
+    await copyDirectoryRecursive(extracted.absoluteDir, destinationDir);
+
+    return {
+      name: derivedName,
+      source,
+      sourceUrl,
+      installedTo: path.relative(ROOT, destinationDir).replace(/\\/g, "/"),
+    };
+  } finally {
+    await fs.promises.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function requestBinary(targetUrl, { redirectCount = 0 } = {}) {
+  if (redirectCount > 5) {
+    const error = new Error("下载重定向次数过多");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const transport = targetUrl.protocol === "https:" ? https : http;
+  return await new Promise((resolve, reject) => {
+    const req = transport.request(
+      targetUrl,
+      { method: "GET", headers: { "User-Agent": "AI-web/1.0" } },
+      (res) => {
+        const statusCode = res.statusCode || 500;
+
+        if ([301, 302, 303, 307, 308].includes(statusCode) && res.headers.location) {
+          const nextUrl = new URL(res.headers.location, targetUrl);
+          res.resume();
+          requestBinary(nextUrl, { redirectCount: redirectCount + 1 }).then(resolve).catch(reject);
+          return;
+        }
+
+        if (statusCode >= 400) {
+          res.resume();
+          const error = new Error(`下载失败：${statusCode}`);
+          error.statusCode = statusCode;
+          reject(error);
+          return;
+        }
+
+        const chunks = [];
+        let totalBytes = 0;
+        res.on("data", (chunk) => {
+          totalBytes += chunk.length;
+          if (totalBytes > MAX_SKILL_ARCHIVE_BYTES) {
+            res.destroy(new Error("技能压缩包过大"));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("end", () => {
+          resolve({
+            buffer: Buffer.concat(chunks),
+            contentType: String(res.headers["content-type"] || ""),
+            finalUrl: targetUrl.toString(),
+          });
+        });
+      }
+    );
+    req.on("error", (error) => {
+      if (error.message === "技能压缩包过大") {
+        error.statusCode = 413;
+      }
+      reject(error);
+    });
+    req.end();
+  });
+}
+
 async function installSkillToWorkspace(source, name) {
   if (source === "workspace") {
     const error = new Error("Skill is already in workspace");
@@ -545,6 +937,32 @@ async function installSkillToWorkspace(source, name) {
   };
 }
 
+async function runWorkspaceSkill(args = {}) {
+  if (isRestrictedDesktopAutomationIdentity()) {
+    const error = new Error(buildRestrictedDesktopAutomationMessage(String(args.skillName || "当前技能")));
+    error.statusCode = 503;
+    throw error;
+  }
+  const job = createSkillRunnerJob(args);
+  try {
+    const result = await waitForSkillRunnerJob(job.id, SKILL_RUN_TIMEOUT_MS);
+    return {
+      skillName: job.payload.skillName,
+      queued: true,
+      runnerJobId: job.id,
+      ...result,
+    };
+  } catch (error) {
+    const message = String(error?.message || "");
+    if (/spawn\s+(EPERM|EINVAL)/i.test(message) || /拒绝访问|access is denied/i.test(message)) {
+      const wrapped = new Error(buildRestrictedDesktopAutomationMessage(String(args.skillName || job.payload.skillName || "当前技能")));
+      wrapped.statusCode = 503;
+      throw wrapped;
+    }
+    throw error;
+  }
+}
+
 async function handleSkillsInstallRequest(req, res) {
   try {
     const rawBody = await readRequestBody(req);
@@ -563,12 +981,12 @@ async function handleSkillsInstallRequest(req, res) {
   }
 }
 
-async function collectPersonaFiles(currentDir, rootDir, personas) {
+async function legacyCollectPersonaFilesV1(currentDir, rootDir, personas) {
   const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(currentDir, entry.name);
     if (entry.isDirectory()) {
-      await collectPersonaFiles(fullPath, rootDir, personas);
+      await legacyCollectPersonaFilesV1(fullPath, rootDir, personas);
       continue;
     }
     if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".md") {
@@ -591,7 +1009,7 @@ async function collectPersonaFiles(currentDir, rootDir, personas) {
   }
 }
 
-async function listPersonaPresets() {
+async function legacyListPersonaPresetsV1() {
   try {
     const stat = await fs.promises.stat(PERSONA_PRESETS_DIR);
     if (!stat.isDirectory()) return [];
@@ -599,14 +1017,14 @@ async function listPersonaPresets() {
     return [];
   }
   const personas = [];
-  await collectPersonaFiles(PERSONA_PRESETS_DIR, PERSONA_PRESETS_DIR, personas);
+  await legacyCollectPersonaFilesV1(PERSONA_PRESETS_DIR, PERSONA_PRESETS_DIR, personas);
   personas.sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
   return personas;
 }
 
-async function handlePersonaPresetsListRequest(res) {
+async function legacyHandlePersonaPresetsListRequestV1(res) {
   try {
-    const presets = await listPersonaPresets();
+    const presets = await legacyListPersonaPresetsV1();
     sendJson(res, 200, { ok: true, presets });
   } catch (error) {
     sendJson(res, error.statusCode || 500, {
@@ -615,7 +1033,7 @@ async function handlePersonaPresetsListRequest(res) {
   }
 }
 
-function sanitizeScheduledTask(task = {}) {
+function legacySanitizeScheduledTaskV1(task = {}) {
   const intervalMinutes = Math.max(1, Number(task.intervalMinutes) || 60);
   return {
     id: String(task.id || `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
@@ -634,16 +1052,16 @@ function sanitizeScheduledTask(task = {}) {
   };
 }
 
-async function loadScheduledTasks() {
+async function legacyLoadScheduledTasksV1() {
   const records = await readJsonFile(SCHEDULED_TASKS_FILE, []);
   scheduledTasks = Array.isArray(records) ? records.map((task) => sanitizeScheduledTask(task)) : [];
 }
 
-async function saveScheduledTasks() {
-  await writeJsonFile(SCHEDULED_TASKS_FILE, scheduledTasks);
+async function legacySaveScheduledTasksV1() {
+  await writeJsonFileAtomic(SCHEDULED_TASKS_FILE, scheduledTasks);
 }
 
-function listScheduledTasks() {
+function legacyListScheduledTasksV1() {
   return scheduledTasks
     .slice()
     .sort((left, right) => {
@@ -662,7 +1080,7 @@ function normalizeTaskSignatureValue(value) {
   return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function findEquivalentScheduledTask(taskLike = {}) {
+function legacyFindEquivalentScheduledTaskV1(taskLike = {}) {
   const scheduleType = "cron";
   const normalizedName = normalizeTaskSignatureValue(taskLike.name);
   const normalizedPrompt = normalizeTaskSignatureValue(taskLike.prompt);
@@ -690,7 +1108,7 @@ function findScheduledTask(taskId) {
   return scheduledTasks.find((task) => task.id === taskId);
 }
 
-function ensureScheduledTask(taskId) {
+function legacyEnsureScheduledTaskV1(taskId) {
   const task = findScheduledTask(taskId);
   if (!task) {
     const error = new Error("Scheduled task not found");
@@ -704,7 +1122,7 @@ function normalizeScheduledTaskMatchValue(value) {
   return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function resolveScheduledTask(args = {}) {
+function legacyResolveScheduledTaskV1(args = {}) {
   const directId = String(args.id || "").trim();
   if (directId) {
     return ensureScheduledTask(directId);
@@ -723,7 +1141,7 @@ function resolveScheduledTask(args = {}) {
   throw error;
 }
 
-function validateScheduledTaskPayload(payload = {}, { partial = false } = {}) {
+function legacyValidateScheduledTaskPayloadV1(payload = {}, { partial = false } = {}) {
   const next = {};
 
   if (!partial || Object.prototype.hasOwnProperty.call(payload, "name")) {
@@ -769,7 +1187,7 @@ function validateScheduledTaskPayload(payload = {}, { partial = false } = {}) {
   return next;
 }
 
-async function callLocalModelForTask(task) {
+async function legacyCallLocalModelForTaskV2(task) {
   const targetUrl = new URL("/v1/chat/completions", TARGET_ORIGIN);
   const requestBody = JSON.stringify({
     model: task.model,
@@ -824,7 +1242,7 @@ async function callLocalModelForTask(task) {
   });
 }
 
-async function runScheduledTask(taskId) {
+async function legacyRunScheduledTaskV1(taskId) {
   const task = ensureScheduledTask(taskId);
   if (runningScheduledTaskIds.has(task.id)) {
     return task;
@@ -857,7 +1275,7 @@ async function runScheduledTask(taskId) {
   return task;
 }
 
-async function tickScheduledTasks() {
+async function legacyTickScheduledTasksV1() {
   const now = Date.now();
   const dueTasks = scheduledTasks.filter(
     (task) => task.enabled && !runningScheduledTaskIds.has(task.id) && task.nextRunAt && task.nextRunAt <= now
@@ -872,17 +1290,17 @@ async function tickScheduledTasks() {
   }
 }
 
-function startScheduledTaskLoop() {
+function legacyStartScheduledTaskLoopV1() {
   setInterval(() => {
     tickScheduledTasks().catch(() => {});
   }, SCHEDULER_TICK_MS);
 }
 
-async function handleScheduledTasksList(res) {
+async function legacyHandleScheduledTasksListV1(res) {
   sendJson(res, 200, { ok: true, tasks: listScheduledTasks() });
 }
 
-async function handleScheduledTasksCreate(req, res) {
+async function legacyHandleScheduledTasksCreateV1(req, res) {
   try {
     const rawBody = await readRequestBody(req);
     const payload = rawBody ? JSON.parse(rawBody) : {};
@@ -900,7 +1318,7 @@ async function handleScheduledTasksCreate(req, res) {
   }
 }
 
-async function handleScheduledTaskUpdate(req, res, taskId) {
+async function legacyHandleScheduledTaskUpdateV1(req, res, taskId) {
   try {
     const task = ensureScheduledTask(taskId);
     const rawBody = await readRequestBody(req);
@@ -920,7 +1338,7 @@ async function handleScheduledTaskUpdate(req, res, taskId) {
   }
 }
 
-async function handleScheduledTaskDelete(res, taskId) {
+async function legacyHandleScheduledTaskDeleteV1(res, taskId) {
   try {
     ensureScheduledTask(taskId);
     scheduledTasks = scheduledTasks.filter((task) => task.id !== taskId);
@@ -932,7 +1350,7 @@ async function handleScheduledTaskDelete(res, taskId) {
   }
 }
 
-async function handleScheduledTaskRun(res, taskId) {
+async function legacyHandleScheduledTaskRunV1(res, taskId) {
   try {
     const task = await runScheduledTask(taskId);
     sendJson(res, 200, { ok: true, task });
@@ -1327,7 +1745,7 @@ function expandCronSegment(segment, min, max) {
   return values;
 }
 
-function parseCronExpression(cronExpression) {
+function legacyParseCronExpressionV2(cronExpression) {
   const fields = String(cronExpression || "").trim().split(/\s+/);
   if (fields.length !== 5) {
     throw new Error("cronExpression must have 5 fields: minute hour day month weekday");
@@ -1352,7 +1770,7 @@ function matchesCronDate(parsed, date) {
   );
 }
 
-function computeNextRunAt(task, fromTime = Date.now()) {
+function legacyComputeNextRunAtV2(task, fromTime = Date.now()) {
   if (!task.enabled) {
     return null;
   }
@@ -1378,7 +1796,7 @@ function computeNextRunAt(task, fromTime = Date.now()) {
   throw error;
 }
 
-function sanitizeScheduledTask(task = {}) {
+function legacySanitizeScheduledTaskV2(task = {}) {
   const scheduleType = "cron";
   const enabled = Boolean(task.enabled);
   const sanitized = {
@@ -1411,7 +1829,7 @@ function sanitizeScheduledTask(task = {}) {
   return sanitized;
 }
 
-function validateScheduledTaskPayload(payload = {}, { partial = false } = {}) {
+function legacyValidateScheduledTaskPayloadV2(payload = {}, { partial = false } = {}) {
   const next = {};
 
   if (!partial || Object.prototype.hasOwnProperty.call(payload, "name")) {
@@ -1459,7 +1877,7 @@ function validateScheduledTaskPayload(payload = {}, { partial = false } = {}) {
   return next;
 }
 
-async function runScheduledTask(taskId) {
+async function legacyRunScheduledTaskV2(taskId) {
   const task = ensureScheduledTask(taskId);
   if (runningScheduledTaskIds.has(task.id)) {
     return task;
@@ -1492,7 +1910,7 @@ async function runScheduledTask(taskId) {
   return task;
 }
 
-async function handleScheduledTasksCreate(req, res) {
+async function legacyHandleScheduledTasksCreateV2(req, res) {
   try {
     const rawBody = await readRequestBody(req);
     const payload = rawBody ? JSON.parse(rawBody) : {};
@@ -1517,7 +1935,7 @@ async function handleScheduledTasksCreate(req, res) {
   }
 }
 
-async function handleScheduledTaskUpdate(req, res, taskId) {
+async function legacyHandleScheduledTaskUpdateV2(req, res, taskId) {
   try {
     const task = ensureScheduledTask(taskId);
     const rawBody = await readRequestBody(req);
@@ -1537,10 +1955,10 @@ async function handleScheduledTaskUpdate(req, res, taskId) {
   }
 }
 
-async function executeToolCall(name, args = {}) {
+async function legacyExecuteToolCallV2(name, args = {}) {
   switch (name) {
     case "list_dir": {
-      const targetPath = resolveWorkspacePath(args.path || ".");
+      const targetPath = resolveWorkspacePath(ROOT, args.path || ".");
       const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
       return {
         path: path.relative(ROOT, targetPath) || ".",
@@ -1551,7 +1969,7 @@ async function executeToolCall(name, args = {}) {
       };
     }
     case "read_file": {
-      const targetPath = resolveWorkspacePath(args.path);
+      const targetPath = resolveWorkspacePath(ROOT, args.path);
       const content = await fs.promises.readFile(targetPath, "utf8");
       return {
         path: path.relative(ROOT, targetPath) || path.basename(targetPath),
@@ -1559,7 +1977,7 @@ async function executeToolCall(name, args = {}) {
       };
     }
     case "write_file": {
-      const targetPath = resolveWorkspacePath(args.path);
+      const targetPath = resolveWorkspacePath(ROOT, args.path);
       const content = String(args.content ?? "");
       await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.promises.writeFile(targetPath, content, "utf8");
@@ -1569,7 +1987,7 @@ async function executeToolCall(name, args = {}) {
       };
     }
     case "delete_file": {
-      const targetPath = resolveWorkspacePath(args.path);
+      const targetPath = resolveWorkspacePath(ROOT, args.path);
       const stat = await fs.promises.stat(targetPath);
       if (stat.isDirectory()) {
         const error = new Error("delete_file only supports files");
@@ -1642,6 +2060,33 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
+const { handlePersonaPresetsListRequest, handlePersonaPresetSaveRequest, handlePersonaPresetDeleteRequest } = createPersonaHandlers({
+  personaPresetsDir: PERSONA_PRESETS_DIR,
+  sendJson,
+  readRequestBody,
+});
+
+const qqModule = createQqModule({
+  qqBotConfigFile: QQ_BOT_CONFIG_FILE,
+  qqBotSessionsFile: QQ_BOT_SESSIONS_FILE,
+  readJsonFile,
+  writeJsonFileAtomic,
+  readRequestBody,
+  sendJson,
+  requestJson,
+  targetOrigin: TARGET_ORIGIN,
+});
+
+({
+  loadQqBotConfig,
+  loadQqBotSessions,
+  sendQqMessage,
+  handleQqBotConfigGet,
+  handleQqBotConfigPost,
+  handleQqWebhook,
+  getQqBotConfig,
+} = qqModule);
+
 async function callLocalModelWithTools({ model, messages, tools }) {
   const targetUrl = new URL("/v1/chat/completions", TARGET_ORIGIN);
   let workingMessages = [...messages];
@@ -1710,7 +2155,7 @@ async function callLocalModelWithTools({ model, messages, tools }) {
   return finalText;
 }
 
-async function callLocalModelForTask(task) {
+async function legacyCallLocalModelForTaskV3(task) {
   const taskTools = [
     {
       type: "function",
@@ -1744,121 +2189,41 @@ async function callLocalModelForTask(task) {
   });
 }
 
-async function executeToolCall(name, args = {}) {
-  switch (name) {
-    case "list_dir": {
-      const targetPath = resolveWorkspacePath(args.path || ".");
-      const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
-      return {
-        path: path.relative(ROOT, targetPath) || ".",
-        entries: entries.map((entry) => ({
-          name: entry.name,
-          type: entry.isDirectory() ? "directory" : "file",
-        })),
-      };
-    }
-    case "read_file": {
-      const targetPath = resolveWorkspacePath(args.path);
-      const content = await fs.promises.readFile(targetPath, "utf8");
-      return {
-        path: path.relative(ROOT, targetPath) || path.basename(targetPath),
-        content,
-      };
-    }
-    case "write_file": {
-      const targetPath = resolveWorkspacePath(args.path);
-      const content = String(args.content ?? "");
-      await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.promises.writeFile(targetPath, content, "utf8");
-      return {
-        path: path.relative(ROOT, targetPath) || path.basename(targetPath),
-        bytesWritten: Buffer.byteLength(content, "utf8"),
-      };
-    }
-    case "delete_file": {
-      const targetPath = resolveWorkspacePath(args.path);
-      const stat = await fs.promises.stat(targetPath);
-      if (stat.isDirectory()) {
-        const error = new Error("delete_file only supports files");
-        error.statusCode = 400;
-        throw error;
-      }
-      await fs.promises.unlink(targetPath);
-      return {
-        path: path.relative(ROOT, targetPath) || path.basename(targetPath),
-        deleted: true,
-      };
-    }
-    case "get_weather": {
-      return await getWeatherByLocation(args.location);
-    }
-    case "search_clawhub_skills": {
-      const query = String(args.query || "").trim();
-      const skills = await searchClawHubSkills(query, Number(args.limit) || 6);
-      return {
-        query,
-        preferredSource: "https://clawhub.ai/skills?sort=downloads&nonSuspicious=true",
-        skills,
-      };
-    }
-    case "install_clawhub_skill": {
-      return await installClawHubSkill(args);
-    }
-    case "list_scheduled_tasks": {
-      return { tasks: listScheduledTasks() };
-    }
-    case "create_scheduled_task": {
-      const input = validateScheduledTaskPayload(args);
-      const existingTask = findEquivalentScheduledTask({
-        ...input,
-        enabled: args.enabled !== false,
-      });
-      if (existingTask) {
-        return {
-          ...existingTask,
-          deduplicated: true,
-        };
-      }
-      const task = sanitizeScheduledTask({
-        ...input,
-        enabled: args.enabled !== false,
-      });
-      scheduledTasks.unshift(task);
-      await saveScheduledTasks();
-      return task;
-    }
-    case "update_scheduled_task": {
-      const task = ensureScheduledTask(args.id);
-      const patch = validateScheduledTaskPayload(args, { partial: true });
-      Object.assign(task, patch);
-      task.updatedAt = Date.now();
-      task.nextRunAt = task.enabled ? computeNextRunAt(task, Date.now()) : null;
-      await saveScheduledTasks();
-      return task;
-    }
-    case "delete_scheduled_task": {
-      ensureScheduledTask(args.id);
-      scheduledTasks = scheduledTasks.filter((task) => task.id !== args.id);
-      runningScheduledTaskIds.delete(args.id);
-      await saveScheduledTasks();
-      return { deleted: true, id: args.id };
-    }
-    case "run_scheduled_task": {
-      return await runScheduledTask(args.id);
-    }
-    default: {
-      const error = new Error(`Unsupported tool: ${name}`);
-      error.statusCode = 400;
-      throw error;
-    }
-  }
-}
+// Canonical tool dispatcher used by the HTTP route and model tool-calling flow.
+let executeToolCall = createExecuteToolCall({
+  root: ROOT,
+  resolveWorkspacePath,
+  getWeatherByLocation,
+  searchClawHubSkills,
+  installClawHubSkill,
+  runWorkspaceSkill,
+  listScheduledTasks,
+  validateScheduledTaskPayload,
+  findEquivalentScheduledTask,
+  sanitizeScheduledTask,
+  saveScheduledTasks,
+  ensureScheduledTask,
+  computeNextRunAt,
+  runScheduledTask: (...args) => runScheduledTask(...args),
+  sendQqMessage: (...args) => sendQqMessage(...args),
+  getScheduledTasks: () => scheduledTasks,
+  setScheduledTasks: (nextTasks) => {
+    scheduledTasks = nextTasks;
+  },
+  runningScheduledTaskIds,
+});
 
 function serveStatic(req, res, pathname) {
-  const safePath = pathname === "/" ? "/index.html" : pathname;
-  const resolvedPath = path.normalize(path.join(ROOT, safePath));
+  if (!isPublicStaticPath(pathname)) {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
 
-  if (!resolvedPath.startsWith(ROOT)) {
+  const safePath = pathname === "/" ? "/index.html" : pathname;
+  const relativePublicPath = safePath.replace(/^\/+/, "");
+  const resolvedPath = path.normalize(path.join(PUBLIC_DIR, relativePublicPath));
+
+  if (!resolvedPath.startsWith(PUBLIC_DIR)) {
     sendJson(res, 403, { error: "Forbidden" });
     return;
   }
@@ -1912,7 +2277,42 @@ function proxyRequest(req, res, pathname) {
   req.pipe(proxyReq);
 }
 
-async function callLocalModelForTask(task) {
+// Canonical scheduled-task model invocation flow.
+const callLocalModelForTask = createTaskModelInvoker({ callLocalModelWithTools });
+
+({
+  loadScheduledTasks,
+  saveScheduledTasks,
+  listScheduledTasks,
+  findEquivalentScheduledTask,
+  ensureScheduledTask,
+  resolveScheduledTask,
+  validateScheduledTaskPayload,
+  computeNextRunAt,
+  sanitizeScheduledTask,
+  runScheduledTask,
+  startScheduledTaskLoop,
+  handleScheduledTasksList,
+  handleScheduledTasksCreate,
+  handleScheduledTaskUpdate,
+  handleScheduledTaskDelete,
+  handleScheduledTaskRun,
+} = createScheduler({
+  scheduledTasksFile: SCHEDULED_TASKS_FILE,
+  readJsonFile,
+  writeJsonFileAtomic,
+  readRequestBody,
+  sendJson,
+  callLocalModelForTask,
+  schedulerTickMs: SCHEDULER_TICK_MS,
+  getScheduledTasks: () => scheduledTasks,
+  setScheduledTasks: (nextTasks) => {
+    scheduledTasks = nextTasks;
+  },
+  runningScheduledTaskIds,
+}));
+
+async function legacyInlineCallLocalModelForTask(task) {
   const taskTools = [
     {
       type: "function",
@@ -1970,13 +2370,44 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (pathname === "/skills/install" && req.method === "POST") {
-    handleSkillsInstallRequest(req, res);
+    if (pathname === "/skills/install" && req.method === "POST") {
+      handleSkillsInstallRequest(req, res);
+      return;
+    }
+
+    if (pathname === "/skills/upload" && req.method === "POST") {
+      handleSkillsUploadRequest(req, res);
+      return;
+    }
+
+    if (pathname === "/skills/download" && req.method === "POST") {
+      handleSkillsDownloadRequest(req, res);
+      return;
+    }
+
+    if (pathname === "/skill-runner/jobs/next" && req.method === "GET") {
+      handleSkillRunnerNextJobRequest(req, res);
+      return;
+    }
+
+    const skillRunnerJobResultMatch = pathname.match(/^\/skill-runner\/jobs\/([^/]+)\/result$/);
+    if (skillRunnerJobResultMatch && req.method === "POST") {
+      handleSkillRunnerJobResultRequest(req, res, decodeURIComponent(skillRunnerJobResultMatch[1]));
+      return;
+    }
+
+  if ((pathname === "/personas/list" || pathname === "/personas/list/") && req.method === "GET") {
+      handlePersonaPresetsListRequest(res);
+      return;
+  }
+
+  if ((pathname === "/personas/save" || pathname === "/personas/save/") && req.method === "POST") {
+    handlePersonaPresetSaveRequest(req, res);
     return;
   }
 
-  if (pathname === "/personas/list" && req.method === "GET") {
-    handlePersonaPresetsListRequest(res);
+  if ((pathname === "/personas/delete" || pathname === "/personas/delete/") && (req.method === "POST" || req.method === "DELETE")) {
+    handlePersonaPresetDeleteRequest(req, res);
     return;
   }
 
@@ -2034,7 +2465,7 @@ const server = http.createServer((req, res) => {
   serveStatic(req, res, pathname);
 });
 
-async function sendQqMessageFinal(args = {}) {
+async function legacySendQqMessageFinalV1(args = {}) {
   const bridgeUrl = String(args.bridgeUrl || "").trim();
   const targetType = String(args.targetType || "private").trim().toLowerCase();
   const targetId = String(args.targetId || "").trim();
@@ -2082,7 +2513,7 @@ async function sendQqMessageFinal(args = {}) {
   };
 }
 
-function normalizeQqIncomingText(event = {}) {
+function legacyNormalizeQqIncomingTextV1(event = {}) {
   if (typeof event.raw_message === "string" && event.raw_message.trim()) {
     return event.raw_message.trim();
   }
@@ -2105,7 +2536,7 @@ function normalizeQqIncomingText(event = {}) {
   return "";
 }
 
-function isGroupMentioned(event = {}) {
+function legacyIsGroupMentionedV1(event = {}) {
   const selfId = String(event.self_id || "");
   if (Array.isArray(event.message)) {
     return event.message.some((segment) => segment?.type === "at" && String(segment.data?.qq || "") === selfId);
@@ -2113,14 +2544,14 @@ function isGroupMentioned(event = {}) {
   return typeof event.raw_message === "string" && selfId ? event.raw_message.includes(`[CQ:at,qq=${selfId}]`) : false;
 }
 
-function stripQqTriggerPrefix(text = "") {
+function legacyStripQqTriggerPrefixV1(text = "") {
   const raw = String(text || "").trim();
   const prefix = String(qqBotConfig.triggerPrefix || "").trim();
   if (!prefix) return raw;
   return raw.startsWith(prefix) ? raw.slice(prefix.length).trim() : "";
 }
 
-function isQqEventAllowed(event = {}) {
+function legacyIsQqEventAllowedV1(event = {}) {
   const userId = String(event.user_id || "").trim();
   const groupId = String(event.group_id || "").trim();
   const allowedUsers = parseQqIdList(qqBotConfig.allowedUsers);
@@ -2135,19 +2566,19 @@ function isQqEventAllowed(event = {}) {
   return true;
 }
 
-function getQqSessionKey(event = {}) {
+function legacyGetQqSessionKeyV1(event = {}) {
   if (event.message_type === "group") {
     return `group:${event.group_id || "unknown"}:user:${event.user_id || "unknown"}`;
   }
   return `private:${event.user_id || "unknown"}`;
 }
 
-function isQqSessionResetCommand(text = "") {
+function legacyIsQqSessionResetCommandV1(text = "") {
   const normalized = String(text || "").trim().toLowerCase();
   return normalized === "/new" || normalized === "/reset";
 }
 
-async function clearQqSession(event = {}) {
+async function legacyClearQqSessionV1(event = {}) {
   const sessionKey = getQqSessionKey(event);
   if (qqBotSessions[sessionKey]) {
     delete qqBotSessions[sessionKey];
@@ -2155,17 +2586,17 @@ async function clearQqSession(event = {}) {
   }
 }
 
-function trimSessionMessages(messages = []) {
+function legacyTrimSessionMessagesV1(messages = []) {
   return messages.slice(-24);
 }
 
-async function getFallbackModelId() {
+async function legacyGetFallbackModelIdV1() {
   const modelsUrl = new URL("/v1/models", TARGET_ORIGIN);
   const data = await requestJson(modelsUrl, { method: "GET" });
   return data?.data?.[0]?.id || "";
 }
 
-async function generateQqBotReply(event = {}) {
+async function legacyGenerateQqBotReplyV1(event = {}) {
   const sessionKey = getQqSessionKey(event);
   const session = Array.isArray(qqBotSessions[sessionKey]?.messages) ? qqBotSessions[sessionKey].messages : [];
   const rawUserText = normalizeQqIncomingText(event);
@@ -2230,7 +2661,7 @@ async function generateQqBotReply(event = {}) {
   return reply;
 }
 
-async function handleQqWebhook(req, res) {
+async function legacyHandleQqWebhookV1(req, res) {
   try {
     const rawBody = await readRequestBody(req);
     const event = rawBody ? JSON.parse(rawBody) : {};
@@ -2294,11 +2725,11 @@ async function handleQqWebhook(req, res) {
   }
 }
 
-function handleQqBotConfigGet(res) {
+function legacyHandleQqBotConfigGetV1(res) {
   sendJson(res, 200, { ok: true, config: qqBotConfig });
 }
 
-async function handleQqBotConfigPost(req, res) {
+async function legacyHandleQqBotConfigPostV1(req, res) {
   try {
     const rawBody = await readRequestBody(req);
     const payload = rawBody ? JSON.parse(rawBody) : {};
@@ -2324,41 +2755,121 @@ async function handleQqBotConfigPost(req, res) {
   }
 }
 
-const executeToolCallBeforeQqFinal = executeToolCall;
-executeToolCall = async function executeToolCallWithQqFinal(name, args = {}) {
-  if (name === "send_qq_message") {
-    return await sendQqMessageFinal(args);
-  }
-  return executeToolCallBeforeQqFinal(name, args);
-};
+async function handleSkillsUploadRequest(req, res) {
+  try {
+    const rawBody = await readRequestBody(req, { limitBytes: SKILL_ARCHIVE_REQUEST_LIMIT });
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+    const fileName = String(payload.fileName || "").trim();
+    const contentBase64 = String(payload.contentBase64 || "").trim();
 
-const runScheduledTaskBeforeQqPush = runScheduledTask;
-runScheduledTask = async function runScheduledTaskWithQqPush(taskId) {
-  const task = await runScheduledTaskBeforeQqPush(taskId);
-  if (
-    task &&
-    qqBotConfig.taskPushEnabled &&
-    qqBotConfig.bridgeUrl &&
-    qqBotConfig.defaultTargetId &&
-    task.lastStatus === "success" &&
-    task.lastResult
-  ) {
+    if (!fileName || !contentBase64) {
+      sendJson(res, 400, { error: "Missing skill ZIP payload" });
+      return;
+    }
+    if (path.extname(fileName).toLowerCase() !== ".zip") {
+      sendJson(res, 400, { error: "技能上传仅支持 ZIP 格式" });
+      return;
+    }
+
+    const buffer = Buffer.from(contentBase64, "base64");
+    const result = await installSkillArchiveToWorkspace({
+      buffer,
+      archiveName: fileName,
+      targetName: String(payload.targetName || "").trim(),
+      source: "upload",
+    });
+    sendJson(res, 200, { ok: true, result });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || "Failed to upload skill ZIP",
+    });
+  }
+}
+
+async function handleSkillsDownloadRequest(req, res) {
+  try {
+    const rawBody = await readRequestBody(req);
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+    const urlValue = String(payload.url || "").trim();
+    if (!urlValue) {
+      sendJson(res, 400, { error: "Missing skill download URL" });
+      return;
+    }
+
+    let targetUrl;
     try {
-      await sendQqMessageFinal({
-        bridgeUrl: qqBotConfig.bridgeUrl,
-        accessToken: qqBotConfig.accessToken,
-        targetType: qqBotConfig.defaultTargetType || "private",
-        targetId: qqBotConfig.defaultTargetId,
-        message: String(task.lastResult || "").trim(),
-      });
+      targetUrl = new URL(urlValue);
+    } catch {
+      sendJson(res, 400, { error: "Invalid skill download URL" });
+      return;
+    }
+
+    if (!["http:", "https:"].includes(targetUrl.protocol)) {
+      sendJson(res, 400, { error: "Only HTTP(S) skill download URLs are supported" });
+      return;
+    }
+
+    const explicitExt = path.extname(decodeURIComponent(targetUrl.pathname || "")).toLowerCase();
+    if (explicitExt && explicitExt !== ".zip") {
+      sendJson(res, 400, { error: "技能下载仅支持 ZIP 格式链接" });
+      return;
+    }
+
+    const download = await requestBinary(targetUrl);
+    const archiveName = path.basename(decodeURIComponent(new URL(download.finalUrl).pathname || "")) || "skill.zip";
+    const result = await installSkillArchiveToWorkspace({
+      buffer: download.buffer,
+      archiveName,
+      targetName: String(payload.targetName || "").trim(),
+      source: "download",
+      sourceUrl: download.finalUrl,
+    });
+    sendJson(res, 200, { ok: true, result });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || "Failed to download skill ZIP",
+    });
+  }
+}
+
+async function initializeDataFiles() {
+  await fs.promises.mkdir(DATA_DIR, { recursive: true });
+  try {
+    await fs.promises.access(PERSONA_PRESETS_DIR, fs.constants.F_OK);
+  } catch {
+    try {
+      await fs.promises.rename(LEGACY_PERSONA_PRESETS_DIR, PERSONA_PRESETS_DIR);
     } catch (error) {
-      console.error("Failed to push scheduled task result to QQ:", error);
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      await fs.promises.mkdir(PERSONA_PRESETS_DIR, { recursive: true });
     }
   }
-  return task;
-};
+  await migrateLegacyDataFile({
+    currentPath: SCHEDULED_TASKS_FILE,
+    legacyPath: LEGACY_SCHEDULED_TASKS_FILE,
+    fallbackValue: [],
+  });
+  await migrateLegacyDataFile({
+    currentPath: QQ_BOT_CONFIG_FILE,
+    legacyPath: LEGACY_QQ_BOT_CONFIG_FILE,
+    fallbackValue: {},
+  });
+  await migrateLegacyDataFile({
+    currentPath: QQ_BOT_SESSIONS_FILE,
+    legacyPath: LEGACY_QQ_BOT_SESSIONS_FILE,
+    fallbackValue: {},
+  });
+}
 
-Promise.all([loadScheduledTasks(), loadQqBotConfig(), loadQqBotSessions()])
+executeToolCall = qqModule.wrapToolExecutor(executeToolCall);
+
+const runScheduledTaskBeforeQqPush = runScheduledTask;
+runScheduledTask = qqModule.wrapScheduledTaskRunner(runScheduledTaskBeforeQqPush);
+
+initializeDataFiles()
+  .then(() => Promise.all([loadScheduledTasks(), loadQqBotConfig(), loadQqBotSessions()]))
   .then(() => {
     startScheduledTaskLoop();
     server.listen(PORT, HOST, () => {

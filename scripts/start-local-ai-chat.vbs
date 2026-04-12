@@ -1,11 +1,12 @@
 Option Explicit
 
-Dim shell, fso, scriptDir, logsDir, nodePath, command
+Dim shell, fso, scriptDir, projectRoot, logsDir, nodePath, command
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
-logsDir = fso.BuildPath(scriptDir, "logs")
+projectRoot = fso.GetParentFolderName(scriptDir)
+logsDir = fso.BuildPath(projectRoot, "logs")
 
 If Not fso.FolderExists(logsDir) Then
   fso.CreateFolder logsDir
@@ -18,6 +19,9 @@ Else
   nodePath = """" & fso.BuildPath(nodePath, "node.exe") & """"
 End If
 
-command = "cmd.exe /c cd /d """ & scriptDir & """ && " & nodePath & " server.js >> """ & fso.BuildPath(logsDir, "server.log") & """ 2>> """ & fso.BuildPath(logsDir, "server-error.log") & """ && exit /b 0"
+shell.CurrentDirectory = projectRoot
+command = nodePath & " server.js"
+shell.Run command, 0, False
 
+command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""scripts\skill-runner.ps1"""
 shell.Run command, 0, False
