@@ -22,6 +22,3 @@ End If
 shell.CurrentDirectory = projectRoot
 command = nodePath & " server.js"
 shell.Run command, 0, False
-
-command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""scripts\skill-runner.ps1"""
-shell.Run command, 0, False

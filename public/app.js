@@ -87,6 +87,42 @@ TOOLS.push(
   {
     type: "function",
     function: {
+      name: "run_shell_command",
+      description: "Run a PowerShell command inside the current workspace when shell execution or command-line work is explicitly needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string" },
+          workingDirectory: { type: "string" },
+          timeoutMs: { type: "number" },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_cli_command",
+      description: "Run a CLI executable with arguments inside the current workspace when direct command-line invocation is explicitly needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          executable: { type: "string" },
+          args: {
+            type: "array",
+            items: { type: "string" },
+          },
+          workingDirectory: { type: "string" },
+          timeoutMs: { type: "number" },
+        },
+        required: ["executable"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "send_qq_message",
       description: "Send a QQ message through a configured local OneBot or NapCat compatible HTTP bridge when the user explicitly asks to send or push to QQ.",
       parameters: {
@@ -104,18 +140,20 @@ TOOLS.push(
     type: "function",
     function: {
       name: "create_scheduled_task",
-      description: "Create a scheduled task only when the user explicitly asks to create/schedule an automatic recurring task.",
+      description: "Create a scheduled task only when the user explicitly asks to create/schedule an automatic recurring task. You must provide a cronExpression, for example daily 8:10 is `10 8 * * *`.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string" },
           prompt: { type: "string" },
-          model: { type: "string" },
           scheduleType: { type: "string", enum: ["cron"] },
           cronExpression: { type: "string" },
           enabled: { type: "boolean" },
+          qqPushEnabled: { type: "boolean" },
+          qqTargetType: { type: "string", enum: ["private", "group"] },
+          qqTargetId: { type: "string" },
         },
-        required: ["name", "prompt", "model"],
+        required: ["name", "prompt", "cronExpression"],
       },
     },
   },
@@ -138,10 +176,12 @@ TOOLS.push(
           id: { type: "string" },
           name: { type: "string" },
           prompt: { type: "string" },
-          model: { type: "string" },
           scheduleType: { type: "string", enum: ["cron"] },
           cronExpression: { type: "string" },
           enabled: { type: "boolean" },
+          qqPushEnabled: { type: "boolean" },
+          qqTargetType: { type: "string", enum: ["private", "group"] },
+          qqTargetId: { type: "string" },
         },
         required: ["id"],
       },
@@ -181,10 +221,12 @@ const WRITE_TOOL_NAMES = new Set(["write_file", "delete_file"]);
 const SKILL_DISCOVERY_TOOL_NAMES = new Set(["search_clawhub_skills"]);
 const SKILL_INSTALL_TOOL_NAMES = new Set(["install_clawhub_skill"]);
 const SKILL_EXECUTION_TOOL_NAMES = new Set(["run_workspace_skill"]);
+const COMMAND_EXECUTION_TOOL_NAMES = new Set(["run_shell_command", "run_cli_command"]);
 const SCHEDULER_TOOL_NAMES = new Set(["create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task"]);
 const QQ_TOOL_NAMES = new Set(["send_qq_message"]);
 const SUPPORTED_TOOL_NAMES = new Set(TOOLS.map((tool) => tool?.function?.name).filter(Boolean));
 let workspacePersonaPresets = [];
+const BEIJING_TIME_ZONE = "Asia/Shanghai";
 
 const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, sending: false, previewMaximized: false, toolActivities: [] };
 const $ = (s) => document.querySelector(s);
@@ -192,14 +234,15 @@ const els = {
   chatForm: $("#chat-form"), chatMessages: $("#chat-messages"), userInput: $("#user-input"), sendButton: $("#send-button"),
   statusBar: $("#status-bar"), baseUrl: $("#base-url"), apiPath: $("#api-path"), modelSelect: $("#model-select"),
   assistantName: $("#assistant-name"), userName: $("#user-name"), systemPrompt: $("#system-prompt"), contextLimit: $("#context-limit"),
-  qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqTargetProfileSelect: $("#qq-target-profile-select"), qqTargetProfileMeta: $("#qq-target-profile-meta"), saveQqTargetProfile: $("#save-qq-target-profile"), deleteQqTargetProfile: $("#delete-qq-target-profile"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
-  qqBotEnabled: $("#qq-bot-enabled"), qqBotGroupMentionOnly: $("#qq-bot-group-mention-only"), qqTaskPushEnabled: $("#qq-task-push-enabled"), qqBotTriggerPrefix: $("#qq-bot-trigger-prefix"), qqBotAllowedUsers: $("#qq-bot-allowed-users"), qqBotAllowedGroups: $("#qq-bot-allowed-groups"), qqBotPersona: $("#qq-bot-persona"), qqBotPersonaPreset: $("#qq-bot-persona-preset"), qqBotPersonaPresetDescription: $("#qq-bot-persona-preset-description"), qqBotPersonaFileInput: $("#qq-bot-persona-file-input"), importQqBotPersona: $("#import-qq-bot-persona"), exportQqBotPersona: $("#export-qq-bot-persona"), clearQqBotPersona: $("#clear-qq-bot-persona"), qqBotMeta: $("#qq-bot-meta"), qqBotModelSelect: $("#qq-bot-model-select"),
+  qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqWebhookEndpoint: $("#qq-webhook-endpoint"), copyQqWebhookEndpoint: $("#copy-qq-webhook-endpoint"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqTargetProfileSelect: $("#qq-target-profile-select"), qqTargetProfileMeta: $("#qq-target-profile-meta"), saveQqTargetProfile: $("#save-qq-target-profile"), deleteQqTargetProfile: $("#delete-qq-target-profile"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
+  qqBotEnabled: $("#qq-bot-enabled"), qqBotGroupMentionOnly: $("#qq-bot-group-mention-only"), qqTaskPushEnabled: $("#qq-task-push-enabled"), qqBotTriggerPrefix: $("#qq-bot-trigger-prefix"), qqBotAllowedUsers: $("#qq-bot-allowed-users"), qqBotAllowedGroups: $("#qq-bot-allowed-groups"), qqBotPersona: $("#qq-bot-persona"), qqBotPersonaPreset: $("#qq-bot-persona-preset"), qqBotPersonaPresetDescription: $("#qq-bot-persona-preset-description"), qqBotPersonaFileInput: $("#qq-bot-persona-file-input"), importQqBotPersona: $("#import-qq-bot-persona"), exportQqBotPersona: $("#export-qq-bot-persona"), clearQqBotPersona: $("#clear-qq-bot-persona"), qqBotMeta: $("#qq-bot-meta"), qqBotModelSelect: $("#qq-bot-model-select"), qqToolsReadEnabled: $("#qq-tools-read-enabled"), qqToolsWriteEnabled: $("#qq-tools-write-enabled"), qqToolsCommandEnabled: $("#qq-tools-command-enabled"), qqToolsSkillEnabled: $("#qq-tools-skill-enabled"), qqToolsFileSendEnabled: $("#qq-tools-file-send-enabled"), qqFileShareRoots: $("#qq-file-share-roots"), qqToolPermissionMeta: $("#qq-tool-permission-meta"), qqProfileToolsReadEnabled: $("#qq-profile-tools-read-enabled"), qqProfileToolsWriteEnabled: $("#qq-profile-tools-write-enabled"), qqProfileToolsCommandEnabled: $("#qq-profile-tools-command-enabled"), qqProfileToolsSkillEnabled: $("#qq-profile-tools-skill-enabled"), qqProfileToolsFileSendEnabled: $("#qq-profile-tools-file-send-enabled"), qqProfileFileShareRoots: $("#qq-profile-file-share-roots"), qqProfileToolPermissionMeta: $("#qq-profile-tool-permission-meta"), qqLoadSkills: $("#qq-load-skills"), qqApplySkill: $("#qq-apply-skill"), qqClearSkillSelection: $("#qq-clear-skill-selection"), qqDisableSkill: $("#qq-disable-skill"), qqSkillsList: $("#qq-skills-list"), qqSkillMeta: $("#qq-skill-meta"), qqSkillPreview: $("#qq-skill-preview"),
   assistantAvatarInput: $("#assistant-avatar-input"), userAvatarInput: $("#user-avatar-input"),
   uploadAssistantAvatar: $("#upload-assistant-avatar"), uploadUserAvatar: $("#upload-user-avatar"),
   clearAssistantAvatar: $("#clear-assistant-avatar"), clearUserAvatar: $("#clear-user-avatar"),
   assistantAvatarPreview: $("#assistant-avatar-preview"), userAvatarPreview: $("#user-avatar-preview"),
   metricContextChars: $("#metric-context-chars-chip"), metricEstimatedPrompt: $("#metric-est-prompt-chip"), metricTotal: $("#metric-total-chip"), metricSpeed: $("#metric-speed-chip"),
   metricContextUsage: $("#metric-context-usage-chip"), usageBarFill: $("#usage-bar-fill"), modelSelectionMeta: $("#model-selection-meta"),
+  conversationMiniheadText: document.querySelector(".section-minihead-text"),
   fileInput: $("#file-input"), fileList: $("#file-list"), composerFiles: $("#composer-files"), clearFiles: $("#clear-files"), attachFilesInline: $("#attach-files-inline"),
   clearChat: $("#clear-chat"), deleteChatSession: $("#delete-chat-session"), testConnection: $("#test-connection"), loadModels: $("#load-models"),
   personaPrompt: $("#persona-prompt"), personaPreset: $("#persona-preset"), personaPresetDescription: $("#persona-preset-description"),
@@ -219,6 +262,15 @@ const endpoint = (path, base = (els.baseUrl?.value.trim() || location.origin)) =
 const chatEndpoint = () => endpoint(els.apiPath?.value.trim() || "/api/v1/chat/completions");
 const modelsEndpoint = () => endpoint("/api/v1/models");
 const selectedModel = () => els.modelSelect?.value?.trim() || "";
+function formatBeijingDateTime(value = Date.now(), options = {}) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
+    hour12: false,
+    ...options,
+  }).replace(/\//g, "-");
+}
 function getSavedModelContextLimits() {
   const s = saved();
   const mapping = s.modelContextLimits;
@@ -426,7 +478,47 @@ function getQqBotSettings() {
     allowedGroups: els.qqBotAllowedGroups?.value || persisted.qqBotAllowedGroups || "",
     persona: els.qqBotPersona?.value || persisted.qqBotPersona || "",
     personaPreset: els.qqBotPersonaPreset?.value || persisted.qqBotPersonaPreset || "none",
+    fileShareRoots: els.qqFileShareRoots?.value || persisted.qqFileShareRoots || "data/personas",
+    toolReadEnabled: Boolean(els.qqToolsReadEnabled?.checked ?? (persisted.qqToolReadEnabled !== false)),
+    toolWriteEnabled: Boolean(els.qqToolsWriteEnabled?.checked ?? persisted.qqToolWriteEnabled),
+    toolCommandEnabled: Boolean(els.qqToolsCommandEnabled?.checked ?? persisted.qqToolCommandEnabled),
+    toolSkillEnabled: Boolean(els.qqToolsSkillEnabled?.checked ?? persisted.qqToolSkillEnabled),
+    toolFileSendEnabled: Boolean(els.qqToolsFileSendEnabled?.checked ?? persisted.qqToolFileSendEnabled),
   };
+}
+
+function getQqProfileToolSettings() {
+  const bot = getQqBotSettings();
+  return {
+    toolReadEnabled: Boolean(els.qqProfileToolsReadEnabled?.checked ?? bot.toolReadEnabled),
+    toolWriteEnabled: Boolean(els.qqProfileToolsWriteEnabled?.checked ?? bot.toolWriteEnabled),
+    toolCommandEnabled: Boolean(els.qqProfileToolsCommandEnabled?.checked ?? bot.toolCommandEnabled),
+    toolSkillEnabled: Boolean(els.qqProfileToolsSkillEnabled?.checked ?? bot.toolSkillEnabled),
+    toolFileSendEnabled: Boolean(els.qqProfileToolsFileSendEnabled?.checked ?? bot.toolFileSendEnabled),
+  };
+}
+
+function formatQqToolPermissionSummary(config = {}) {
+  const enabled = [];
+  if (config.toolReadEnabled !== false) enabled.push("读取");
+  if (config.toolWriteEnabled) enabled.push("写入");
+  if (config.toolCommandEnabled) enabled.push("命令");
+  if (config.toolSkillEnabled) enabled.push("技能");
+  if (config.toolFileSendEnabled) enabled.push("发文件");
+  return enabled.length ? enabled.join("、") : "未开放";
+}
+
+function renderQqToolPermissionMeta() {
+  const bot = getQqBotSettings();
+  if (els.qqToolPermissionMeta) {
+    const roots = String(bot.fileShareRoots || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    els.qqToolPermissionMeta.textContent = `公共工具权限：${formatQqToolPermissionSummary(bot)}。共享目录：${roots.length ? roots.join("、") : "data/personas"}。默认建议仅开放读取，危险操作按对象单独开启。`;
+  }
+  if (els.qqProfileToolPermissionMeta) {
+    const profileTools = getQqProfileToolSettings();
+    const roots = String(els.qqProfileFileShareRoots?.value || els.qqFileShareRoots?.value || "data/personas").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    els.qqProfileToolPermissionMeta.textContent = `当前对象工具权限：${formatQqToolPermissionSummary(profileTools)}。共享目录：${roots.length ? roots.join("、") : "data/personas"}。保存对象配置后，QQ 回复会按这组权限决定是否允许写文件、执行命令、运行技能或发送文件。`;
+  }
 }
 
 function renderQqBotMeta() {
@@ -612,6 +704,81 @@ function cloneSkillForStorage(skill) {
   };
 }
 
+const ACTIVE_SKILL_SUMMARY_MAX_CHARS = 320;
+const ACTIVE_SKILL_DETAIL_MAX_CHARS = 1600;
+
+function clampText(text, limit = ACTIVE_SKILL_SUMMARY_MAX_CHARS) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return "";
+  return normalized.length > limit ? `${normalized.slice(0, limit).trim()}…` : normalized;
+}
+
+function skillSummaryText(skill, limit = ACTIVE_SKILL_SUMMARY_MAX_CHARS) {
+  if (!skill) return "";
+  const summary = String(skill.summary || "").trim();
+  if (summary) return clampText(summary, limit);
+  const content = String(skill.content || skill.files?.[0]?.content || "").trim();
+  if (!content) return "";
+  const firstParagraph = content
+    .split(/\n\s*\n/)
+    .map((part) => String(part || "").trim())
+    .find(Boolean) || content;
+  return clampText(firstParagraph, limit);
+}
+
+function toApiMessage(message) {
+  if (!message || typeof message !== "object") return message;
+  const apiMessage = { role: message.role };
+  if (Object.prototype.hasOwnProperty.call(message, "content")) apiMessage.content = message.content;
+  if (Object.prototype.hasOwnProperty.call(message, "tool_calls")) apiMessage.tool_calls = message.tool_calls;
+  if (Object.prototype.hasOwnProperty.call(message, "tool_call_id")) apiMessage.tool_call_id = message.tool_call_id;
+  if (Object.prototype.hasOwnProperty.call(message, "name")) apiMessage.name = message.name;
+  return apiMessage;
+}
+
+function toApiMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).map((message) => toApiMessage(message));
+}
+
+function estimateContentChars(content) {
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    return content.reduce((sum, item) => {
+      if (typeof item === "string") return sum + item.length;
+      if (!item || typeof item !== "object") return sum;
+      if (typeof item.text === "string") return sum + item.text.length;
+      if (item.type === "image_url") return sum + 120;
+      return sum + JSON.stringify(item).length;
+    }, 0);
+  }
+  if (!content || typeof content !== "object") return 0;
+  return JSON.stringify(content).length;
+}
+
+function estimateSystemMessageChars() {
+  return toApiMessages(systemMessages()).reduce((sum, message) => sum + estimateContentChars(message?.content), 0);
+}
+
+function estimateConversationHistoryChars() {
+  return state.messages.reduce((sum, message) => sum + estimateContentChars(message?.content), 0);
+}
+
+function estimateAttachedFileChars() {
+  return state.files.reduce((sum, file) => sum + (file.isImage ? 120 : String(file.content || "").length), 0);
+}
+
+function estimateDraftChars() {
+  return els.userInput?.value.length || 0;
+}
+
+function estimateCurrentPromptTokens() {
+  const chars = estimateSystemMessageChars() + estimateConversationHistoryChars() + estimateAttachedFileChars() + estimateDraftChars();
+  return {
+    chars,
+    estimatedTokens: Math.ceil(chars / 4),
+  };
+}
+
 function cloneSettingBundleForStorage(bundle) {
   if (!bundle || typeof bundle !== "object") return null;
   return {
@@ -673,7 +840,7 @@ function save() {
     contextLimits[selectedModel()] = els.contextLimit.value.trim() || "32768";
   }
   const configGroupState = Object.fromEntries(
-    Array.from(document.querySelectorAll(".config-group[data-config-group]")).map((group) => [
+    Array.from(document.querySelectorAll(".config-group[data-config-group], .sub-config-fold[data-config-group]")).map((group) => [
       group.dataset.configGroup,
       group.open,
     ])
@@ -697,6 +864,12 @@ function save() {
     qqBotAllowedGroups: els.qqBotAllowedGroups?.value || "",
     qqBotPersona: els.qqBotPersona?.value || "",
     qqBotPersonaPreset: els.qqBotPersonaPreset?.value || "none",
+    qqFileShareRoots: els.qqFileShareRoots?.value || "",
+    qqToolReadEnabled: Boolean(els.qqToolsReadEnabled?.checked ?? true),
+    qqToolWriteEnabled: Boolean(els.qqToolsWriteEnabled?.checked),
+    qqToolCommandEnabled: Boolean(els.qqToolsCommandEnabled?.checked),
+    qqToolSkillEnabled: Boolean(els.qqToolsSkillEnabled?.checked),
+    qqToolFileSendEnabled: Boolean(els.qqToolsFileSendEnabled?.checked),
     assistantAvatar: old.assistantAvatar || "",
     userAvatar: old.userAvatar || "",
     configGroupState,
@@ -730,6 +903,11 @@ function load() {
   if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = s.qqBotAllowedGroups || "";
   if (els.qqBotPersona) els.qqBotPersona.value = s.qqBotPersona || "";
   if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = s.qqBotPersonaPreset || "none";
+  if (els.qqToolsReadEnabled) els.qqToolsReadEnabled.checked = s.qqToolReadEnabled !== false;
+  if (els.qqToolsWriteEnabled) els.qqToolsWriteEnabled.checked = Boolean(s.qqToolWriteEnabled);
+  if (els.qqToolsCommandEnabled) els.qqToolsCommandEnabled.checked = Boolean(s.qqToolCommandEnabled);
+  if (els.qqToolsSkillEnabled) els.qqToolsSkillEnabled.checked = Boolean(s.qqToolSkillEnabled);
+  if (els.qqToolsFileSendEnabled) els.qqToolsFileSendEnabled.checked = Boolean(s.qqToolFileSendEnabled);
   if (els.personaPreset) els.personaPreset.value = s.personaPreset || "none";
   if (els.modelSelect && s.model) { const o = document.createElement("option"); o.value = s.model; o.textContent = s.model; els.modelSelect.replaceChildren(o); els.modelSelect.value = s.model; }
   applyContextLimitForModel(s.model || "");
@@ -746,24 +924,52 @@ function load() {
 }
 
 function applyConfigGroupState(configGroupState = {}) {
-  document.querySelectorAll(".config-group[data-config-group]").forEach((group) => {
+  document.querySelectorAll(".config-group[data-config-group], .sub-config-fold[data-config-group]").forEach((group) => {
     const key = group.dataset.configGroup;
     if (Object.prototype.hasOwnProperty.call(configGroupState, key)) {
       group.open = Boolean(configGroupState[key]);
     }
   });
 }
+function renderConversationMiniheadMeta() {
+  if (!els.conversationMiniheadText) return;
+  const modelText = selectedModel() || "未选择模型";
+  const personaContent = String(els.personaPrompt?.value || "").trim();
+  const personaPresetId = els.personaPreset?.value || "none";
+  const personaPresetName = personaPresetId !== "none"
+    ? String(els.personaPreset?.selectedOptions?.[0]?.textContent || "").trim()
+    : "";
+  const personaText = personaPresetName || (personaContent ? "自定义人设" : "无人设");
+  const activeSkills = getActiveSkills();
+  const shownSkills = activeSkills.slice(0, 5);
+  const skillMarkup = shownSkills.length
+    ? shownSkills.map((skill) => {
+      const summary = String(skill.summary || "").trim();
+      const content = String(skill.content || "").trim();
+      const tooltip = summary || content || skill.name;
+      return `<span class="minihead-meta-value is-hoverable" title="${esc(tooltip)}">${esc(skill.name)}</span>`;
+    }).join("、")
+    : '<span class="minihead-meta-value">无技能</span>';
+  const overflowText = activeSkills.length > 5
+    ? `<span class="minihead-meta-overflow"> 等 ${activeSkills.length} 个</span>`
+    : "";
+  const personaMarkup = `<span class="minihead-meta-value${personaContent ? " is-hoverable" : ""}"${personaContent ? ` title="${esc(personaContent)}"` : ""}>${esc(personaText)}</span>`;
+  els.conversationMiniheadText.innerHTML = [
+    `<span class="minihead-meta-item"><span class="minihead-meta-label">模型</span><span class="minihead-meta-value">${esc(modelText)}</span></span>`,
+    `<span class="minihead-meta-separator">·</span>`,
+    `<span class="minihead-meta-item"><span class="minihead-meta-label">人设</span>${personaMarkup}</span>`,
+    `<span class="minihead-meta-separator">·</span>`,
+    `<span class="minihead-meta-item"><span class="minihead-meta-label">技能</span>${skillMarkup}${overflowText}</span>`,
+  ].join("");
+}
+
 function renderModelMeta() {
   if (!els.modelSelectionMeta) return;
   els.modelSelectionMeta.textContent = selectedModel() ? `当前模型：${selectedModel()}` : "当前未选择模型";
+  renderConversationMiniheadMeta();
 }
 function refreshMetrics(usage = null, elapsedMs = null) {
-  const sys = [els.systemPrompt?.value || "", els.personaPrompt?.value || "", state.activeSkill ? JSON.stringify(state.activeSkill).slice(0, 3000) : ""].join("\n").length;
-  const his = state.messages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n").length;
-  const files = state.files.reduce((n, f) => n + (f.isImage ? 120 : f.content.length), 0);
-  const draft = els.userInput?.value.length || 0;
-  const chars = sys + his + files + draft;
-  const est = Math.ceil(chars / 4);
+  const { chars, estimatedTokens: est } = estimateCurrentPromptTokens();
   const limit = Number(els.contextLimit?.value || 32768) || 32768;
   const totalText = usage?.total_tokens != null ? String(usage.total_tokens) : (els.metricTotal?.dataset.value || "-");
   const speedText = usage?.completion_tokens && elapsedMs ? `${(usage.completion_tokens / Math.max(elapsedMs / 1000, 0.1)).toFixed(1)} tok/s` : (els.metricSpeed?.dataset.value || "-");
@@ -795,12 +1001,7 @@ function rich(text) {
 }
 function htmlPreview(text) { const m = String(text || "").match(/```html\s*([\s\S]*?)```/i); return m ? m[1].trim() : ""; }
 function formatMessageTimestamp(timestamp = Date.now()) {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-  return date.toLocaleString("zh-CN", {
-    hour12: false,
+  return formatBeijingDateTime(timestamp, {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -824,6 +1025,142 @@ function messageAvatarMarkup(role) {
   }
   return avatar;
 }
+
+function scrollChatToBottom(behavior = "smooth") {
+  if (!els.chatMessages) return;
+  if (behavior === "auto") {
+    els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+    return;
+  }
+  requestAnimationFrame(() => els.chatMessages?.scrollTo({ top: els.chatMessages.scrollHeight, behavior }));
+}
+
+function appendMessageImages(bubble, images = []) {
+  if (!bubble || !images.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "file-list compact image-strip";
+  images.forEach((img, i) => {
+    const item = document.createElement("div");
+    item.className = "file-item";
+    const el = document.createElement("img");
+    el.className = "file-thumb";
+    el.src = img.dataUrl;
+    el.alt = img.name;
+    el.addEventListener("dblclick", () => openLightbox(images, i));
+    item.append(el);
+    wrap.append(item);
+  });
+  bubble.append(wrap);
+}
+
+function appendMessageHtmlPreview(bubble, content) {
+  if (!bubble) return;
+  const html = htmlPreview(content);
+  if (!html) return;
+  const row = document.createElement("div");
+  row.className = "button-row left";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost-button";
+  button.textContent = "预览 HTML";
+  button.onclick = () => openPreview(html);
+  row.append(button);
+  bubble.append(row);
+}
+
+function buildMessageCard(role, cls = role, images = [], timestamp = Date.now()) {
+  const card = document.createElement("article");
+  card.className = `message ${cls}`;
+  const avatar = messageAvatarMarkup(role);
+  const stack = document.createElement("div");
+  stack.className = "message-stack";
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble";
+  const head = document.createElement("div");
+  head.className = "message-head";
+  const r = document.createElement("div");
+  r.className = "message-role";
+  r.textContent = roleName(role);
+  const time = document.createElement("time");
+  time.className = "message-time";
+  time.dateTime = new Date(timestamp).toISOString();
+  time.textContent = formatMessageTimestamp(timestamp);
+  const contentEl = document.createElement("div");
+  contentEl.className = "message-content";
+  head.append(r, time);
+  bubble.append(contentEl);
+  appendMessageImages(bubble, images);
+  stack.append(head, bubble);
+  card.append(avatar, stack);
+  els.chatMessages?.append(card);
+  scrollChatToBottom("smooth");
+  return { card, bubble, contentEl };
+}
+
+function getAssistantTypingCharactersPerStep() {
+  const speedLabel = String(els.metricSpeed?.dataset.value || "").trim();
+  const tokensPerSecond = Number.parseFloat(speedLabel);
+  if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
+    return 2;
+  }
+  const charactersPerSecond = Math.min(Math.max(tokensPerSecond * 2.2, 12), 72);
+  return Math.max(1, Math.round(charactersPerSecond / 24));
+}
+
+function getAssistantTypingFrameDelay() {
+  const speedLabel = String(els.metricSpeed?.dataset.value || "").trim();
+  const tokensPerSecond = Number.parseFloat(speedLabel);
+  if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
+    return 42;
+  }
+  return Math.min(Math.max(Math.round(1000 / Math.max(tokensPerSecond * 1.2, 10)), 22), 56);
+}
+
+function finalizeAssistantMessageContent(contentEl, bubble, content = "") {
+  if (!contentEl || !bubble) return;
+  contentEl.classList.remove("is-typing");
+  contentEl.innerHTML = rich(content);
+  enhanceMessageCodeBlocks(contentEl);
+  appendMessageHtmlPreview(bubble, content);
+}
+
+async function appendAssistantMessageWithTyping(content, cls = "assistant", images = [], timestamp = Date.now()) {
+  const { card, bubble, contentEl } = buildMessageCard("assistant", cls, images, timestamp);
+  const fullText = String(content || "");
+  if (!fullText) {
+    finalizeAssistantMessageContent(contentEl, bubble, fullText);
+    return card;
+  }
+
+  contentEl.classList.add("is-typing");
+  let index = 0;
+  const step = getAssistantTypingCharactersPerStep();
+  const delay = getAssistantTypingFrameDelay();
+  const minDurationMs = Math.min(Math.max(fullText.length * 18, 420), 2400);
+  const startedAt = Date.now();
+
+  await new Promise((resolve) => {
+    const tick = () => {
+      const elapsed = Date.now() - startedAt;
+      const progress = minDurationMs > 0 ? Math.min(elapsed / minDurationMs, 1) : 1;
+      const targetIndex = Math.max(index + step, Math.ceil(fullText.length * progress));
+      index = Math.min(fullText.length, targetIndex);
+      contentEl.textContent = fullText.slice(0, index);
+      scrollChatToBottom("auto");
+      if (index >= fullText.length && elapsed >= minDurationMs) {
+        resolve();
+        return;
+      }
+      window.setTimeout(tick, delay);
+    };
+    tick();
+  });
+
+  finalizeAssistantMessageContent(contentEl, bubble, fullText);
+  scrollChatToBottom("smooth");
+  return card;
+}
+
 function appendMessage(role, content, cls = role, images = [], timestamp = Date.now()) {
   if (role === "system") {
     setStatus(content, cls === "error" ? "error" : cls === "success" ? "success" : "default");
@@ -834,25 +1171,10 @@ function appendMessage(role, content, cls = role, images = [], timestamp = Date.
       .split(/\n\s*\n/)
       .find((part) => isDesktopAutomationRestrictionMessage(part)) || String(content || "");
   }
-  const card = document.createElement("article"); card.className = `message ${cls}`;
-  const avatar = messageAvatarMarkup(role);
-  const bubble = document.createElement("div"); bubble.className = "message-bubble";
-  const head = document.createElement("div"); head.className = "message-head";
-  const r = document.createElement("div"); r.className = "message-role"; r.textContent = roleName(role);
-  const time = document.createElement("time"); time.className = "message-time"; time.dateTime = new Date(timestamp).toISOString(); time.textContent = formatMessageTimestamp(timestamp);
-  const c = document.createElement("div"); c.className = "message-content"; c.innerHTML = rich(content);
-  enhanceMessageCodeBlocks(c);
-  head.append(r, time);
-  bubble.append(head, c);
-  if (images.length) {
-    const wrap = document.createElement("div"); wrap.className = "file-list compact image-strip";
-    images.forEach((img, i) => { const item = document.createElement("div"); item.className = "file-item"; const el = document.createElement("img"); el.className = "file-thumb"; el.src = img.dataUrl; el.alt = img.name; el.addEventListener("dblclick", () => openLightbox(images, i)); item.append(el); wrap.append(item); });
-    bubble.append(wrap);
-  }
-  const html = htmlPreview(content);
-  if (html) { const row = document.createElement("div"); row.className = "button-row left"; const b = document.createElement("button"); b.type = "button"; b.className = "ghost-button"; b.textContent = "预览 HTML"; b.onclick = () => openPreview(html); row.append(b); bubble.append(row); }
-  card.append(avatar, bubble);
-  els.chatMessages?.append(card); requestAnimationFrame(() => els.chatMessages?.scrollTo({ top: els.chatMessages.scrollHeight, behavior: "smooth" }));
+  const { card, bubble, contentEl } = buildMessageCard(role, cls, images, timestamp);
+  contentEl.innerHTML = rich(content);
+  enhanceMessageCodeBlocks(contentEl);
+  appendMessageHtmlPreview(bubble, content);
   return card;
 }
 
@@ -860,6 +1182,8 @@ function appendPendingMessage() {
   const card = document.createElement("article");
   card.className = "message assistant pending";
   const avatar = messageAvatarMarkup("assistant");
+  const stack = document.createElement("div");
+  stack.className = "message-stack";
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
   const head = document.createElement("div");
@@ -875,8 +1199,9 @@ function appendPendingMessage() {
   content.className = "message-content";
   content.innerHTML = '<div class="thinking-line"><span class="thinking-text">正在处理请求</span><span class="thinking-dots"><span></span><span></span><span></span></span></div>';
   head.append(role, time);
-  bubble.append(head, content);
-  card.append(avatar, bubble);
+  bubble.append(content);
+  stack.append(head, bubble);
+  card.append(avatar, stack);
   els.chatMessages?.append(card);
   requestAnimationFrame(() => els.chatMessages?.scrollTo({ top: els.chatMessages.scrollHeight, behavior: "smooth" }));
   return card;
@@ -899,7 +1224,9 @@ function renderToolActivity() {
   els.toolActivityList.replaceChildren(...state.toolActivities.map((x) => {
     const el = document.createElement("div"); el.className = `tool-activity-item ${x.status}`;
     const updatedAt = x.updatedAt ? new Date(x.updatedAt) : null;
-    const timeText = updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+    const timeText = updatedAt && !Number.isNaN(updatedAt.getTime())
+      ? formatBeijingDateTime(updatedAt, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      : "";
     el.innerHTML = `<div class="tool-activity-head"><strong class="tool-activity-title">${esc(x.name)}</strong><span class="tool-activity-badge">${x.status === "running" ? "执行中" : "已完成"}</span></div><div class="tool-activity-text">${esc(x.text)}</div>${timeText ? `<div class="tool-activity-time">${esc(timeText)}</div>` : ""}`; return el;
   }));
 }
@@ -910,6 +1237,130 @@ function toolActivity(id, status, name, text) {
   localStorage.setItem(TOOL_ACTIVITY_CACHE_KEY, JSON.stringify(state.toolActivities)); renderToolActivity();
 }
 function loadToolActivity() { try { state.toolActivities = JSON.parse(localStorage.getItem(TOOL_ACTIVITY_CACHE_KEY) || "[]"); } catch { state.toolActivities = []; } renderToolActivity(); }
+
+function formatToolResultForChat(name, payload, status = "success") {
+  const safeName = String(name || "unknown");
+  const title = status === "error" ? "工具执行失败" : "工具执行结果";
+  const lines = [`### ${title}`, `工具：\`${safeName}\``];
+
+  if (payload && typeof payload === "object") {
+    if (payload.cancelled) {
+      lines.push("", "结果：本次工具调用已取消。");
+      return lines.join("\n");
+    }
+    if (payload.ignored && payload.message) {
+      lines.push("", String(payload.message));
+      return lines.join("\n");
+    }
+    if (payload.error && typeof payload.error === "string" && status === "error") {
+      lines.push("", payload.error);
+    }
+  }
+
+  let serialized = "";
+  if (typeof payload === "string") {
+    serialized = payload.trim();
+  } else if (payload != null) {
+    try {
+      serialized = JSON.stringify(payload, null, 2);
+    } catch {
+      serialized = String(payload);
+    }
+  }
+
+  if (serialized) {
+    const limited = serialized.length > 3200 ? `${serialized.slice(0, 3200).trim()}\n...` : serialized;
+    const looksLikeJson = limited.startsWith("{") || limited.startsWith("[");
+    lines.push("", looksLikeJson ? `\`\`\`json\n${limited}\n\`\`\`` : limited);
+  }
+
+  return lines.join("\n");
+}
+
+function appendToolResultToChat(name, payload, status = "success") {
+  const message = formatToolResultForChat(name, payload, status);
+  return appendMessage("assistant", message, status === "error" ? "error" : "success");
+}
+
+formatToolResultForChat = function formatToolResultForChatCompact(name, payload, status = "success") {
+  const safeName = String(name || "unknown");
+  const title = status === "error" ? "工具失败" : "工具结果";
+  const lines = [`### ${title}`, `\`${safeName}\``];
+
+  if (payload && typeof payload === "object") {
+    if (payload.cancelled) {
+      lines.push("", "本次工具调用已取消。");
+      return lines.join("\n");
+    }
+    if (payload.ignored && payload.message) {
+      lines.push("", String(payload.message));
+      return lines.join("\n");
+    }
+    if (payload.error && typeof payload.error === "string" && status === "error") {
+      lines.push("", payload.error);
+    }
+  }
+
+  if (typeof payload === "string") {
+    const text = payload.trim();
+    if (text) {
+      lines.push("", text.length > 320 ? `${text.slice(0, 320).trim()}...` : text);
+    }
+    return lines.join("\n");
+  }
+
+  if (Array.isArray(payload)) {
+    lines.push("", `返回 ${payload.length} 项结果。`);
+    return lines.join("\n");
+  }
+
+  if (payload && typeof payload === "object") {
+    const preferredKeys = [
+      "message",
+      "path",
+      "installedTo",
+      "name",
+      "skillName",
+      "targetId",
+      "targetType",
+      "bytesWritten",
+      "deleted",
+      "exitCode",
+      "stdout",
+      "stderr",
+      "content",
+      "entries",
+    ];
+    const summaryLines = [];
+    preferredKeys.forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(payload, key)) return;
+      const value = payload[key];
+      if (value == null || value === "") return;
+      if (Array.isArray(value)) {
+        summaryLines.push(`${key}: ${value.length} 项`);
+        return;
+      }
+      if (typeof value === "object") {
+        summaryLines.push(`${key}: 已返回`);
+        return;
+      }
+      const text = String(value).trim();
+      if (!text) return;
+      summaryLines.push(`${key}: ${text.length > 140 ? `${text.slice(0, 140).trim()}...` : text}`);
+    });
+
+    if (summaryLines.length) {
+      lines.push("", ...summaryLines.slice(0, 5));
+      const remainingKeys = Object.keys(payload).filter((key) => !preferredKeys.includes(key));
+      if (remainingKeys.length) {
+        lines.push(`其余字段: ${remainingKeys.slice(0, 5).join("、")}${remainingKeys.length > 5 ? " 等" : ""}`);
+      }
+      return lines.join("\n");
+    }
+  }
+
+  return lines.join("\n");
+};
 
 function setToolActivityModal(open) {
   if (!els.toolActivityModal) return;
@@ -1259,8 +1710,10 @@ async function submit(ev) {
   finally { state.sending = false; if (els.sendButton) { els.sendButton.disabled = false; els.sendButton.textContent = "发送消息"; } }
 }
 
+const initialSubmitHandler = submit;
+
 function bind() {
-  els.chatForm?.addEventListener("submit", submit);
+  els.chatForm?.addEventListener("submit", initialSubmitHandler);
   els.userInput?.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); els.chatForm?.requestSubmit(); } });
   els.userInput?.addEventListener("input", () => refreshMetrics());
   els.settingsTrigger?.addEventListener("click", () => setSettingsModal(true));
@@ -1270,6 +1723,9 @@ function bind() {
   els.toolActivityClose?.addEventListener("click", () => setToolActivityModal(false));
   els.toolActivityBackdrop?.addEventListener("click", () => setToolActivityModal(false));
   document.querySelectorAll(".config-group[data-config-group]").forEach((group) => {
+    group.addEventListener("toggle", () => save());
+  });
+  document.querySelectorAll(".sub-config-fold[data-config-group]").forEach((group) => {
     group.addEventListener("toggle", () => save());
   });
   document.addEventListener("keydown", (e) => {
@@ -2421,6 +2877,11 @@ function collectQqSettingsSnapshot() {
     qqBotAllowedGroups: els.qqBotAllowedGroups?.value || "",
     qqBotPersona: els.qqBotPersona?.value || "",
     qqBotPersonaPreset: els.qqBotPersonaPreset?.value || "none",
+    qqToolReadEnabled: Boolean(els.qqToolsReadEnabled?.checked ?? true),
+    qqToolWriteEnabled: Boolean(els.qqToolsWriteEnabled?.checked),
+    qqToolCommandEnabled: Boolean(els.qqToolsCommandEnabled?.checked),
+    qqToolSkillEnabled: Boolean(els.qqToolsSkillEnabled?.checked),
+    qqToolFileSendEnabled: Boolean(els.qqToolsFileSendEnabled?.checked),
   };
 }
 
@@ -2439,6 +2900,17 @@ function restoreQqSettingsSnapshot(snapshot = {}) {
   if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = snapshot.qqBotAllowedGroups || "";
   if (els.qqBotPersona) els.qqBotPersona.value = snapshot.qqBotPersona || "";
   if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = snapshot.qqBotPersonaPreset || "none";
+  if (els.qqFileShareRoots) els.qqFileShareRoots.value = snapshot.qqFileShareRoots || "data/personas";
+  if (els.qqToolsReadEnabled) els.qqToolsReadEnabled.checked = snapshot.qqToolReadEnabled !== false;
+  if (els.qqToolsWriteEnabled) els.qqToolsWriteEnabled.checked = Boolean(snapshot.qqToolWriteEnabled);
+  if (els.qqToolsCommandEnabled) els.qqToolsCommandEnabled.checked = Boolean(snapshot.qqToolCommandEnabled);
+  if (els.qqToolsSkillEnabled) els.qqToolsSkillEnabled.checked = Boolean(snapshot.qqToolSkillEnabled);
+  if (els.qqToolsFileSendEnabled) els.qqToolsFileSendEnabled.checked = Boolean(snapshot.qqToolFileSendEnabled);
+  if (els.qqToolsReadEnabled) els.qqToolsReadEnabled.checked = snapshot.qqToolReadEnabled !== false;
+  if (els.qqToolsWriteEnabled) els.qqToolsWriteEnabled.checked = Boolean(snapshot.qqToolWriteEnabled);
+  if (els.qqToolsCommandEnabled) els.qqToolsCommandEnabled.checked = Boolean(snapshot.qqToolCommandEnabled);
+  if (els.qqToolsSkillEnabled) els.qqToolsSkillEnabled.checked = Boolean(snapshot.qqToolSkillEnabled);
+  if (els.qqToolsFileSendEnabled) els.qqToolsFileSendEnabled.checked = Boolean(snapshot.qqToolFileSendEnabled);
   renderQqPushMeta();
   renderQqBotMeta();
   renderQqBotPersonaPresetDescription();
@@ -2750,9 +3222,15 @@ save = function saveWithQqPersistence() {
     qqBotAllowedGroups: els.qqBotAllowedGroups?.value || "",
     qqBotPersona: els.qqBotPersona?.value || "",
     qqBotPersonaPreset: els.qqBotPersonaPreset?.value || "none",
+    qqToolReadEnabled: Boolean(els.qqToolsReadEnabled?.checked ?? true),
+    qqToolWriteEnabled: Boolean(els.qqToolsWriteEnabled?.checked),
+    qqToolCommandEnabled: Boolean(els.qqToolsCommandEnabled?.checked),
+    qqToolSkillEnabled: Boolean(els.qqToolsSkillEnabled?.checked),
+    qqToolFileSendEnabled: Boolean(els.qqToolsFileSendEnabled?.checked),
   }));
   renderQqPushMeta();
   renderQqBotMeta();
+  renderQqToolPermissionMeta();
 };
 
 const loadBeforeQqPersistence = load;
@@ -2773,8 +3251,14 @@ load = function loadWithQqPersistence() {
   if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = current.qqBotAllowedGroups || "";
   if (els.qqBotPersona) els.qqBotPersona.value = current.qqBotPersona || "";
   if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = current.qqBotPersonaPreset || "none";
+  if (els.qqToolsReadEnabled) els.qqToolsReadEnabled.checked = current.qqToolReadEnabled !== false;
+  if (els.qqToolsWriteEnabled) els.qqToolsWriteEnabled.checked = Boolean(current.qqToolWriteEnabled);
+  if (els.qqToolsCommandEnabled) els.qqToolsCommandEnabled.checked = Boolean(current.qqToolCommandEnabled);
+  if (els.qqToolsSkillEnabled) els.qqToolsSkillEnabled.checked = Boolean(current.qqToolSkillEnabled);
+  if (els.qqToolsFileSendEnabled) els.qqToolsFileSendEnabled.checked = Boolean(current.qqToolFileSendEnabled);
   renderQqPushMeta();
   renderQqBotMeta();
+  renderQqToolPermissionMeta();
   renderQqBotPersonaPresetDescription();
 };
 
@@ -2897,16 +3381,41 @@ resetChat = function resetChatExplicitOnly() {
 };
 
 function wireQqPushFeature() {
-  [els.qqPushEnabled, els.qqBridgeUrl, els.qqAccessToken, els.qqTargetType, els.qqTargetId, els.qqBotEnabled, els.qqBotGroupMentionOnly, els.qqTaskPushEnabled, els.qqBotModelSelect, els.qqBotTriggerPrefix, els.qqBotAllowedUsers, els.qqBotAllowedGroups, els.qqBotPersona].forEach((el) => {
+  const webhookEndpoint = `${location.origin}/qq/webhook`;
+  if (els.qqWebhookEndpoint) {
+    els.qqWebhookEndpoint.value = webhookEndpoint;
+  }
+  els.copyQqWebhookEndpoint?.addEventListener("click", async () => {
+    spark(els.copyQqWebhookEndpoint);
+    try {
+      await copyCodeText(webhookEndpoint);
+      if (els.copyQqWebhookEndpoint) {
+        const originalText = els.copyQqWebhookEndpoint.textContent;
+        els.copyQqWebhookEndpoint.textContent = "已复制";
+        window.setTimeout(() => {
+          if (els.copyQqWebhookEndpoint) {
+            els.copyQqWebhookEndpoint.textContent = originalText || "复制";
+          }
+        }, 1200);
+      }
+      setStatus("已复制 QQ webhook 地址", "success");
+    } catch (error) {
+      setStatus(`复制 QQ webhook 地址失败：${error.message}`, "error");
+    }
+  });
+
+  [els.qqPushEnabled, els.qqBridgeUrl, els.qqAccessToken, els.qqTargetType, els.qqTargetId, els.qqBotEnabled, els.qqBotGroupMentionOnly, els.qqTaskPushEnabled, els.qqBotModelSelect, els.qqBotTriggerPrefix, els.qqBotAllowedUsers, els.qqBotAllowedGroups, els.qqBotPersona, els.qqFileShareRoots, els.qqToolsReadEnabled, els.qqToolsWriteEnabled, els.qqToolsCommandEnabled, els.qqToolsSkillEnabled, els.qqToolsFileSendEnabled, els.qqProfileToolsReadEnabled, els.qqProfileToolsWriteEnabled, els.qqProfileToolsCommandEnabled, els.qqProfileToolsSkillEnabled, els.qqProfileToolsFileSendEnabled, els.qqProfileFileShareRoots].forEach((el) => {
     el?.addEventListener("change", () => {
       save();
       renderQqPushMeta();
       renderQqBotMeta();
+      renderQqToolPermissionMeta();
       syncQqBotConfig().catch(() => {});
     });
     el?.addEventListener("input", () => {
       renderQqPushMeta();
       renderQqBotMeta();
+      renderQqToolPermissionMeta();
     });
   });
 
@@ -2925,7 +3434,7 @@ function wireQqPushFeature() {
           name: "send_qq_message",
           arguments: {
             ...config,
-            message: `本地 AI QQ 推送测试成功。时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+            message: `本地 AI QQ 推送测试成功。时间：${formatBeijingDateTime(Date.now())}`,
           },
         }),
       });
@@ -2939,6 +3448,7 @@ function wireQqPushFeature() {
 
   renderQqPushMeta();
   renderQqBotMeta();
+  renderQqToolPermissionMeta();
   syncQqBotConfig().catch(() => {});
 }
 
@@ -3100,16 +3610,7 @@ refreshMetrics = function refreshMetricsStableContextUsage(usage = null, elapsed
 
   const limit = getConfiguredContextLimit();
   const totalValue = Number(usage?.total_tokens ?? els.metricTotal?.dataset.value);
-  const estimatedCurrentContext = Math.ceil((
-    [
-      els.systemPrompt?.value || "",
-      els.personaPrompt?.value || "",
-      state.activeSkill ? JSON.stringify(state.activeSkill).slice(0, 3000) : "",
-      state.messages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n"),
-      state.files.map((f) => (f.isImage ? f.name || "image" : f.content || "")).join("\n"),
-      els.userInput?.value || "",
-    ].join("\n").length
-  ) / 4);
+  const estimatedCurrentContext = estimateCurrentPromptTokens().estimatedTokens;
 
   const stableUsage = Math.max(
     Number.isFinite(totalValue) ? totalValue : 0,
@@ -3361,14 +3862,7 @@ refreshMetrics = function refreshMetricsUseTotalForUsage(usage = null, elapsedMs
 
   const limit = getConfiguredContextLimit();
   const totalValue = Number(usage?.total_tokens ?? els.metricTotal?.dataset.value);
-  const fallbackEstimate = Math.ceil(([
-    els.systemPrompt?.value || "",
-    els.personaPrompt?.value || "",
-    state.activeSkill ? JSON.stringify(state.activeSkill).slice(0, 3000) : "",
-    state.messages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n"),
-    state.files.reduce((n, f) => n + (f.isImage ? 120 : f.content.length), 0) ? String(state.files.reduce((n, f) => n + (f.isImage ? 120 : f.content.length), 0)) : "",
-    els.userInput?.value || "",
-  ].join("\n").length) / 4);
+  const fallbackEstimate = estimateCurrentPromptTokens().estimatedTokens;
 
   const usageNumerator = Number.isFinite(totalValue) ? totalValue : fallbackEstimate;
   const usageText = `${usageNumerator} / ${limit} · ${Math.min(usageNumerator / limit * 100, 100).toFixed(1)}%`;
@@ -4150,6 +4644,36 @@ async function schedulerRequest(url, options = {}) {
   return data;
 }
 
+function seemsNaturalScheduledTaskCreateText(text = "") {
+  const source = String(text || "").trim();
+  if (!source) return false;
+  return /(创建|新建|添加|设定|设置|建立|安排|schedule|create)/i.test(source)
+    && /(定时任务|定时|每天|每周|cron|schedule)/i.test(source);
+}
+
+async function tryCreateScheduledTaskFromNaturalText(text = "") {
+  if (!selectedModel() || !seemsNaturalScheduledTaskCreateText(text)) {
+    return null;
+  }
+
+  try {
+    const data = await schedulerRequest("/scheduler/intent/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: String(text || "").trim(),
+        model: selectedModel(),
+      }),
+    });
+    return data?.task ? data : null;
+  } catch (error) {
+    if (error.status === 400) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 function describeScheduledTaskFrequency(task) {
   return task.scheduleType === "cron"
     ? `cron:${task.cronExpression || ""}`
@@ -4592,7 +5116,7 @@ renderToolActivity = function renderToolActivityCompactChip() {
     el.className = `tool-activity-item ${x.status}`;
     const updatedAt = x.updatedAt ? new Date(x.updatedAt) : null;
     const timeText = updatedAt && !Number.isNaN(updatedAt.getTime())
-      ? updatedAt.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      ? formatBeijingDateTime(updatedAt, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
       : "";
     el.innerHTML = `<div class="tool-activity-head"><strong class="tool-activity-title">${esc(x.name)}</strong><span class="tool-activity-badge">${x.status === "running" ? "执行中" : "已完成"}</span></div><div class="tool-activity-text">${esc(x.text)}</div>${timeText ? `<div class="tool-activity-time">${esc(timeText)}</div>` : ""}`;
     return el;
@@ -4600,6 +5124,85 @@ renderToolActivity = function renderToolActivityCompactChip() {
 };
 
 state.lastRequestedUserText = "";
+
+function inferCronExpressionFromText(text = "") {
+  const source = String(text || "").trim();
+  if (!source) return "";
+
+  const explicitCron = source.match(/\b(\*|[0-5]?\d)\s+(\*|[01]?\d|2[0-3])\s+(\*|[1-9]|[12]\d|3[01])\s+(\*|[1-9]|1[0-2])\s+(\*|[0-6])\b/);
+  if (explicitCron) return explicitCron[0].trim();
+
+  const weekdayMap = { "日": 0, "天": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6 };
+
+  const dailyMatch = source.match(/每(?:天|日)[^0-9]{0,8}(\d{1,2})\s*点(?:\s*(\d{1,2})\s*分?)?/);
+  if (dailyMatch) {
+    const hour = Number(dailyMatch[1]);
+    const minute = Number(dailyMatch[2] || 0);
+    if (Number.isInteger(hour) && hour >= 0 && hour <= 23 && Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+      return `${minute} ${hour} * * *`;
+    }
+  }
+
+  const weeklyMatch = source.match(/每(?:周|星期)([一二三四五六日天])[^0-9]{0,8}(\d{1,2})\s*点(?:\s*(\d{1,2})\s*分?)?/);
+  if (weeklyMatch) {
+    const weekday = weekdayMap[weeklyMatch[1]];
+    const hour = Number(weeklyMatch[2]);
+    const minute = Number(weeklyMatch[3] || 0);
+    if (Number.isInteger(weekday) && Number.isInteger(hour) && hour >= 0 && hour <= 23 && Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+      return `${minute} ${hour} * * ${weekday}`;
+    }
+  }
+
+  return "";
+}
+
+function hasCreateScheduledTaskIntent(text = "") {
+  const normalized = String(text || "").toLowerCase();
+  const createHints = ["创建", "新建", "添加", "设一个", "设定一个", "schedule", "create"];
+  return hasExplicitSchedulerIntent(text) && createHints.some((hint) => normalized.includes(hint));
+}
+
+function inferScheduledTaskArgsFromText(text = "") {
+  const source = String(text || "").trim();
+  if (!hasCreateScheduledTaskIntent(source)) return null;
+
+  const cronExpression = inferCronExpressionFromText(source);
+  if (!cronExpression) return null;
+
+  let prompt = "";
+  const actionMatch =
+    source.match(/(?:用于|内容是|任务是|执行|去|来)(.+?)(?:的)?定时任务/i) ||
+    source.match(/创建(?:一个)?(.+?)(?:的)?定时任务/i);
+  if (actionMatch) {
+    prompt = String(actionMatch[1] || "").trim();
+  }
+
+  if (!prompt) {
+    if (/启动\s*lxj/i.test(source)) {
+      prompt = "启动 lxj";
+    } else {
+      prompt = source.replace(/创建(?:一个)?/g, "").replace(/定时任务/g, "").trim();
+    }
+  }
+
+  let name = "";
+  const nameFromAction = prompt.replace(/[，。,.]/g, "").trim();
+  if (/启动\s*lxj/i.test(source) || /启动\s*lxj/i.test(prompt)) {
+    name = "lxj 每日启动";
+  } else if (nameFromAction) {
+    name = nameFromAction.length > 24 ? `${nameFromAction.slice(0, 24)}...` : nameFromAction;
+  } else {
+    name = "定时任务";
+  }
+
+  return {
+    name,
+    prompt,
+    scheduleType: "cron",
+    cronExpression,
+    enabled: true,
+  };
+}
 
 executeTool = async function executeToolWithExplicitLocalSave(toolCall) {
   const id = toolCall?.id || nowId();
@@ -4612,11 +5215,18 @@ executeTool = async function executeToolWithExplicitLocalSave(toolCall) {
     throw new Error("工具参数不是合法 JSON");
   }
 
-  if ((name === "create_scheduled_task" || name === "update_scheduled_task") && !String(args.model || "").trim()) {
-    args.model = selectedModel();
+  if (name === "create_scheduled_task" || name === "update_scheduled_task") {
+    delete args.model;
   }
 
   const latestUserText = state.lastRequestedUserText || "";
+  if ((name === "create_scheduled_task" || name === "update_scheduled_task") && !String(args.cronExpression || "").trim()) {
+    const inferredCronExpression = inferCronExpressionFromText(latestUserText);
+    if (inferredCronExpression) {
+      args.scheduleType = "cron";
+      args.cronExpression = inferredCronExpression;
+    }
+  }
   if (WRITE_TOOL_NAMES.has(name) && !canUseWriteTools(latestUserText)) {
     throw new Error("当前请求没有明确授权保存到本地，已阻止文件写入或删除。若需要保存，请明确说明“保存到本地”或“写入文件”。");
   }
@@ -4626,11 +5236,18 @@ executeTool = async function executeToolWithExplicitLocalSave(toolCall) {
   }
 
   toolActivity(id, "running", name, "正在执行...");
-  const data = await j("/tools/execute", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, arguments: args }),
-  });
+  let data;
+  try {
+    data = await j("/tools/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, arguments: args }),
+    });
+  } catch (error) {
+    const detail = String(error?.message || "工具执行失败");
+    toolActivity(id, "done", name, `执行失败：${detail}`);
+    throw new Error(`工具 ${name} 执行失败：${detail}`);
+  }
   if (name === "install_clawhub_skill") {
     await loadSkills();
   }
@@ -4642,6 +5259,27 @@ askModel = async function askModelWithExplicitSaveGuard(userText) {
   if (!selectedModel()) throw new Error("请先选择模型。");
 
   state.lastRequestedUserText = userText || "";
+  const directScheduledTaskArgs = inferScheduledTaskArgsFromText(userText);
+  if (directScheduledTaskArgs) {
+    const toolResult = await executeTool({
+      id: nowId(),
+      function: {
+        name: "create_scheduled_task",
+        arguments: JSON.stringify(directScheduledTaskArgs),
+      },
+    });
+    const summary =
+      summarizeToolOnlyReply(toolResult)
+      || `已经帮你创建好定时任务了：${directScheduledTaskArgs.name}。\n执行时间使用 Cron 表达式：${directScheduledTaskArgs.cronExpression}`;
+    const messageTimestamp = Date.now();
+    state.messages.push(
+      { role: "user", content: userText || "请继续处理", timestamp: messageTimestamp },
+      { role: "assistant", content: summary, timestamp: Date.now() }
+    );
+    save();
+    refreshMetrics();
+    return summary;
+  }
   const allowedTools = getAllowedToolsForUserText(userText);
   let messages = [...systemMessages(), ...state.messages, { role: "user", content: userPayload(userText) }];
   let final = "";
@@ -4653,7 +5291,7 @@ askModel = async function askModelWithExplicitSaveGuard(userText) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: selectedModel(),
-        messages,
+        messages: toApiMessages(messages),
         temperature: 0.7,
         tools: allowedTools,
         tool_choice: allowedTools.length ? "auto" : "none",
@@ -4685,6 +5323,9 @@ askModel = async function askModelWithExplicitSaveGuard(userText) {
   return final;
 };
 
+const submitBeforeTypingEffect = submit;
+els.chatForm?.removeEventListener("submit", initialSubmitHandler);
+els.chatForm?.removeEventListener("submit", submitBeforeTypingEffect, true);
 submit = async function submitInChatPending(ev) {
   ev.preventDefault();
   ev.stopImmediatePropagation();
@@ -4711,7 +5352,7 @@ submit = async function submitInChatPending(ev) {
   try {
     const reply = await askModel(text);
     pendingMessage?.remove();
-    appendMessage("assistant", reply);
+    await appendAssistantMessageWithTyping(reply);
     clearFiles();
     setStatus("已完成");
   } catch (error) {
@@ -5263,6 +5904,8 @@ appendPendingMessage = function appendPendingMessageTyping() {
   const card = document.createElement("article");
   card.className = "message assistant pending";
   const avatar = messageAvatarMarkup("assistant");
+  const stack = document.createElement("div");
+  stack.className = "message-stack";
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
   const head = document.createElement("div");
@@ -5278,8 +5921,9 @@ appendPendingMessage = function appendPendingMessageTyping() {
   content.className = "message-content";
   content.innerHTML = '<div class="thinking-line"><span class="thinking-text">正在输入中</span><span class="thinking-dots"><span></span><span></span><span></span></span></div>';
   head.append(role, time);
-  bubble.append(head, content);
-  card.append(avatar, bubble);
+  bubble.append(content);
+  stack.append(head, bubble);
+  card.append(avatar, stack);
   els.chatMessages?.append(card);
   requestAnimationFrame(() => els.chatMessages?.scrollTo({ top: els.chatMessages.scrollHeight, behavior: "smooth" }));
   return card;
@@ -5845,11 +6489,43 @@ function buildToolOnlyFallbackReply(messages = []) {
   return "";
 }
 
+function summarizeToolOnlyReply(toolMessage) {
+  if (!toolMessage) return "";
+  if (Array.isArray(toolMessage)) {
+    return buildToolOnlyFallbackReply(toolMessage);
+  }
+  if (toolMessage?.role === "tool" && typeof toolMessage.content === "string") {
+    return buildToolOnlyFallbackReply([toolMessage]);
+  }
+  return "";
+}
+
 const askModelBeforeToolOnlyFallback = askModel;
 askModel = async function askModelWithToolOnlyFallback(userText) {
   if (!selectedModel()) throw new Error("请先选择模型。");
 
   state.lastRequestedUserText = userText || "";
+  const directScheduledTaskArgs = inferScheduledTaskArgsFromText(userText);
+  if (directScheduledTaskArgs) {
+    const toolResult = await executeTool({
+      id: nowId(),
+      function: {
+        name: "create_scheduled_task",
+        arguments: JSON.stringify(directScheduledTaskArgs),
+      },
+    });
+    const summary =
+      summarizeToolOnlyReply(toolResult)
+      || `已经帮你创建好定时任务了：${directScheduledTaskArgs.name}。\n执行时间使用 Cron 表达式：${directScheduledTaskArgs.cronExpression}`;
+    const messageTimestamp = Date.now();
+    state.messages.push(
+      { role: "user", content: userText || "请继续处理", timestamp: messageTimestamp },
+      { role: "assistant", content: summary, timestamp: Date.now() }
+    );
+    save();
+    refreshMetrics();
+    return summary;
+  }
   const allowedTools = getAllowedToolsForUserText(userText);
   let messages = [...systemMessages(), ...state.messages, { role: "user", content: userPayload(userText) }];
   let final = "";
@@ -5938,7 +6614,8 @@ renderConversationFromMessages = function renderConversationFromMessagesWithTurn
 const askModelBeforeTurnDeleteDecorate = askModel;
 askModel = async function askModelWithTurnDeleteDecorate(userText) {
   const result = await askModelBeforeTurnDeleteDecorate(userText);
-  renderConversationFromMessages(state.messages);
+  decorateConversationTurnDeleteButtons();
+  renderConversationTurnUndo();
   return result;
 };
 
@@ -6010,6 +6687,30 @@ askModel = async function askModelWithNovelExecutionPush(userText) {
   return secondReply;
 };
 
+const askModelBeforeServerScheduledTaskCreate = askModel;
+askModel = async function askModelWithServerScheduledTaskCreate(userText) {
+  if (!selectedModel()) throw new Error("请先选择模型。");
+
+  state.lastRequestedUserText = userText || "";
+  const directScheduledTaskResult = await tryCreateScheduledTaskFromNaturalText(userText);
+  if (directScheduledTaskResult?.task) {
+    const summary =
+      String(directScheduledTaskResult.message || "").trim()
+      || `已经帮你创建好定时任务了：${directScheduledTaskResult.task.name}。\n执行时间使用 Cron 表达式：${directScheduledTaskResult.task.cronExpression}`;
+    const messageTimestamp = Date.now();
+    state.messages.push(
+      { role: "user", content: userText || "请继续处理", timestamp: messageTimestamp },
+      { role: "assistant", content: summary, timestamp: Date.now() }
+    );
+    save();
+    refreshMetrics();
+    autoSaveCurrentChat();
+    return summary;
+  }
+
+  return askModelBeforeServerScheduledTaskCreate(userText);
+};
+
 function renderConversationFromMessagesStable(messages) {
   chatHistoryRuntime.suppressAutoSave = true;
   state.messages = Array.isArray(messages) ? JSON.parse(JSON.stringify(messages)) : [];
@@ -6078,6 +6779,18 @@ loadChatRecord = function loadChatRecordFinalStable(recordId) {
   refreshMetrics();
   setStatus(`已加载聊天记录，并恢复会话上下文：${record.title || "未命名会话"}`);
 };
+
+const initiallyRestoredChatId = chatHistoryRuntime.currentId || localStorage.getItem(CURRENT_CHAT_KEY);
+if (initiallyRestoredChatId) {
+  const initiallyRestoredChat = readChatHistoryRecords().find((item) => item.id === initiallyRestoredChatId);
+  if (initiallyRestoredChat) {
+    renderConversationFromMessagesStable(initiallyRestoredChat.messages || []);
+    renderChatHistoryList();
+    updateChatHistoryMeta();
+    updateCurrentChatTitle();
+    refreshMetrics();
+  }
+}
 
 renderConversationTurnUndo();
 decorateConversationTurnDeleteButtons();
@@ -6287,6 +7000,49 @@ function buildActiveSkillsSummaryLines() {
   ];
 }
 
+function getDetailedSkillContextTarget(activeSkills = getActiveSkills()) {
+  const selectedSkill = reduceSkillToSkillMdOnly(state.selectedSkill);
+  if (selectedSkill && activeSkills.some((skill) => sameSkill(skill, selectedSkill))) {
+    return selectedSkill;
+  }
+  return activeSkills.length === 1 ? activeSkills[0] : null;
+}
+
+function buildSkillContextMessage(activeSkills = getActiveSkills()) {
+  if (!activeSkills.length) return null;
+  const detailSkill = getDetailedSkillContextTarget(activeSkills);
+  const summaryLines = activeSkills.map((skill, index) => {
+    const normalized = reduceSkillToSkillMdOnly(skill) || skill;
+    const summary = skillSummaryText(normalized) || "璇锋牴鎹妧鑳藉悕绉板拰宸ュ叿鑳藉姏鍒ゆ柇鏄惁閫傜敤銆?";
+    return [
+      `鎶€鑳?${index + 1}锛?{normalized.name}`,
+      `鏉ユ簮锛?{normalized.source}`,
+      `鎽樿锛?{summary}`,
+    ].join("\n");
+  }).join("\n\n");
+  const detailBlock = detailSkill?.content
+    ? `\n\n褰撳墠閲嶇偣鎶€鑳斤細${detailSkill.name}\n璇︾粏璇存槑锛堣妭閫夛級锛歕n${clampText(detailSkill.content, ACTIVE_SKILL_DETAIL_MAX_CHARS)}`
+    : "";
+
+  return {
+    role: "system",
+    _localTag: "skill_context",
+    content: `褰撳墠宸插惎鐢?${activeSkills.length} 涓妧鑳姐€傛妧鑳藉彧鏄墽琛岃鏄庯紝涓嶆槸鍙皟鐢ㄧ殑 tool name銆備笉瑕佹妸鎶€鑳藉悕褰撲綔宸ュ叿鍚嶈皟鐢ㄣ€?` +
+      `\n浼樺厛鏍规嵁涓嬮潰鐨勬妧鑳芥憳瑕佸垽鏂摢涓妧鑳介€傜敤锛涘彧鏈夊綋鍓嶉噸鐐规妧鑳芥墠浼氶檮甯﹁緝璇︾粏鐨勬墽琛岃鏄庛€俓n\n${summaryLines}${detailBlock}`,
+  };
+}
+
+function isLegacySingleSkillContextMessage(message) {
+  if (message?.role !== "system") return false;
+  return String(message?.content || "").trim().startsWith("浣犲綋鍓嶅惎鐢ㄤ簡鎶€鑳斤細");
+}
+
+function isManagedSkillContextMessage(message) {
+  const content = String(message?.content || "");
+  const isLegacyMultiSkillContext = content.includes("tool name") && content.includes("SKILL.md:");
+  return message?._localTag === "skill_context" || isLegacySingleSkillContextMessage(message) || isLegacyMultiSkillContext;
+}
+
 state.activeSkills = normalizeActiveSkills(saved().activeSkills || (state.activeSkill ? [state.activeSkill] : []));
 syncActiveSkillAlias();
 
@@ -6312,6 +7068,7 @@ load = function loadWithMultiSkillState() {
 
 renderSkillPreview = function renderSkillPreviewWithMultiSkill(skill = state.selectedSkill) {
   if (!els.skillPreview) return;
+  renderConversationMiniheadMeta();
   const normalized = reduceSkillToSkillMdOnly(skill);
   const summaryLines = buildActiveSkillsSummaryLines();
   if (!normalized?.content) {
@@ -6461,6 +7218,17 @@ systemMessages = function systemMessagesWithMultiSkill() {
   return list;
 };
 
+const systemMessagesBeforeManagedMultiSkillContext = systemMessages;
+systemMessages = function systemMessagesWithManagedMultiSkillContext() {
+  const list = systemMessagesBeforeManagedMultiSkillContext().filter((message) => !isManagedSkillContextMessage(message));
+  const activeSkills = getActiveSkills();
+  const skillContextMessage = buildSkillContextMessage(activeSkills);
+  if (skillContextMessage) {
+    list.push(skillContextMessage);
+  }
+  return list;
+};
+
 function clearSkillSelectionState() {
   state.selectedSkill = null;
   state.activeSkill = null;
@@ -6517,7 +7285,7 @@ executeTool = async function executeToolWithUnsupportedNameFinalGuard(toolCall) 
       content: JSON.stringify({
         ignored: true,
         reason: "unsupported-tool-name",
-        message: `${activeSkillHint}工具「${name}」当前不存在。只能调用系统已提供的真实工具，例如 run_workspace_skill，而不能调用 exec_command 这类未实现工具。`,
+        message: `${activeSkillHint}工具「${name}」当前不存在。只能调用系统已提供的真实工具，例如 run_workspace_skill、run_shell_command、run_cli_command，而不能调用未实现的工具名。`,
       }),
     };
   }
@@ -6679,6 +7447,12 @@ function collectCurrentQqTargetProfile() {
     allowedGroups: els.qqBotAllowedGroups?.value || "",
     persona: els.qqBotPersona?.value || "",
     personaPreset: els.qqBotPersonaPreset?.value || "none",
+    fileShareRoots: els.qqProfileFileShareRoots?.value || "",
+    toolReadEnabled: Boolean(els.qqProfileToolsReadEnabled?.checked),
+    toolWriteEnabled: Boolean(els.qqProfileToolsWriteEnabled?.checked),
+    toolCommandEnabled: Boolean(els.qqProfileToolsCommandEnabled?.checked),
+    toolSkillEnabled: Boolean(els.qqProfileToolsSkillEnabled?.checked),
+    toolFileSendEnabled: Boolean(els.qqProfileToolsFileSendEnabled?.checked),
     assistantName: els.assistantName?.value?.trim() || "Assistant",
     systemPrompt: els.systemPrompt?.value?.trim() || "",
   };
@@ -6687,15 +7461,37 @@ function collectCurrentQqTargetProfile() {
 function applyQqTargetProfile(profile = null) {
   const fallback = qqTargetProfileRuntime.baseConfig || {};
   const resolved = profile || {};
-  if (els.qqBotModelSelect) els.qqBotModelSelect.value = resolved.model || fallback.model || "";
+  const resolvedModel = resolved.model || fallback.model || "";
+  const resolvedPreset = resolved.personaPreset || fallback.personaPreset || "none";
+  renderQqBotModelOptions();
+  if (els.qqBotModelSelect) els.qqBotModelSelect.value = resolvedModel;
   if (els.qqBotTriggerPrefix) els.qqBotTriggerPrefix.value = resolved.triggerPrefix || fallback.triggerPrefix || "";
   if (els.qqBotAllowedUsers) els.qqBotAllowedUsers.value = Array.isArray(resolved.allowedUsers) ? resolved.allowedUsers.join("\n") : (resolved.allowedUsers || fallback.allowedUsers || "");
   if (els.qqBotAllowedGroups) els.qqBotAllowedGroups.value = Array.isArray(resolved.allowedGroups) ? resolved.allowedGroups.join("\n") : (resolved.allowedGroups || fallback.allowedGroups || "");
-  if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = resolved.personaPreset || fallback.personaPreset || "none";
+  if (els.qqBotPersonaPreset) els.qqBotPersonaPreset.value = resolvedPreset;
   if (els.qqBotPersona) els.qqBotPersona.value = resolved.persona || fallback.persona || "";
+  if (els.qqProfileFileShareRoots) {
+    const resolvedRoots = Array.isArray(resolved.fileShareRoots) ? resolved.fileShareRoots.join("\n") : (resolved.fileShareRoots || "");
+    const fallbackRoots = Array.isArray(fallback.fileShareRoots) ? fallback.fileShareRoots.join("\n") : (fallback.fileShareRoots || "data/personas");
+    els.qqProfileFileShareRoots.value = resolvedRoots || fallbackRoots;
+  }
+  if (els.qqProfileToolsReadEnabled) els.qqProfileToolsReadEnabled.checked = resolved.toolReadEnabled !== false && fallback.toolReadEnabled !== false;
+  if (els.qqProfileToolsWriteEnabled) els.qqProfileToolsWriteEnabled.checked = typeof resolved.toolWriteEnabled === "boolean" ? resolved.toolWriteEnabled : Boolean(fallback.toolWriteEnabled);
+  if (els.qqProfileToolsCommandEnabled) els.qqProfileToolsCommandEnabled.checked = typeof resolved.toolCommandEnabled === "boolean" ? resolved.toolCommandEnabled : Boolean(fallback.toolCommandEnabled);
+  if (els.qqProfileToolsSkillEnabled) els.qqProfileToolsSkillEnabled.checked = typeof resolved.toolSkillEnabled === "boolean" ? resolved.toolSkillEnabled : Boolean(fallback.toolSkillEnabled);
+  if (els.qqProfileToolsFileSendEnabled) els.qqProfileToolsFileSendEnabled.checked = typeof resolved.toolFileSendEnabled === "boolean" ? resolved.toolFileSendEnabled : Boolean(fallback.toolFileSendEnabled);
+  syncQqBotPersonaPresetsFromMainSelect();
+  renderQqBotModelOptions();
+  if (els.qqBotModelSelect) {
+    els.qqBotModelSelect.value = resolvedModel;
+  }
+  if (els.qqBotPersonaPreset) {
+    els.qqBotPersonaPreset.value = resolvedPreset;
+  }
   renderQqPushMeta();
   renderQqBotMeta();
   renderQqBotPersonaPresetDescription();
+  renderQqToolPermissionMeta();
 }
 
 function renderQqTargetProfileMeta() {
@@ -6790,7 +7586,13 @@ syncQqBotConfig = async function syncQqBotConfigWithProfiles() {
     allowedGroups: bot.allowedGroups,
     persona: bot.persona,
     personaPreset: els.qqBotPersonaPreset?.value || saved().qqBotPersonaPreset || "none",
-    model: bot.model || selectedModel(),
+    fileShareRoots: els.qqFileShareRoots?.value || saved().qqFileShareRoots || "data/personas",
+    toolReadEnabled: bot.toolReadEnabled,
+    toolWriteEnabled: bot.toolWriteEnabled,
+    toolCommandEnabled: bot.toolCommandEnabled,
+    toolSkillEnabled: bot.toolSkillEnabled,
+    toolFileSendEnabled: bot.toolFileSendEnabled,
+    model: bot.model || "",
     systemPrompt: els.systemPrompt?.value.trim() || "",
     assistantName: els.assistantName?.value.trim() || "Assistant",
   };
@@ -6805,11 +7607,18 @@ syncQqBotConfig = async function syncQqBotConfigWithProfiles() {
       allowedUsers: bot.allowedUsers,
       allowedGroups: bot.allowedGroups,
       persona: bot.persona,
+      personaPreset: bot.personaPreset || "none",
+      fileShareRoots: bot.fileShareRoots || "data/personas",
+      toolReadEnabled: bot.toolReadEnabled,
+      toolWriteEnabled: bot.toolWriteEnabled,
+      toolCommandEnabled: bot.toolCommandEnabled,
+      toolSkillEnabled: bot.toolSkillEnabled,
+      toolFileSendEnabled: bot.toolFileSendEnabled,
       bridgeUrl: push.bridgeUrl,
       accessToken: push.accessToken,
       defaultTargetType: push.targetType,
       defaultTargetId: push.targetId,
-      model: bot.model || selectedModel(),
+      model: bot.model || "",
       systemPrompt: els.systemPrompt?.value.trim() || "",
       assistantName: els.assistantName?.value.trim() || "Assistant",
       targetProfiles: qqTargetProfileRuntime.profiles,
@@ -6828,19 +7637,34 @@ async function loadQqTargetProfilesFromServer() {
       enabled: Boolean(config.enabled),
       bridgeUrl: config.bridgeUrl || "",
       accessToken: config.accessToken || "",
+      defaultTargetType: config.defaultTargetType || "private",
+      defaultTargetId: config.defaultTargetId || "",
       groupMentionOnly: config.groupMentionOnly !== false,
       taskPushEnabled: Boolean(config.taskPushEnabled),
       triggerPrefix: config.triggerPrefix || "",
       allowedUsers: Array.isArray(config.allowedUsers) ? config.allowedUsers.join("\n") : (config.allowedUsers || ""),
       allowedGroups: Array.isArray(config.allowedGroups) ? config.allowedGroups.join("\n") : (config.allowedGroups || ""),
       persona: config.persona || "",
-      personaPreset: saved().qqBotPersonaPreset || "none",
+      personaPreset: config.personaPreset || saved().qqBotPersonaPreset || "none",
+      fileShareRoots: Array.isArray(config.fileShareRoots) ? config.fileShareRoots.join("\n") : (config.fileShareRoots || "data/temp"),
+      toolReadEnabled: true,
+      toolWriteEnabled: false,
+      toolCommandEnabled: false,
+      toolSkillEnabled: Boolean(config.toolSkillEnabled),
+      toolFileSendEnabled: false,
       model: config.model || "",
       systemPrompt: config.systemPrompt || "",
       assistantName: config.assistantName || "Assistant",
     };
+    if (els.qqToolsReadEnabled) els.qqToolsReadEnabled.checked = qqTargetProfileRuntime.baseConfig.toolReadEnabled !== false;
+    if (els.qqFileShareRoots) els.qqFileShareRoots.value = qqTargetProfileRuntime.baseConfig.fileShareRoots || "data/personas";
+    if (els.qqToolsWriteEnabled) els.qqToolsWriteEnabled.checked = Boolean(qqTargetProfileRuntime.baseConfig.toolWriteEnabled);
+    if (els.qqToolsCommandEnabled) els.qqToolsCommandEnabled.checked = Boolean(qqTargetProfileRuntime.baseConfig.toolCommandEnabled);
+    if (els.qqToolsSkillEnabled) els.qqToolsSkillEnabled.checked = Boolean(qqTargetProfileRuntime.baseConfig.toolSkillEnabled);
+    if (els.qqToolsFileSendEnabled) els.qqToolsFileSendEnabled.checked = Boolean(qqTargetProfileRuntime.baseConfig.toolFileSendEnabled);
     persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
     applyCurrentQqTargetProfileIfExists();
+    renderQqToolPermissionMeta();
   } catch {
     qqTargetProfileRuntime.profiles = getSavedQqTargetProfiles();
     renderQqTargetProfilesSelect();
@@ -6849,30 +7673,45 @@ async function loadQqTargetProfilesFromServer() {
 
 els.saveQqTargetProfile?.addEventListener("click", async () => {
   spark(els.saveQqTargetProfile);
+  pulseQqTargetProfileAction(els.saveQqTargetProfile, "busy");
   const profile = collectCurrentQqTargetProfile();
   if (!profile) {
+    pulseQqTargetProfileAction(els.saveQqTargetProfile);
+    setQqTargetProfileFeedback("请先填写 QQ 或群号，再保存对象配置。", "danger");
     setStatus("请先填写 QQ 或群号");
     return;
   }
-  qqTargetProfileRuntime.profiles[profile.key] = profile;
-  persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+  persistQqTargetProfileState(profile);
+  applyQqTargetProfile(profile);
+  renderQqBotModelOptions();
+  if (els.qqBotModelSelect) {
+    els.qqBotModelSelect.value = profile.model || "";
+  }
   renderQqTargetProfilesSelect();
   await syncQqBotConfig().catch(() => {});
+  pulseQqTargetProfileAction(els.saveQqTargetProfile, "success");
+  setQqTargetProfileFeedback(`已保存对象配置：${profile.name}`, "success");
   setStatus(`已保存对象配置：${profile.name}`);
 });
 
 els.deleteQqTargetProfile?.addEventListener("click", async () => {
   spark(els.deleteQqTargetProfile);
+  pulseQqTargetProfileAction(els.deleteQqTargetProfile, "busy");
   const key = qqTargetProfileKey();
   if (!key || !qqTargetProfileRuntime.profiles[key]) {
+    pulseQqTargetProfileAction(els.deleteQqTargetProfile);
+    setQqTargetProfileFeedback("当前对象还没有独立配置可删除。", "danger");
     setStatus("当前目标没有独立配置");
     return;
   }
+  const removedName = qqTargetProfileRuntime.profiles[key]?.name || key;
   delete qqTargetProfileRuntime.profiles[key];
   persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
   renderQqTargetProfilesSelect();
   applyQqTargetProfile(null);
   await syncQqBotConfig().catch(() => {});
+  pulseQqTargetProfileAction(els.deleteQqTargetProfile, "success");
+  setQqTargetProfileFeedback(`已删除对象配置：${removedName}`, "danger");
   setStatus("已删除当前对象配置");
 });
 
@@ -6880,6 +7719,8 @@ els.qqTargetProfileSelect?.addEventListener("change", () => {
   const key = els.qqTargetProfileSelect?.value || "";
   if (!key) {
     applyCurrentQqTargetProfileIfExists();
+    persistQqSettingsIndependently();
+    save();
     return;
   }
   const profile = qqTargetProfileRuntime.profiles[key];
@@ -6887,7 +7728,10 @@ els.qqTargetProfileSelect?.addEventListener("change", () => {
   if (els.qqTargetType) els.qqTargetType.value = profile.targetType || "private";
   if (els.qqTargetId) els.qqTargetId.value = profile.targetId || "";
   applyQqTargetProfile(profile);
+  syncQqBotPersonaPresetsFromMainSelect();
   renderQqTargetProfilesSelect();
+  persistQqSettingsIndependently();
+  save();
 });
 
 [els.qqTargetType, els.qqTargetId].forEach((el) => {
@@ -7180,3 +8024,3509 @@ renderQqTargetProfilesSelect = function renderQqTargetProfilesSelectByConfigType
 };
 
 renderQqTargetProfilesSelect();
+
+renderQqBotMeta = function renderQqBotMetaByConfigType() {
+  if (!els.qqBotMeta) return;
+  const config = getQqBotSettings();
+  if (!config.enabled) {
+    els.qqBotMeta.textContent = "当前未启用 QQ 机器人自动回复。";
+    renderQqToolPermissionMeta();
+    return;
+  }
+  const preset = presetById(config.personaPreset || "none");
+  const presetText = config.personaPreset && config.personaPreset !== "none" ? ` · 模板：${preset.name || "已选择"}` : "";
+  const prefixText = config.triggerPrefix ? ` · 前缀：${config.triggerPrefix}` : "";
+  const permissionsText = ` · 私聊权限：${String(config.allowedUsers || "").trim() ? "已限制" : "不限制"} · 群权限：${String(config.allowedGroups || "").trim() ? "已限制" : "不限制"}`;
+  const toolText = ` · 工具：${formatQqToolPermissionSummary(config)}`;
+  const taskPushText = config.taskPushEnabled ? " · 定时推送：已开启" : "";
+  els.qqBotMeta.textContent = `QQ 机器人已启用 · 群聊模式：${config.groupMentionOnly ? "仅 @ 时回复" : "允许直接回复"}${prefixText}${permissionsText}${toolText}${presetText}${taskPushText}`;
+  renderQqToolPermissionMeta();
+};
+
+renderQqBotMeta();
+
+function getPreferredQqPersonaPresetValue() {
+  const currentKey = qqTargetProfileKey();
+  const currentProfile = currentKey ? qqTargetProfileRuntime.profiles[currentKey] : null;
+  return currentProfile?.personaPreset || els.qqBotPersonaPreset?.value || saved().qqBotPersonaPreset || "none";
+}
+
+function getAllQqPersonaPresetOptions() {
+  return [
+    ...PERSONA_PRESETS,
+    ...workspacePersonaPresets,
+  ];
+}
+
+function getPreferredQqModelValue() {
+  const currentKey = qqTargetProfileKey();
+  const currentProfile = currentKey ? qqTargetProfileRuntime.profiles[currentKey] : null;
+  return currentProfile?.model || els.qqBotModelSelect?.value || saved().qqBotModel || "";
+}
+
+renderQqBotPersonaPresets = function renderQqBotPersonaPresetsByTargetProfile() {
+  if (!els.qqBotPersonaPreset) return;
+  const preferredValue = getPreferredQqPersonaPresetValue();
+  const nodes = [];
+  const builtInGroup = document.createElement("optgroup");
+  builtInGroup.label = "内置模板";
+  builtInGroup.append(...PERSONA_PRESETS.map((preset) => {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    return option;
+  }));
+  nodes.push(builtInGroup);
+
+  if (workspacePersonaPresets.length) {
+    const workspaceGroup = document.createElement("optgroup");
+    workspaceGroup.label = "工作区人设";
+    workspaceGroup.append(...workspacePersonaPresets.map((preset) => {
+      const option = document.createElement("option");
+      option.value = preset.id;
+      option.textContent = preset.name;
+      return option;
+    }));
+    nodes.push(workspaceGroup);
+  }
+
+  const optionValues = ["none", ...getAllQqPersonaPresetOptions().map((preset) => preset.id)];
+  els.qqBotPersonaPreset.replaceChildren(...nodes);
+  els.qqBotPersonaPreset.value = optionValues.includes(preferredValue) ? preferredValue : "none";
+  renderQqBotPersonaPresetDescription();
+};
+
+syncQqBotPersonaPresetsFromMainSelect = function syncQqBotPersonaPresetsFromMainSelectByTargetProfile() {
+  if (!els.qqBotPersonaPreset) return;
+  const preferredValue = getPreferredQqPersonaPresetValue();
+  renderQqBotPersonaPresets();
+  const availableValues = Array.from(els.qqBotPersonaPreset.querySelectorAll("option")).map((option) => option.value);
+  els.qqBotPersonaPreset.value = availableValues.includes(preferredValue) ? preferredValue : "none";
+  renderQqBotPersonaPresetDescription();
+};
+
+renderQqBotPersonaPresets();
+applyCurrentQqTargetProfileIfExists();
+
+function persistCurrentQqPersonaPresetSelection() {
+  const selectedPreset = els.qqBotPersonaPreset?.value || "none";
+  const current = saved();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    qqBotPersonaPreset: selectedPreset,
+  }));
+
+  const key = qqTargetProfileKey();
+  if (key && qqTargetProfileRuntime.profiles[key]) {
+    qqTargetProfileRuntime.profiles[key] = {
+      ...qqTargetProfileRuntime.profiles[key],
+      personaPreset: selectedPreset,
+      persona: els.qqBotPersona?.value || qqTargetProfileRuntime.profiles[key].persona || "",
+    };
+    persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+  }
+}
+
+function pulseQqTargetProfileAction(button, type = "success") {
+  if (!button) return;
+  button.classList.remove("is-busy", "is-success");
+  if (type === "busy") {
+    button.classList.add("is-busy");
+    return;
+  }
+  if (type === "success") {
+    button.classList.add("is-success");
+    window.setTimeout(() => {
+      button.classList.remove("is-success");
+    }, 1400);
+  }
+}
+
+function setQqTargetProfileFeedback(message, tone = "success") {
+  if (!els.qqTargetProfileMeta) return;
+  els.qqTargetProfileMeta.textContent = message;
+  els.qqTargetProfileMeta.classList.remove("is-success", "is-danger");
+  if (tone === "success") {
+    els.qqTargetProfileMeta.classList.add("is-success");
+  } else if (tone === "danger") {
+    els.qqTargetProfileMeta.classList.add("is-danger");
+  }
+}
+
+function persistQqTargetProfileState(profile) {
+  if (!profile?.key) return;
+  qqTargetProfileRuntime.profiles[profile.key] = { ...profile };
+  persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+  persistQqSettingsIndependently();
+  save();
+}
+
+const loadQqTargetProfilesFromServerBeforePersonaPresetDefault = loadQqTargetProfilesFromServer;
+loadQqTargetProfilesFromServer = async function loadQqTargetProfilesFromServerWithPersonaPresetDefault() {
+  await loadQqTargetProfilesFromServerBeforePersonaPresetDefault();
+  applyCurrentQqTargetProfileIfExists();
+  syncQqBotPersonaPresetsFromMainSelect();
+};
+
+bindQqBotPersonaPresetMirrorObserver = function bindQqBotPersonaPresetMirrorObserverIndependent() {
+  syncQqBotPersonaPresetsFromMainSelect();
+};
+
+els.qqBotPersonaPreset?.addEventListener("change", () => {
+  persistCurrentQqPersonaPresetSelection();
+});
+
+els.qqBotPersonaPreset?.addEventListener("change", () => {
+  renderQqBotPersonaPresets();
+  renderQqBotPersonaPresetDescription();
+});
+
+els.qqBotModelSelect?.addEventListener("change", () => {
+  const profile = collectCurrentQqTargetProfile();
+  if (!profile) return;
+  persistQqTargetProfileState(profile);
+  renderQqBotModelOptions();
+  if (els.qqBotModelSelect) {
+    els.qqBotModelSelect.value = profile.model || "";
+  }
+  renderQqTargetProfilesSelect();
+});
+
+renderPersonaPresets = function renderPersonaPresetsIndependentFinal() {
+  renderPersonaPresetsBeforeFinalRestore();
+  restoreSavedPersonaPresetSelection();
+  renderQqBotPersonaPresets();
+};
+
+load = function loadIndependentFinal() {
+  loadBeforePersonaPresetSelectionRestore();
+  rememberedPersonaPresetId = saved().personaPreset || rememberedPersonaPresetId || "none";
+  restoreSavedPersonaPresetSelection();
+  renderQqBotModelOptions();
+  renderQqBotPersonaPresets();
+  applyCurrentQqTargetProfileIfExists();
+  syncQqBotPersonaPresetsFromMainSelect();
+  renderQqTargetProfilesSelect();
+};
+
+loadWorkspacePersonaPresets = async function loadWorkspacePersonaPresetsIndependentFinal() {
+  await loadWorkspacePersonaPresetsBeforeFinalRestore();
+  restoreSavedPersonaPresetSelection();
+  renderQqBotPersonaPresets();
+};
+
+bindQqBotPersonaPresetMirrorObserver = function bindQqBotPersonaPresetMirrorObserverDisabled() {
+  if (qqBotPersonaPresetMirrorObserver) {
+    qqBotPersonaPresetMirrorObserver.disconnect();
+    qqBotPersonaPresetMirrorObserver = null;
+  }
+};
+
+syncQqBotPersonaPresetsFromMainSelect = function syncQqBotPersonaPresetsIndependent() {
+  renderQqBotPersonaPresets();
+};
+
+bindQqBotPersonaPresetMirrorObserver();
+
+els.modelSelect?.addEventListener("change", () => {
+  syncQqBotConfig().catch(() => {});
+});
+
+const loadModelsBeforeQqModelSyncFinal = loadModels;
+loadModels = async function loadModelsWithQqModelSyncFinal() {
+  await loadModelsBeforeQqModelSyncFinal();
+  syncQqBotConfig().catch(() => {});
+};
+
+renderQqBotModelOptions = function renderQqBotModelOptionsByTargetProfile() {
+  if (!els.qqBotModelSelect || !els.modelSelect) return;
+  const preferredValue = getPreferredQqModelValue();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "按 QQ 配置选择模型";
+
+  const sourceNodes = Array.from(els.modelSelect.querySelectorAll("option"))
+    .filter((option) => option.value)
+    .map((option) => option.cloneNode(true));
+
+  const optionValues = ["", ...sourceNodes.map((option) => option.value)];
+  if (preferredValue && !optionValues.includes(preferredValue)) {
+    const fallbackOption = document.createElement("option");
+    fallbackOption.value = preferredValue;
+    fallbackOption.textContent = `${preferredValue} (当前对象)`;
+    sourceNodes.unshift(fallbackOption);
+    optionValues.splice(1, 0, preferredValue);
+  }
+
+  els.qqBotModelSelect.replaceChildren(placeholder, ...sourceNodes);
+  els.qqBotModelSelect.value = optionValues.includes(preferredValue) ? preferredValue : "";
+};
+
+const systemMessagesBeforeCommandToolReminderFinal = systemMessages;
+systemMessages = function systemMessagesWithCommandToolReminderFinal() {
+  const list = Array.isArray(systemMessagesBeforeCommandToolReminderFinal())
+    ? [...systemMessagesBeforeCommandToolReminderFinal()]
+    : [];
+  list.push({
+    role: "system",
+    content: "当前项目已经提供真实命令工具：run_shell_command 可执行 PowerShell 命令，run_cli_command 可执行本地 CLI 程序及参数，run_workspace_skill 可执行受支持的本地技能脚本。遇到 shell、Node 脚本、CLI、curl、npm、git、PowerShell、fetch 代理调用等需求时，不要再说无法执行或没有工具，应优先直接调用这些工具完成任务。",
+  });
+  return list;
+};
+
+function getCurrentTimeCalibrationSystemMessage() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "long",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const currentTime = formatter.format(now).replace(/\//g, "-");
+  return {
+    role: "system",
+    content: `当前系统时间（以北京时间为准）是：${currentTime}。涉及今天、昨天、明天、当前日期、当前时间、本周、本月等相对时间时，必须以这个时间为准，不要自行假设或沿用过期时间。`,
+  };
+}
+
+const systemMessagesBeforeCurrentTimeCalibration = systemMessages;
+systemMessages = function systemMessagesWithCurrentTimeCalibration() {
+  const list = Array.isArray(systemMessagesBeforeCurrentTimeCalibration())
+    ? [...systemMessagesBeforeCurrentTimeCalibration()]
+    : [];
+  list.push(getCurrentTimeCalibrationSystemMessage());
+  list.push({
+    role: "system",
+    content: "当前系统已提供可直接执行命令的真实工具：run_shell_command 可执行 PowerShell 命令，run_cli_command 可执行本地 CLI 程序及参数，run_workspace_skill 可执行受支持的本地技能脚本。遇到需要 shell、命令行、Node 脚本、curl、PowerShell、npm、git 或其他 CLI 的任务时，不要再声称“无法执行 shell 命令”或“没有命令工具”，应优先直接调用这些真实工具完成任务。",
+  });
+  return list;
+};
+
+const qqSkillRuntime = {
+  selectedSkill: null,
+  activeSkills: [],
+};
+
+function normalizeQqSkill(skill) {
+  return reduceSkillToSkillMdOnly(cloneSkillForStorage(skill));
+}
+
+function normalizeQqActiveSkills(skills) {
+  return normalizeActiveSkills((Array.isArray(skills) ? skills : []).map((skill) => normalizeQqSkill(skill)).filter(Boolean));
+}
+
+function getQqSkillStateSnapshot() {
+  return {
+    selectedSkill: normalizeQqSkill(qqSkillRuntime.selectedSkill),
+    activeSkills: normalizeQqActiveSkills(qqSkillRuntime.activeSkills),
+  };
+}
+
+function getQqActiveSkills() {
+  return normalizeQqActiveSkills(qqSkillRuntime.activeSkills);
+}
+
+function isQqSkillActive(skill) {
+  return getQqActiveSkills().some((item) => sameSkill(item, skill));
+}
+
+function buildQqActiveSkillsSummaryLines() {
+  const activeSkills = getQqActiveSkills();
+  if (!activeSkills.length) {
+    return ["当前未启用 QQ 专属技能。"];
+  }
+  const names = activeSkills.map((skill) => skill.name);
+  const summary = names.length <= 3 ? names.join("、") : `${names.slice(0, 3).join("、")} 等 ${names.length} 个技能`;
+  return [
+    `已启用 QQ 技能：${summary}`,
+    ...activeSkills.map((skill, index) => `${index + 1}. ${skill.name} · ${skill.source}`),
+  ];
+}
+
+function renderQqSkillMeta() {
+  if (!els.qqSkillMeta) return;
+  const activeSkills = getQqActiveSkills();
+  const currentKey = qqTargetProfileKey();
+  const profile = currentKey ? qqTargetProfileRuntime.profiles[currentKey] : null;
+  if (!activeSkills.length) {
+    els.qqSkillMeta.textContent = profile
+      ? `当前对象 ${profile.name || currentKey} 未启用 QQ 专属技能。`
+      : "当前对象未启用 QQ 专属技能。";
+    return;
+  }
+  const names = activeSkills.map((skill) => skill.name);
+  const summary = names.length <= 3 ? names.join("、") : `${names.slice(0, 3).join("、")} 等 ${names.length} 个技能`;
+  els.qqSkillMeta.textContent = profile
+    ? `当前对象 ${profile.name || currentKey} 已启用：${summary}`
+    : `当前已启用 QQ 专属技能：${summary}`;
+}
+
+function persistQqSkillStateLocally() {
+  const current = saved();
+  const snapshot = getQqSkillStateSnapshot();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    qqSelectedSkill: snapshot.selectedSkill,
+    qqActiveSkills: snapshot.activeSkills,
+  }));
+}
+
+function renderQqSkillPreview(skill = qqSkillRuntime.selectedSkill) {
+  if (!els.qqSkillPreview) return;
+  renderQqSkillMeta();
+  const normalized = normalizeQqSkill(skill);
+  const summaryLines = buildQqActiveSkillsSummaryLines();
+  if (!normalized?.content) {
+    els.qqSkillPreview.textContent = [...summaryLines, "", "选择一个技能后，会在这里显示 QQ 机器人专属技能摘要。"].join("\n");
+    return;
+  }
+  els.qqSkillPreview.textContent = [
+    ...summaryLines,
+    "",
+    `当前查看：${normalized.name}`,
+    `来源：${normalized.source}`,
+    "",
+    "# SKILL.md",
+    "",
+    normalized.content,
+  ].join("\n");
+}
+
+function renderQqSkills() {
+  if (!els.qqSkillsList) return;
+  const activeSkills = getQqActiveSkills();
+  if (!state.skills.length) {
+    els.qqSkillsList.innerHTML = '<div class="file-empty">当前还没有读取到技能列表。</div>';
+    renderQqSkillMeta();
+    if (els.qqDisableSkill) els.qqDisableSkill.disabled = !activeSkills.length;
+    return;
+  }
+  els.qqSkillsList.replaceChildren(...state.skills.map((skill) => {
+    const item = document.createElement("div");
+    item.className = `skill-item${sameSkill(skill, qqSkillRuntime.selectedSkill) ? " is-selected" : ""}${isQqSkillActive(skill) ? " is-active" : ""}`;
+
+    const head = document.createElement("div");
+    head.className = "skill-item-head";
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = skill.name;
+    const meta = document.createElement("div");
+    meta.className = "skill-summary";
+    meta.textContent = [skill.source, skill.summary].filter(Boolean).join(" · ");
+    titleWrap.append(title, meta);
+
+    const status = document.createElement("div");
+    status.className = "button-row left wrap-row";
+    if (sameSkill(skill, qqSkillRuntime.selectedSkill)) {
+      const readBadge = document.createElement("span");
+      readBadge.className = "mini-status-tag";
+      readBadge.textContent = "已读取";
+      status.append(readBadge);
+    }
+    if (isQqSkillActive(skill)) {
+      const activeBadge = document.createElement("span");
+      activeBadge.className = "mini-status-tag active";
+      activeBadge.textContent = `已启用 ${activeSkills.findIndex((item) => sameSkill(item, skill)) + 1}`;
+      status.append(activeBadge);
+    }
+    head.append(titleWrap, status);
+
+    const actions = document.createElement("div");
+    actions.className = "button-row left wrap-row";
+
+    const readButton = document.createElement("button");
+    readButton.type = "button";
+    readButton.className = "ghost-button mini-action-button";
+    readButton.textContent = skill.source === "workspace" ? "读取" : "安装到当前目录";
+    readButton.onclick = async () => {
+      spark(readButton);
+      if (skill.source === "workspace") {
+        await qqReadSkill(skill);
+      } else {
+        await installSkill(skill);
+      }
+    };
+    actions.append(readButton);
+
+    if (skill.source === "workspace") {
+      const enableButton = document.createElement("button");
+      enableButton.type = "button";
+      enableButton.className = "ghost-button mini-action-button";
+      enableButton.textContent = isQqSkillActive(skill) ? "查看摘要" : "加入启用";
+      enableButton.onclick = async () => {
+        spark(enableButton);
+        if (!sameSkill(skill, qqSkillRuntime.selectedSkill)) {
+          await qqReadSkill(skill);
+        }
+        if (isQqSkillActive(skill)) {
+          renderQqSkillPreview(skill);
+          return;
+        }
+        qqApplySelectedSkill();
+      };
+      actions.append(enableButton);
+      if (isQqSkillActive(skill)) {
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "ghost-button mini-action-button";
+        removeButton.textContent = "移除启用";
+        removeButton.onclick = () => {
+          spark(removeButton);
+          qqDisableActiveSkill(skill);
+        };
+        actions.append(removeButton);
+      }
+    }
+
+    item.append(head, actions);
+    return item;
+  }));
+  if (els.qqDisableSkill) {
+    els.qqDisableSkill.disabled = !activeSkills.length;
+  }
+  renderQqSkillMeta();
+}
+
+async function qqReadSkill(skill) {
+  setStatus(`正在读取 QQ 技能：${skill.name}`);
+  const data = await j(`/skills/read?source=${encodeURIComponent(skill.source)}&name=${encodeURIComponent(skill.name)}`);
+  qqSkillRuntime.selectedSkill = normalizeQqSkill(data.skill);
+  const existingIndex = state.skills.findIndex((item) => sameSkill(item, skill));
+  if (existingIndex >= 0) {
+    state.skills[existingIndex] = { ...state.skills[existingIndex], ...cloneSkillForStorage(data.skill) };
+  }
+  persistQqSkillStateLocally();
+  renderQqSkillPreview(qqSkillRuntime.selectedSkill);
+  renderQqSkills();
+  setStatus(`已读取 QQ 技能：${skill.name}`);
+}
+
+function qqApplySelectedSkill() {
+  if (!qqSkillRuntime.selectedSkill) {
+    setStatus("请先读取一个 QQ 技能");
+    return;
+  }
+  const normalized = normalizeQqSkill(qqSkillRuntime.selectedSkill);
+  const activeSkills = getQqActiveSkills();
+  if (!activeSkills.some((skill) => sameSkill(skill, normalized))) {
+    activeSkills.push(normalized);
+  }
+  qqSkillRuntime.activeSkills = normalizeQqActiveSkills(activeSkills);
+  qqSkillRuntime.selectedSkill = normalized;
+  persistQqSkillStateLocally();
+  renderQqSkills();
+  renderQqSkillPreview(normalized);
+  syncQqBotConfig().catch(() => {});
+  setStatus(`已启用 ${qqSkillRuntime.activeSkills.length} 个 QQ 技能`);
+}
+
+function qqDisableActiveSkill(targetSkill = null) {
+  const activeSkills = getQqActiveSkills();
+  if (!activeSkills.length) {
+    setStatus("当前没有启用中的 QQ 技能");
+    return;
+  }
+  const skillToRemove = targetSkill || qqSkillRuntime.selectedSkill || activeSkills[activeSkills.length - 1];
+  qqSkillRuntime.activeSkills = activeSkills.filter((skill) => !sameSkill(skill, skillToRemove));
+  persistQqSkillStateLocally();
+  renderQqSkills();
+  renderQqSkillPreview(qqSkillRuntime.selectedSkill);
+  syncQqBotConfig().catch(() => {});
+  setStatus(`已移除 QQ 技能：${skillToRemove.name}`);
+}
+
+function qqClearSkillSelectionState() {
+  qqSkillRuntime.selectedSkill = null;
+  qqSkillRuntime.activeSkills = [];
+  persistQqSkillStateLocally();
+  renderQqSkillPreview(null);
+  renderQqSkills();
+  syncQqBotConfig().catch(() => {});
+  setStatus("已清空 QQ 技能状态");
+}
+
+function getPreferredQqSkillProfileState(profile = null) {
+  const current = saved();
+  const fallback = qqTargetProfileRuntime.baseConfig || {};
+  return {
+    selectedSkill: normalizeQqSkill(profile?.selectedSkill || fallback.selectedSkill || current.qqSelectedSkill),
+    activeSkills: normalizeQqActiveSkills(profile?.activeSkills || fallback.activeSkills || current.qqActiveSkills || []),
+  };
+}
+
+const collectCurrentQqTargetProfileBeforeSkillIsolation = collectCurrentQqTargetProfile;
+collectCurrentQqTargetProfile = function collectCurrentQqTargetProfileWithQqSkills() {
+  const profile = collectCurrentQqTargetProfileBeforeSkillIsolation();
+  if (!profile) return null;
+  const snapshot = getQqSkillStateSnapshot();
+  return {
+    ...profile,
+    selectedSkill: snapshot.selectedSkill,
+    activeSkills: snapshot.activeSkills,
+  };
+};
+
+const applyQqTargetProfileBeforeSkillIsolation = applyQqTargetProfile;
+applyQqTargetProfile = function applyQqTargetProfileWithQqSkills(profile = null) {
+  applyQqTargetProfileBeforeSkillIsolation(profile);
+  const skillState = getPreferredQqSkillProfileState(profile);
+  qqSkillRuntime.selectedSkill = skillState.selectedSkill;
+  qqSkillRuntime.activeSkills = skillState.activeSkills;
+  persistQqSkillStateLocally();
+  renderQqSkills();
+  renderQqSkillPreview(qqSkillRuntime.selectedSkill);
+};
+
+const syncQqBotConfigBeforeSkillIsolationFinal = syncQqBotConfig;
+syncQqBotConfig = async function syncQqBotConfigWithQqSkills() {
+  const snapshot = getQqSkillStateSnapshot();
+  qqTargetProfileRuntime.baseConfig = {
+    ...(qqTargetProfileRuntime.baseConfig || {}),
+    selectedSkill: snapshot.selectedSkill,
+    activeSkills: snapshot.activeSkills,
+  };
+  await syncQqBotConfigBeforeSkillIsolationFinal();
+  const push = getQqPushSettings();
+  const bot = getQqBotSettings();
+  await j("/qq-bot/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: bot.enabled,
+      groupMentionOnly: bot.groupMentionOnly,
+      taskPushEnabled: bot.taskPushEnabled,
+      triggerPrefix: bot.triggerPrefix,
+      allowedUsers: bot.allowedUsers,
+      allowedGroups: bot.allowedGroups,
+      persona: bot.persona,
+      personaPreset: bot.personaPreset || "none",
+      fileShareRoots: bot.fileShareRoots || "data/personas",
+      toolReadEnabled: bot.toolReadEnabled,
+      toolWriteEnabled: bot.toolWriteEnabled,
+      toolCommandEnabled: bot.toolCommandEnabled,
+      toolSkillEnabled: bot.toolSkillEnabled,
+      toolFileSendEnabled: bot.toolFileSendEnabled,
+      bridgeUrl: push.bridgeUrl,
+      accessToken: push.accessToken,
+      defaultTargetType: push.targetType,
+      defaultTargetId: push.targetId,
+      model: bot.model || "",
+      systemPrompt: els.systemPrompt?.value.trim() || "",
+      assistantName: els.assistantName?.value.trim() || "Assistant",
+      selectedSkill: snapshot.selectedSkill,
+      activeSkills: snapshot.activeSkills,
+      targetProfiles: qqTargetProfileRuntime.profiles,
+    }),
+  });
+};
+
+const loadQqTargetProfilesFromServerBeforeSkillIsolationFinal = loadQqTargetProfilesFromServer;
+loadQqTargetProfilesFromServer = async function loadQqTargetProfilesFromServerWithQqSkills() {
+  await loadQqTargetProfilesFromServerBeforeSkillIsolationFinal();
+  const current = saved();
+  qqTargetProfileRuntime.baseConfig = {
+    ...(qqTargetProfileRuntime.baseConfig || {}),
+    selectedSkill: normalizeQqSkill(qqTargetProfileRuntime.baseConfig?.selectedSkill || current.qqSelectedSkill),
+    activeSkills: normalizeQqActiveSkills(qqTargetProfileRuntime.baseConfig?.activeSkills || current.qqActiveSkills || []),
+  };
+  const key = qqTargetProfileKey();
+  const profile = key ? qqTargetProfileRuntime.profiles[key] || null : null;
+  const skillState = getPreferredQqSkillProfileState(profile);
+  qqSkillRuntime.selectedSkill = skillState.selectedSkill;
+  qqSkillRuntime.activeSkills = skillState.activeSkills;
+  persistQqSkillStateLocally();
+  renderQqSkills();
+  renderQqSkillPreview(qqSkillRuntime.selectedSkill);
+};
+
+const saveBeforeQqSkillIsolation = save;
+save = function saveWithQqSkillIsolation() {
+  saveBeforeQqSkillIsolation();
+  persistQqSkillStateLocally();
+};
+
+const loadBeforeQqSkillIsolation = load;
+load = function loadWithQqSkillIsolation() {
+  loadBeforeQqSkillIsolation();
+  const current = saved();
+  qqSkillRuntime.selectedSkill = normalizeQqSkill(current.qqSelectedSkill);
+  qqSkillRuntime.activeSkills = normalizeQqActiveSkills(current.qqActiveSkills || []);
+  renderQqSkills();
+  renderQqSkillPreview(qqSkillRuntime.selectedSkill);
+};
+
+const loadSkillsBeforeQqSkillIsolation = loadSkills;
+loadSkills = async function loadSkillsWithQqSkillIsolation() {
+  await loadSkillsBeforeQqSkillIsolation();
+  renderQqSkills();
+  renderQqSkillPreview(qqSkillRuntime.selectedSkill);
+};
+
+const systemMessagesBeforeQqSkillIsolation = systemMessages;
+systemMessages = function systemMessagesWithQqSkillIsolation() {
+  return systemMessagesBeforeQqSkillIsolation().filter((message) => !String(message?.content || "").includes("当前已启用 QQ 技能："));
+};
+
+els.qqLoadSkills?.addEventListener("click", () => {
+  spark(els.qqLoadSkills);
+  loadSkills().catch((error) => {
+    appendMessage("system", `读取 QQ 技能失败：${error.message}`, "error");
+    setStatus("读取 QQ 技能失败");
+  });
+});
+
+els.qqApplySkill?.addEventListener("click", () => {
+  spark(els.qqApplySkill);
+  qqApplySelectedSkill();
+});
+
+els.qqClearSkillSelection?.addEventListener("click", () => {
+  spark(els.qqClearSkillSelection);
+  qqClearSkillSelectionState();
+});
+
+els.qqDisableSkill?.addEventListener("click", () => {
+  spark(els.qqDisableSkill);
+  qqDisableActiveSkill();
+});
+
+renderQqSkills();
+renderQqSkillPreview(qqSkillRuntime.selectedSkill);
+els.personaPreset?.addEventListener("change", renderConversationMiniheadMeta);
+els.personaPrompt?.addEventListener("input", renderConversationMiniheadMeta);
+
+const REMOVED_SKILL_TOOL_NAMES = new Set([
+  "search_clawhub_skills",
+  "install_clawhub_skill",
+  "run_workspace_skill",
+]);
+
+function scrubRemovedSkillProfile(profile = {}) {
+  if (!profile || typeof profile !== "object") return profile;
+  const next = { ...profile };
+  delete next.toolSkillEnabled;
+  delete next.selectedSkill;
+  delete next.activeSkills;
+  return next;
+}
+
+function scrubRemovedSkillSettingsRecord(record = {}) {
+  const next = { ...(record && typeof record === "object" ? record : {}) };
+  delete next.skillsCache;
+  delete next.selectedSkill;
+  delete next.activeSkill;
+  delete next.activeSkills;
+  delete next.qqSelectedSkill;
+  delete next.qqActiveSkills;
+  delete next.qqToolSkillEnabled;
+  if (next.qqTargetProfiles && typeof next.qqTargetProfiles === "object") {
+    next.qqTargetProfiles = Object.fromEntries(
+      Object.entries(next.qqTargetProfiles).map(([key, value]) => [key, scrubRemovedSkillProfile(value)])
+    );
+  }
+  return next;
+}
+
+function clearRemovedSkillState() {
+  state.skills = [];
+  state.selectedSkill = null;
+  state.activeSkill = null;
+  state.activeSkills = [];
+  if (typeof qqSkillRuntime === "object" && qqSkillRuntime) {
+    qqSkillRuntime.selectedSkill = null;
+    qqSkillRuntime.activeSkills = [];
+  }
+}
+
+for (const toolName of REMOVED_SKILL_TOOL_NAMES) {
+  const index = TOOLS.findIndex((tool) => tool?.function?.name === toolName);
+  if (index >= 0) {
+    TOOLS.splice(index, 1);
+  }
+  SUPPORTED_TOOL_NAMES.delete(toolName);
+}
+SKILL_DISCOVERY_TOOL_NAMES.clear();
+SKILL_INSTALL_TOOL_NAMES.clear();
+SKILL_EXECUTION_TOOL_NAMES.clear();
+clearRemovedSkillState();
+
+getActiveSkills = function getActiveSkillsWithoutSkills() {
+  return [];
+};
+
+renderSkills = function renderSkillsWithoutSkills() {
+  if (!els.skillsList) return;
+  els.skillsList.innerHTML = '<div class="file-empty">技能配置已移除。</div>';
+};
+
+renderSkillPreview = function renderSkillPreviewWithoutSkills() {
+  if (!els.skillPreview) return;
+  els.skillPreview.textContent = "技能配置已移除。";
+};
+
+loadSkills = async function loadSkillsWithoutSkills() {
+  clearRemovedSkillState();
+  renderSkills();
+  renderSkillPreview();
+  setStatus("技能配置已移除");
+  return [];
+};
+
+readSkill = async function readSkillWithoutSkills() {
+  throw new Error("技能配置已移除");
+};
+
+applySelectedSkill = function applySelectedSkillWithoutSkills() {
+  clearRemovedSkillState();
+  setStatus("技能配置已移除");
+};
+
+disableActiveSkill = function disableActiveSkillWithoutSkills() {
+  clearRemovedSkillState();
+  renderConversationMiniheadMeta();
+};
+
+renderQqSkills = function renderQqSkillsWithoutSkills() {
+  if (!els.qqSkillsList) return;
+  els.qqSkillsList.innerHTML = '<div class="file-empty">QQ 技能配置已移除。</div>';
+};
+
+renderQqSkillPreview = function renderQqSkillPreviewWithoutSkills() {
+  if (els.qqSkillMeta) els.qqSkillMeta.textContent = "QQ 技能配置已移除。";
+  if (els.qqSkillPreview) els.qqSkillPreview.textContent = "QQ 技能配置已移除。";
+};
+
+getQqActiveSkills = function getQqActiveSkillsWithoutSkills() {
+  return [];
+};
+
+qqApplySelectedSkill = function qqApplySelectedSkillWithoutSkills() {
+  clearRemovedSkillState();
+  setStatus("QQ 技能配置已移除");
+};
+
+qqDisableActiveSkill = function qqDisableActiveSkillWithoutSkills() {
+  clearRemovedSkillState();
+};
+
+qqClearSkillSelectionState = function qqClearSkillSelectionStateWithoutSkills() {
+  clearRemovedSkillState();
+};
+
+const getQqBotSettingsBeforeSkillRemovalFinal = getQqBotSettings;
+getQqBotSettings = function getQqBotSettingsWithoutSkills() {
+  const config = getQqBotSettingsBeforeSkillRemovalFinal();
+  return {
+    ...config,
+    toolSkillEnabled: false,
+    selectedSkill: null,
+    activeSkills: [],
+  };
+};
+
+const getQqProfileToolSettingsBeforeSkillRemovalFinal = getQqProfileToolSettings;
+getQqProfileToolSettings = function getQqProfileToolSettingsWithoutSkills() {
+  const config = getQqProfileToolSettingsBeforeSkillRemovalFinal();
+  return {
+    ...config,
+    toolSkillEnabled: false,
+  };
+};
+
+formatQqToolPermissionSummary = function formatQqToolPermissionSummaryWithoutSkills(config = {}) {
+  const enabled = [];
+  if (config.toolReadEnabled !== false) enabled.push("读取");
+  if (config.toolWriteEnabled) enabled.push("写入");
+  if (config.toolCommandEnabled) enabled.push("命令");
+  if (config.toolFileSendEnabled) enabled.push("发文件");
+  return enabled.length ? enabled.join("、") : "未开放";
+};
+
+renderQqToolPermissionMeta = function renderQqToolPermissionMetaWithoutSkills() {
+  const bot = getQqBotSettings();
+  if (els.qqToolPermissionMeta) {
+    const roots = String(bot.fileShareRoots || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    els.qqToolPermissionMeta.textContent = `公共工具权限：${formatQqToolPermissionSummary(bot)}。共享目录：${roots.length ? roots.join("、") : "data/personas"}。默认建议仅开放读取，危险操作按对象单独开启。`;
+  }
+  if (els.qqProfileToolPermissionMeta) {
+    const profileTools = getQqProfileToolSettings();
+    const roots = String(els.qqProfileFileShareRoots?.value || els.qqFileShareRoots?.value || "data/personas").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    els.qqProfileToolPermissionMeta.textContent = `当前对象工具权限：${formatQqToolPermissionSummary(profileTools)}。共享目录：${roots.length ? roots.join("、") : "data/personas"}。保存对象配置后，QQ 回复会按这组权限决定是否允许写文件、执行命令或发送文件。`;
+  }
+};
+
+renderConversationMiniheadMeta = function renderConversationMiniheadMetaWithoutSkills() {
+  if (!els.conversationMiniheadText) return;
+  const modelText = selectedModel() || "未选择模型";
+  const personaContent = String(els.personaPrompt?.value || "").trim();
+  const personaPresetId = els.personaPreset?.value || "none";
+  const personaPresetName = personaPresetId !== "none"
+    ? String(els.personaPreset?.selectedOptions?.[0]?.textContent || "").trim()
+    : "";
+  const personaText = personaPresetName || (personaContent ? "自定义人设" : "无人设");
+  const personaMarkup = `<span class="minihead-meta-value${personaContent ? " is-hoverable" : ""}"${personaContent ? ` title="${esc(personaContent)}"` : ""}>${esc(personaText)}</span>`;
+  els.conversationMiniheadText.innerHTML = [
+    `<span class="minihead-meta-item"><span class="minihead-meta-label">模型</span><span class="minihead-meta-value">${esc(modelText)}</span></span>`,
+    `<span class="minihead-meta-separator">·</span>`,
+    `<span class="minihead-meta-item"><span class="minihead-meta-label">人设</span>${personaMarkup}</span>`,
+  ].join("");
+};
+
+getAllowedToolsForUserText = function getAllowedToolsForUserTextWithoutSkills(userText = "") {
+  const allowWrite = canUseWriteTools(userText);
+  const allowScheduler = hasExplicitSchedulerIntent(userText);
+  const allowQqPush = hasExplicitQqIntent(userText) && isQqPushConfigured();
+  return TOOLS.filter((tool) => {
+    const name = tool.function.name;
+    if (READ_ONLY_TOOL_NAMES.has(name)) return true;
+    if (WRITE_TOOL_NAMES.has(name)) return allowWrite;
+    if (QQ_TOOL_NAMES.has(name)) return allowQqPush;
+    if (SCHEDULER_TOOL_NAMES.has(name)) return allowScheduler;
+    return false;
+  });
+};
+
+const systemMessagesBeforeSkillRemovalFinal = systemMessages;
+systemMessages = function systemMessagesWithoutSkills() {
+  clearRemovedSkillState();
+  const blockedKeywords = [
+    "run_workspace_skill",
+    "search_clawhub_skills",
+    "install_clawhub_skill",
+    "ClawHub",
+    "SKILL.md",
+    "你当前启用了技能",
+    "当前已启用 QQ 技能",
+    "QQ 技能",
+    "技能只是执行说明",
+  ];
+  const list = systemMessagesBeforeSkillRemovalFinal().filter((message) => {
+    const content = String(message?.content || "");
+    return !blockedKeywords.some((keyword) => content.includes(keyword));
+  });
+  return list;
+};
+
+const executeToolBeforeSkillRemovalFinal = executeTool;
+executeTool = async function executeToolWithoutSkills(toolCall) {
+  const id = toolCall?.id || nowId();
+  const name = toolCall?.function?.name || "unknown";
+  if (REMOVED_SKILL_TOOL_NAMES.has(name)) {
+    toolActivity(id, "done", name, "已移除的技能工具调用已拦截");
+    return {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        ignored: true,
+        reason: "skill-feature-removed",
+        message: "技能配置已移除，请改用聊天、文件、命令、QQ 或定时任务能力完成任务。",
+      }),
+    };
+  }
+  return await executeToolBeforeSkillRemovalFinal(toolCall);
+};
+
+const getSavedQqTargetProfilesBeforeSkillRemovalFinal = getSavedQqTargetProfiles;
+getSavedQqTargetProfiles = function getSavedQqTargetProfilesWithoutSkills() {
+  const profiles = getSavedQqTargetProfilesBeforeSkillRemovalFinal();
+  return Object.fromEntries(Object.entries(profiles || {}).map(([key, value]) => [key, scrubRemovedSkillProfile(value)]));
+};
+
+const persistQqTargetProfilesBeforeSkillRemovalFinal = persistQqTargetProfiles;
+persistQqTargetProfiles = function persistQqTargetProfilesWithoutSkills(nextProfiles = qqTargetProfileRuntime.profiles) {
+  const sanitized = Object.fromEntries(Object.entries(nextProfiles || {}).map(([key, value]) => [key, scrubRemovedSkillProfile(value)]));
+  qqTargetProfileRuntime.profiles = sanitized;
+  return persistQqTargetProfilesBeforeSkillRemovalFinal(sanitized);
+};
+
+const collectCurrentQqTargetProfileBeforeSkillRemovalFinal = collectCurrentQqTargetProfile;
+collectCurrentQqTargetProfile = function collectCurrentQqTargetProfileWithoutSkills() {
+  const profile = collectCurrentQqTargetProfileBeforeSkillRemovalFinal();
+  if (!profile) return null;
+  return {
+    ...scrubRemovedSkillProfile(profile),
+    toolSkillEnabled: false,
+  };
+};
+
+const applyQqTargetProfileBeforeSkillRemovalFinal = applyQqTargetProfile;
+applyQqTargetProfile = function applyQqTargetProfileWithoutSkills(profile = null) {
+  applyQqTargetProfileBeforeSkillRemovalFinal(profile ? scrubRemovedSkillProfile(profile) : null);
+  clearRemovedSkillState();
+  renderQqToolPermissionMeta();
+};
+
+syncQqBotConfig = async function syncQqBotConfigWithoutSkills() {
+  const push = getQqPushSettings();
+  const bot = getQqBotSettings();
+  qqTargetProfileRuntime.baseConfig = {
+    enabled: Boolean(push.enabled),
+    bridgeUrl: push.bridgeUrl,
+    accessToken: push.accessToken,
+    groupMentionOnly: bot.groupMentionOnly,
+    taskPushEnabled: bot.taskPushEnabled,
+    triggerPrefix: bot.triggerPrefix,
+    allowedUsers: bot.allowedUsers,
+    allowedGroups: bot.allowedGroups,
+    persona: bot.persona,
+    personaPreset: bot.personaPreset || "none",
+    fileShareRoots: bot.fileShareRoots || "data/personas",
+    toolReadEnabled: bot.toolReadEnabled,
+    toolWriteEnabled: bot.toolWriteEnabled,
+    toolCommandEnabled: bot.toolCommandEnabled,
+    toolFileSendEnabled: bot.toolFileSendEnabled,
+    model: bot.model || "",
+    systemPrompt: els.systemPrompt?.value.trim() || "",
+    assistantName: els.assistantName?.value.trim() || "Assistant",
+  };
+  await j("/qq-bot/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: bot.enabled,
+      groupMentionOnly: bot.groupMentionOnly,
+      taskPushEnabled: bot.taskPushEnabled,
+      triggerPrefix: bot.triggerPrefix,
+      allowedUsers: bot.allowedUsers,
+      allowedGroups: bot.allowedGroups,
+      persona: bot.persona,
+      personaPreset: bot.personaPreset || "none",
+      fileShareRoots: bot.fileShareRoots || "data/personas",
+      toolReadEnabled: bot.toolReadEnabled,
+      toolWriteEnabled: bot.toolWriteEnabled,
+      toolCommandEnabled: bot.toolCommandEnabled,
+      toolFileSendEnabled: bot.toolFileSendEnabled,
+      bridgeUrl: push.bridgeUrl,
+      accessToken: push.accessToken,
+      defaultTargetType: push.targetType,
+      defaultTargetId: push.targetId,
+      model: bot.model || "",
+      systemPrompt: els.systemPrompt?.value.trim() || "",
+      assistantName: els.assistantName?.value.trim() || "Assistant",
+      targetProfiles: Object.fromEntries(
+        Object.entries(qqTargetProfileRuntime.profiles || {}).map(([key, value]) => [key, scrubRemovedSkillProfile(value)])
+      ),
+    }),
+  });
+};
+
+const loadQqTargetProfilesFromServerBeforeSkillRemovalFinal = loadQqTargetProfilesFromServer;
+loadQqTargetProfilesFromServer = async function loadQqTargetProfilesFromServerWithoutSkills() {
+  await loadQqTargetProfilesFromServerBeforeSkillRemovalFinal();
+  qqTargetProfileRuntime.profiles = Object.fromEntries(
+    Object.entries(qqTargetProfileRuntime.profiles || {}).map(([key, value]) => [key, scrubRemovedSkillProfile(value)])
+  );
+  qqTargetProfileRuntime.baseConfig = scrubRemovedSkillProfile({
+    ...(qqTargetProfileRuntime.baseConfig || {}),
+    toolSkillEnabled: false,
+  });
+  clearRemovedSkillState();
+  persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+  renderQqToolPermissionMeta();
+};
+
+const saveBeforeSkillRemovalFinal = save;
+save = function saveWithoutSkills() {
+  clearRemovedSkillState();
+  saveBeforeSkillRemovalFinal();
+  const current = scrubRemovedSkillSettingsRecord(saved());
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(current));
+  renderConversationMiniheadMeta();
+  renderQqToolPermissionMeta();
+};
+
+const loadBeforeSkillRemovalFinal = load;
+load = function loadWithoutSkills() {
+  loadBeforeSkillRemovalFinal();
+  clearRemovedSkillState();
+  const current = scrubRemovedSkillSettingsRecord(saved());
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(current));
+  renderConversationMiniheadMeta();
+  renderQqToolPermissionMeta();
+};
+
+const loadModelsBeforeSkillRemovalFinal = loadModels;
+loadModels = async function loadModelsWithoutSkills() {
+  await loadModelsBeforeSkillRemovalFinal();
+  renderConversationMiniheadMeta();
+};
+
+renderConversationMiniheadMeta();
+renderQqToolPermissionMeta();
+localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubRemovedSkillSettingsRecord(saved())));
+
+function scrubQqUnifiedModelProfile(profile = {}) {
+  if (!profile || typeof profile !== "object") return profile;
+  const next = { ...profile };
+  delete next.model;
+  return next;
+}
+
+function scrubQqUnifiedModelSettingsRecord(record = {}) {
+  const next = { ...(record || {}) };
+  delete next.qqBotModel;
+  if (next.qqTargetProfiles && typeof next.qqTargetProfiles === "object") {
+    next.qqTargetProfiles = Object.fromEntries(
+      Object.entries(next.qqTargetProfiles).map(([key, value]) => [key, scrubQqUnifiedModelProfile(value)])
+    );
+  }
+  return next;
+}
+
+const getQqBotSettingsBeforeUnifiedBaseModelFinal = getQqBotSettings;
+getQqBotSettings = function getQqBotSettingsUnifiedBaseModelFinal() {
+  const config = getQqBotSettingsBeforeUnifiedBaseModelFinal();
+  return {
+    ...config,
+    model: selectedModel(),
+    toolSkillEnabled: false,
+  };
+};
+
+const getSavedQqTargetProfilesBeforeUnifiedBaseModelFinal = getSavedQqTargetProfiles;
+getSavedQqTargetProfiles = function getSavedQqTargetProfilesUnifiedBaseModelFinal() {
+  const profiles = getSavedQqTargetProfilesBeforeUnifiedBaseModelFinal();
+  return Object.fromEntries(
+    Object.entries(profiles || {}).map(([key, value]) => [key, scrubQqUnifiedModelProfile(value)])
+  );
+};
+
+const persistQqTargetProfilesBeforeUnifiedBaseModelFinal = persistQqTargetProfiles;
+persistQqTargetProfiles = function persistQqTargetProfilesUnifiedBaseModelFinal(nextProfiles = qqTargetProfileRuntime.profiles) {
+  const sanitized = Object.fromEntries(
+    Object.entries(nextProfiles || {}).map(([key, value]) => [key, scrubQqUnifiedModelProfile(value)])
+  );
+  qqTargetProfileRuntime.profiles = sanitized;
+  return persistQqTargetProfilesBeforeUnifiedBaseModelFinal(sanitized);
+};
+
+const collectCurrentQqTargetProfileBeforeUnifiedBaseModelFinal = collectCurrentQqTargetProfile;
+collectCurrentQqTargetProfile = function collectCurrentQqTargetProfileUnifiedBaseModelFinal() {
+  const profile = collectCurrentQqTargetProfileBeforeUnifiedBaseModelFinal();
+  if (!profile) return null;
+  return {
+    ...scrubQqUnifiedModelProfile(profile),
+    toolSkillEnabled: false,
+  };
+};
+
+const applyQqTargetProfileBeforeUnifiedBaseModelFinal = applyQqTargetProfile;
+applyQqTargetProfile = function applyQqTargetProfileUnifiedBaseModelFinal(profile = null) {
+  applyQqTargetProfileBeforeUnifiedBaseModelFinal(profile ? scrubQqUnifiedModelProfile(profile) : null);
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+};
+
+const persistQqSettingsIndependentlyBeforeUnifiedBaseModelFinal = persistQqSettingsIndependently;
+persistQqSettingsIndependently = function persistQqSettingsIndependentlyUnifiedBaseModelFinal() {
+  persistQqSettingsIndependentlyBeforeUnifiedBaseModelFinal();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubQqUnifiedModelSettingsRecord(saved())));
+};
+
+const saveBeforeUnifiedBaseModelFinal = save;
+save = function saveUnifiedBaseModelFinal() {
+  saveBeforeUnifiedBaseModelFinal();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubQqUnifiedModelSettingsRecord(saved())));
+};
+
+const loadBeforeUnifiedBaseModelFinal = load;
+load = function loadUnifiedBaseModelFinal() {
+  loadBeforeUnifiedBaseModelFinal();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubQqUnifiedModelSettingsRecord(saved())));
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+};
+
+const loadModelsBeforeUnifiedBaseModelFinal = loadModels;
+loadModels = async function loadModelsUnifiedBaseModelFinal() {
+  await loadModelsBeforeUnifiedBaseModelFinal();
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+};
+
+function replaceQqTargetProfileActionButton(propertyName) {
+  const button = els[propertyName];
+  if (!button || !button.parentNode) return button;
+  const clone = button.cloneNode(true);
+  button.parentNode.replaceChild(clone, button);
+  els[propertyName] = clone;
+  return clone;
+}
+
+function resetQqTargetProfileActionButton(button) {
+  if (!button) return;
+  button.classList.remove("is-busy", "is-success");
+}
+
+function reportQqTargetProfileAction(message, tone = "success") {
+  setQqTargetProfileFeedback(message, tone === "error" ? "danger" : tone);
+  setStatus(message, tone);
+}
+
+async function syncQqConfigWithUnifiedBaseModel() {
+  await syncQqBotConfig();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubQqUnifiedModelSettingsRecord(saved())));
+}
+
+function bindUnifiedQqTargetProfileActionButtons() {
+  const saveButton = replaceQqTargetProfileActionButton("saveQqTargetProfile");
+  const deleteButton = replaceQqTargetProfileActionButton("deleteQqTargetProfile");
+
+  saveButton?.addEventListener("click", async () => {
+    spark(saveButton);
+    pulseQqTargetProfileAction(saveButton, "busy");
+    const profile = collectCurrentQqTargetProfile();
+    if (!profile) {
+      resetQqTargetProfileActionButton(saveButton);
+      reportQqTargetProfileAction("请先填写 QQ 或群号，再保存对象配置。", "error");
+      return;
+    }
+
+    const previousProfiles = JSON.parse(JSON.stringify(qqTargetProfileRuntime.profiles || {}));
+    persistQqTargetProfileState(profile);
+    applyQqTargetProfile(profile);
+    renderQqTargetProfilesSelect();
+
+    try {
+      await syncQqConfigWithUnifiedBaseModel();
+      pulseQqTargetProfileAction(saveButton, "success");
+      reportQqTargetProfileAction(`已保存对象配置：${profile.name}`, "success");
+    } catch (error) {
+      persistQqTargetProfiles(previousProfiles);
+      applyCurrentQqTargetProfileIfExists();
+      renderQqTargetProfilesSelect();
+      resetQqTargetProfileActionButton(saveButton);
+      reportQqTargetProfileAction(`保存对象配置失败：${String(error?.message || "未知错误")}`, "error");
+    }
+  });
+
+  deleteButton?.addEventListener("click", async () => {
+    spark(deleteButton);
+    pulseQqTargetProfileAction(deleteButton, "busy");
+    const key = qqTargetProfileKey();
+    if (!key || !qqTargetProfileRuntime.profiles[key]) {
+      resetQqTargetProfileActionButton(deleteButton);
+      reportQqTargetProfileAction("当前对象还没有独立配置可删除。", "error");
+      return;
+    }
+
+    const previousProfiles = JSON.parse(JSON.stringify(qqTargetProfileRuntime.profiles || {}));
+    const removedName = qqTargetProfileRuntime.profiles[key]?.name || key;
+    delete qqTargetProfileRuntime.profiles[key];
+    persistQqTargetProfiles(qqTargetProfileRuntime.profiles);
+    renderQqTargetProfilesSelect();
+    applyQqTargetProfile(null);
+
+    try {
+      await syncQqConfigWithUnifiedBaseModel();
+      pulseQqTargetProfileAction(deleteButton, "success");
+      reportQqTargetProfileAction(`已删除对象配置：${removedName}`, "success");
+    } catch (error) {
+      persistQqTargetProfiles(previousProfiles);
+      applyCurrentQqTargetProfileIfExists();
+      renderQqTargetProfilesSelect();
+      resetQqTargetProfileActionButton(deleteButton);
+      reportQqTargetProfileAction(`删除对象配置失败：${String(error?.message || "未知错误")}`, "error");
+    }
+  });
+}
+
+bindUnifiedQqTargetProfileActionButtons();
+
+els.modelSelect?.addEventListener("change", () => {
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubQqUnifiedModelSettingsRecord(saved())));
+});
+
+localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubQqUnifiedModelSettingsRecord(saved())));
+
+function normalizeQqConfigEditorValue(value = "") {
+  if (Array.isArray(value)) return value.join("\n");
+  return String(value || "");
+}
+
+function formatQqConfigEditorTargetLabel(targetType = els.qqTargetType?.value || "private", targetId = els.qqTargetId?.value || "") {
+  const normalizedId = String(targetId || "").trim();
+  if (!normalizedId) return "";
+  return `${targetType === "group" ? "群" : "QQ"} ${normalizedId}`;
+}
+
+function getScopedDefaultQqBotSettings() {
+  const current = getQqBotSettings();
+  if (!qqTargetProfileKey()) return current;
+  const baseConfig = qqTargetProfileRuntime.baseConfig || {};
+  return {
+    ...current,
+    triggerPrefix: normalizeQqConfigEditorValue(baseConfig.triggerPrefix),
+    allowedUsers: normalizeQqConfigEditorValue(baseConfig.allowedUsers),
+    allowedGroups: normalizeQqConfigEditorValue(baseConfig.allowedGroups),
+    persona: String(baseConfig.persona || ""),
+    personaPreset: String(baseConfig.personaPreset || "none").trim() || "none",
+  };
+}
+
+const renderQqTargetProfilesSelectBeforeEditorLayoutFinal = renderQqTargetProfilesSelect;
+renderQqTargetProfilesSelect = function renderQqTargetProfilesSelectByEditorLayout() {
+  renderQqTargetProfilesSelectBeforeEditorLayoutFinal();
+  const firstOption = els.qqTargetProfileSelect?.querySelector("option");
+  if (!firstOption) return;
+  firstOption.textContent = qqTargetProfileKey()
+    ? "当前对象未保存为独立配置"
+    : "可选：加载已保存对象配置";
+};
+
+renderQqTargetProfileMeta = function renderQqTargetProfileMetaByEditorLayout() {
+  if (!els.qqTargetProfileMeta) return;
+  const key = qqTargetProfileKey();
+  const targetType = els.qqTargetType?.value || "private";
+  const targetId = els.qqTargetId?.value?.trim() || "";
+  const targetLabel = formatQqConfigEditorTargetLabel(targetType, targetId);
+  if (!key || !targetLabel) {
+    els.qqTargetProfileMeta.textContent = "当前正在编辑默认 QQ 配置。填写对象类型和对象 ID 后，可以把下面“当前对象...”里的设定保存为独立对象配置。";
+    return;
+  }
+  const profile = qqTargetProfileRuntime.profiles[key];
+  els.qqTargetProfileMeta.textContent = profile
+    ? `当前正在编辑：${targetLabel}。状态：已保存独立配置；点击“保存对象配置”会覆盖该对象现有设置，点击“删除对象配置”会恢复跟随默认 QQ 配置。`
+    : `当前正在编辑：${targetLabel}。状态：尚未保存为独立配置；下面“当前对象...”里的设定会在点击“保存对象配置”后固化到这个对象。`;
+};
+
+renderQqBotMeta = function renderQqBotMetaByScopedDefaultsFinal() {
+  if (!els.qqBotMeta) return;
+  const config = getScopedDefaultQqBotSettings();
+  if (!config.enabled) {
+    els.qqBotMeta.textContent = "当前未启用 QQ 机器人自动回复。";
+    renderQqToolPermissionMeta();
+    return;
+  }
+  const prefixText = config.triggerPrefix ? ` · 默认前缀：${config.triggerPrefix}` : "";
+  const permissionsText = ` · 默认私聊限制：${String(config.allowedUsers || "").trim() ? "已限制" : "不限制"} · 默认群限制：${String(config.allowedGroups || "").trim() ? "已限制" : "不限制"}`;
+  const toolText = ` · 默认工具：${formatQqToolPermissionSummary(config)}`;
+  const taskPushText = config.taskPushEnabled ? " · 定时推送：已开启" : "";
+  const editingScopeText = qqTargetProfileKey()
+    ? ` · 当前正在编辑对象：${formatQqConfigEditorTargetLabel()}`
+    : " · 当前正在编辑默认配置";
+  els.qqBotMeta.textContent = `QQ 机器人已启用 · 群聊模式：${config.groupMentionOnly ? "仅 @ 时回复" : "允许直接回复"}${prefixText}${permissionsText}${toolText}${taskPushText}${editingScopeText}`;
+  renderQqToolPermissionMeta();
+};
+
+syncQqBotConfig = async function syncQqBotConfigByEditorLayoutFinal() {
+  const push = getQqPushSettings();
+  const bot = getQqBotSettings();
+  const scopedDefaultBot = getScopedDefaultQqBotSettings();
+  qqTargetProfileRuntime.baseConfig = {
+    ...(qqTargetProfileRuntime.baseConfig || {}),
+    enabled: Boolean(bot.enabled),
+    groupMentionOnly: scopedDefaultBot.groupMentionOnly,
+    taskPushEnabled: scopedDefaultBot.taskPushEnabled,
+    triggerPrefix: scopedDefaultBot.triggerPrefix,
+    allowedUsers: scopedDefaultBot.allowedUsers,
+    allowedGroups: scopedDefaultBot.allowedGroups,
+    persona: scopedDefaultBot.persona,
+    personaPreset: scopedDefaultBot.personaPreset || "none",
+    bridgeUrl: push.bridgeUrl,
+    accessToken: push.accessToken,
+    defaultTargetType: push.targetType,
+    defaultTargetId: push.targetId,
+    fileShareRoots: bot.fileShareRoots || "data/personas",
+    toolReadEnabled: bot.toolReadEnabled,
+    toolWriteEnabled: bot.toolWriteEnabled,
+    toolCommandEnabled: bot.toolCommandEnabled,
+    toolFileSendEnabled: bot.toolFileSendEnabled,
+    model: bot.model || "",
+    systemPrompt: els.systemPrompt?.value.trim() || "",
+    assistantName: els.assistantName?.value.trim() || "Assistant",
+  };
+  await j("/qq-bot/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: bot.enabled,
+      groupMentionOnly: scopedDefaultBot.groupMentionOnly,
+      taskPushEnabled: scopedDefaultBot.taskPushEnabled,
+      triggerPrefix: scopedDefaultBot.triggerPrefix,
+      allowedUsers: scopedDefaultBot.allowedUsers,
+      allowedGroups: scopedDefaultBot.allowedGroups,
+      persona: scopedDefaultBot.persona,
+      personaPreset: scopedDefaultBot.personaPreset || "none",
+      fileShareRoots: bot.fileShareRoots || "data/personas",
+      toolReadEnabled: bot.toolReadEnabled,
+      toolWriteEnabled: bot.toolWriteEnabled,
+      toolCommandEnabled: bot.toolCommandEnabled,
+      toolFileSendEnabled: bot.toolFileSendEnabled,
+      bridgeUrl: push.bridgeUrl,
+      accessToken: push.accessToken,
+      defaultTargetType: push.targetType,
+      defaultTargetId: push.targetId,
+      model: bot.model || "",
+      systemPrompt: els.systemPrompt?.value.trim() || "",
+      assistantName: els.assistantName?.value.trim() || "Assistant",
+      targetProfiles: Object.fromEntries(
+        Object.entries(qqTargetProfileRuntime.profiles || {}).map(([key, value]) => [key, scrubQqUnifiedModelProfile(value)])
+      ),
+    }),
+  });
+  renderQqTargetProfileMeta();
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+};
+
+applyCurrentQqTargetProfileIfExists = function applyCurrentQqTargetProfileIfExistsByEditorLayout() {
+  const key = qqTargetProfileKey();
+  if (!key) {
+    applyQqTargetProfile(null);
+    renderQqTargetProfilesSelect();
+    renderQqTargetProfileMeta();
+    return;
+  }
+  applyQqTargetProfile(qqTargetProfileRuntime.profiles[key] || null);
+  renderQqTargetProfilesSelect();
+  renderQqTargetProfileMeta();
+};
+
+[els.qqTargetType, els.qqTargetId].forEach((el) => {
+  el?.addEventListener("change", () => {
+    applyCurrentQqTargetProfileIfExists();
+  }, true);
+});
+
+renderQqTargetProfilesSelect();
+renderQqTargetProfileMeta();
+renderQqBotMeta();
+
+const QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT = "data/temp";
+
+function normalizeQqTargetTypeValue(value = "") {
+  return String(value || "").trim().toLowerCase() === "group" ? "group" : "private";
+}
+
+function getHiddenQqPublicBaseConfig() {
+  const record = saved();
+  const base = qqTargetProfileRuntime.baseConfig || {};
+  return {
+    enabled: typeof base.enabled === "boolean" ? base.enabled : Boolean(record.qqBotEnabled),
+    groupMentionOnly: base.groupMentionOnly !== false,
+    taskPushEnabled: Boolean(base.taskPushEnabled),
+    triggerPrefix: normalizeQqConfigEditorValue(base.triggerPrefix ?? record.qqBotTriggerPrefix ?? ""),
+    allowedUsers: normalizeQqConfigEditorValue(base.allowedUsers ?? record.qqBotAllowedUsers ?? ""),
+    allowedGroups: normalizeQqConfigEditorValue(base.allowedGroups ?? record.qqBotAllowedGroups ?? ""),
+    persona: String(base.persona ?? record.qqBotPersona ?? ""),
+    personaPreset: String(base.personaPreset || record.qqBotPersonaPreset || "none").trim() || "none",
+    bridgeUrl: String(base.bridgeUrl || record.qqBridgeUrl || ""),
+    accessToken: String(base.accessToken || record.qqAccessToken || ""),
+    defaultTargetType: normalizeQqTargetTypeValue(base.defaultTargetType || record.qqDefaultTargetType || "private"),
+    defaultTargetId: String(base.defaultTargetId || record.qqDefaultTargetId || "").trim(),
+    model: String(base.model || selectedModel() || ""),
+    fileShareRoots: QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT,
+    toolReadEnabled: true,
+    toolWriteEnabled: false,
+    toolCommandEnabled: false,
+    toolSkillEnabled: false,
+    toolFileSendEnabled: false,
+  };
+}
+
+function persistLockedQqPublicSettingsRecord() {
+  const current = saved();
+  const hidden = getHiddenQqPublicBaseConfig();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(scrubQqUnifiedModelSettingsRecord({
+    ...current,
+    qqPushEnabled: Boolean(els.qqPushEnabled?.checked ?? current.qqPushEnabled),
+    qqBridgeUrl: hidden.bridgeUrl,
+    qqAccessToken: hidden.accessToken,
+    qqDefaultTargetType: hidden.defaultTargetType,
+    qqDefaultTargetId: hidden.defaultTargetId,
+    qqBotEnabled: hidden.enabled,
+    qqBotGroupMentionOnly: hidden.groupMentionOnly,
+    qqTaskPushEnabled: hidden.taskPushEnabled,
+    qqFileShareRoots: QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT,
+    qqToolReadEnabled: true,
+    qqToolWriteEnabled: false,
+    qqToolCommandEnabled: false,
+    qqToolSkillEnabled: false,
+    qqToolFileSendEnabled: false,
+  })));
+}
+
+function renderQqPublicSummaryMetaLocked() {
+  const text = document.querySelector("#qq-public-summary-text");
+  if (!text) return;
+  const hidden = getHiddenQqPublicBaseConfig();
+  const pushEnabledText = Boolean(els.qqPushEnabled?.checked ?? saved().qqPushEnabled) ? "已启用" : "已关闭";
+  const bridgeText = hidden.bridgeUrl ? "已保留" : "未配置";
+  const tokenText = hidden.accessToken ? "已保留" : "未配置";
+  const targetText = hidden.defaultTargetId
+    ? `${hidden.defaultTargetType === "group" ? "群" : "QQ"} ${hidden.defaultTargetId}`
+    : "未设置";
+  const botText = hidden.enabled ? "已启用" : "未启用";
+  const groupModeText = hidden.groupMentionOnly ? "仅 @ 时触发" : "允许直接触发";
+  const privateLimitText = String(hidden.allowedUsers || "").trim() ? "已限制" : "不限制";
+  const groupLimitText = String(hidden.allowedGroups || "").trim() ? "已限制" : "不限制";
+  const taskPushText = hidden.taskPushEnabled ? "已启用" : "未启用";
+  text.textContent = [
+    `QQ 推送：${pushEnabledText}`,
+    `桥接地址：${bridgeText}`,
+    `Access Token：${tokenText}`,
+    `默认推送对象：${targetText}`,
+    `QQ 机器人：${botText}`,
+    `群聊触发：${groupModeText}`,
+    `触发限制：私聊${privateLimitText}，群${groupLimitText}`,
+    `定时任务推送：${taskPushText}`,
+    `工具权限：仅允许读取目录与文件`,
+    `共享目录：${QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT}`,
+    "模型：跟随基础连接",
+  ].join("\n");
+}
+
+const getQqPushSettingsBeforeLockedPublicSummaryFinal = getQqPushSettings;
+getQqPushSettings = function getQqPushSettingsLockedPublicSummaryFinal() {
+  const config = getQqPushSettingsBeforeLockedPublicSummaryFinal();
+  const hidden = getHiddenQqPublicBaseConfig();
+  return {
+    ...config,
+    enabled: Boolean(els.qqPushEnabled?.checked ?? saved().qqPushEnabled),
+    bridgeUrl: hidden.bridgeUrl,
+    accessToken: hidden.accessToken,
+    targetType: hidden.defaultTargetType,
+    targetId: hidden.defaultTargetId,
+  };
+};
+
+const getQqBotSettingsBeforeLockedPublicSummaryFinal = getQqBotSettings;
+getQqBotSettings = function getQqBotSettingsLockedPublicSummaryFinal() {
+  const config = getQqBotSettingsBeforeLockedPublicSummaryFinal();
+  const hidden = getHiddenQqPublicBaseConfig();
+  return {
+    ...config,
+    enabled: hidden.enabled,
+    groupMentionOnly: hidden.groupMentionOnly,
+    taskPushEnabled: hidden.taskPushEnabled,
+    triggerPrefix: hidden.triggerPrefix,
+    allowedUsers: hidden.allowedUsers,
+    allowedGroups: hidden.allowedGroups,
+    persona: hidden.persona,
+    personaPreset: hidden.personaPreset,
+    fileShareRoots: hidden.fileShareRoots,
+    toolReadEnabled: true,
+    toolWriteEnabled: false,
+    toolCommandEnabled: false,
+    toolSkillEnabled: false,
+    toolFileSendEnabled: false,
+    model: selectedModel() || hidden.model || config.model || "",
+  };
+};
+
+renderQqPushMeta = function renderQqPushMetaLockedPublicSummaryFinal() {
+  renderQqPublicSummaryMetaLocked();
+};
+
+renderQqBotMeta = function renderQqBotMetaLockedPublicSummaryFinal() {
+  renderQqPublicSummaryMetaLocked();
+  if (els.qqProfileToolPermissionMeta) {
+    renderQqToolPermissionMeta();
+  }
+};
+
+renderQqToolPermissionMeta = function renderQqToolPermissionMetaLockedPublicSummaryFinal() {
+  renderQqPublicSummaryMetaLocked();
+  if (els.qqProfileToolPermissionMeta) {
+    const profileTools = getQqProfileToolSettings();
+    const roots = String(els.qqProfileFileShareRoots?.value || QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT).split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    els.qqProfileToolPermissionMeta.textContent = `当前对象工具权限：${formatQqToolPermissionSummary(profileTools)}。共享目录：${roots.length ? roots.join("、") : QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT}。保存对象配置后，才会对该对象单独生效。`;
+  }
+};
+
+renderQqTargetProfileMeta = function renderQqTargetProfileMetaLockedPublicSummaryFinal() {
+  if (!els.qqTargetProfileMeta) return;
+  const key = qqTargetProfileKey();
+  const targetType = els.qqTargetType?.value || "private";
+  const targetId = els.qqTargetId?.value?.trim() || "";
+  const targetLabel = formatQqConfigEditorTargetLabel(targetType, targetId);
+  if (!key || !targetLabel) {
+    els.qqTargetProfileMeta.textContent = "请先选择对象类型和对象 ID。下方内容会作为该对象的独立配置。";
+    return;
+  }
+  const profile = qqTargetProfileRuntime.profiles[key];
+  els.qqTargetProfileMeta.textContent = profile
+    ? `当前正在编辑：${targetLabel}。状态：已保存独立配置；点击“保存对象配置”会覆盖该对象现有设置，点击“删除对象配置”会恢复继承公共默认配置。`
+    : `当前正在编辑：${targetLabel}。状态：尚未保存为独立配置；下方对象设定会在点击“保存对象配置”后固化到这个对象。`;
+};
+
+const saveBeforeLockedPublicSummaryFinal = save;
+save = function saveLockedPublicSummaryFinal() {
+  saveBeforeLockedPublicSummaryFinal();
+  persistLockedQqPublicSettingsRecord();
+  renderQqPublicSummaryMetaLocked();
+  renderQqPushMeta();
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+};
+
+const persistQqSettingsIndependentlyBeforeLockedPublicSummaryFinal = persistQqSettingsIndependently;
+persistQqSettingsIndependently = function persistQqSettingsIndependentlyLockedPublicSummaryFinal() {
+  persistQqSettingsIndependentlyBeforeLockedPublicSummaryFinal();
+  persistLockedQqPublicSettingsRecord();
+};
+
+const loadBeforeLockedPublicSummaryFinal = load;
+load = function loadLockedPublicSummaryFinal() {
+  loadBeforeLockedPublicSummaryFinal();
+  persistLockedQqPublicSettingsRecord();
+  renderQqPublicSummaryMetaLocked();
+  renderQqPushMeta();
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+  renderQqTargetProfileMeta();
+};
+
+const loadQqTargetProfilesFromServerBeforeLockedPublicSummaryFinal = loadQqTargetProfilesFromServer;
+loadQqTargetProfilesFromServer = async function loadQqTargetProfilesFromServerLockedPublicSummaryFinal() {
+  await loadQqTargetProfilesFromServerBeforeLockedPublicSummaryFinal();
+  qqTargetProfileRuntime.baseConfig = {
+    ...(qqTargetProfileRuntime.baseConfig || {}),
+    defaultTargetType: normalizeQqTargetTypeValue(qqTargetProfileRuntime.baseConfig?.defaultTargetType || saved().qqDefaultTargetType || "private"),
+    defaultTargetId: String(qqTargetProfileRuntime.baseConfig?.defaultTargetId || saved().qqDefaultTargetId || "").trim(),
+    fileShareRoots: QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT,
+    toolReadEnabled: true,
+    toolWriteEnabled: false,
+    toolCommandEnabled: false,
+    toolSkillEnabled: false,
+    toolFileSendEnabled: false,
+  };
+  persistLockedQqPublicSettingsRecord();
+  renderQqPublicSummaryMetaLocked();
+  renderQqPushMeta();
+  renderQqBotMeta();
+  renderQqToolPermissionMeta();
+  renderQqTargetProfileMeta();
+};
+
+persistLockedQqPublicSettingsRecord();
+renderQqPublicSummaryMetaLocked();
+renderQqPushMeta();
+renderQqBotMeta();
+renderQqToolPermissionMeta();
+renderQqTargetProfileMeta();
+
+const getHiddenQqPublicBaseConfigBeforeTaskScopedSchedulerFinal = getHiddenQqPublicBaseConfig;
+getHiddenQqPublicBaseConfig = function getHiddenQqPublicBaseConfigTaskScopedSchedulerFinal() {
+  return {
+    ...getHiddenQqPublicBaseConfigBeforeTaskScopedSchedulerFinal(),
+    taskPushEnabled: false,
+  };
+};
+
+renderQqPublicSummaryMetaLocked = function renderQqPublicSummaryMetaTaskScopedSchedulerFinal() {
+  const text = document.querySelector("#qq-public-summary-text");
+  if (!text) return;
+  const hidden = getHiddenQqPublicBaseConfig();
+  const pushEnabledText = Boolean(els.qqPushEnabled?.checked ?? saved().qqPushEnabled) ? "已启用" : "已关闭";
+  const bridgeText = hidden.bridgeUrl ? "已保存" : "未配置";
+  const tokenText = hidden.accessToken ? "已保存" : "未配置";
+  const targetText = hidden.defaultTargetId
+    ? `${hidden.defaultTargetType === "group" ? "群" : "QQ"} ${hidden.defaultTargetId}`
+    : "未设置";
+  const botText = hidden.enabled ? "已启用" : "未启用";
+  const groupModeText = hidden.groupMentionOnly ? "仅 @ 触发" : "允许直接触发";
+  const privateLimitText = String(hidden.allowedUsers || "").trim() ? "已限制" : "不限";
+  const groupLimitText = String(hidden.allowedGroups || "").trim() ? "已限制" : "不限";
+  text.textContent = [
+    `QQ 推送：${pushEnabledText}`,
+    `桥接地址：${bridgeText}`,
+    `Access Token：${tokenText}`,
+    `默认推送对象：${targetText}`,
+    `QQ 机器人：${botText}`,
+    `群聊触发：${groupModeText}`,
+    `触发限制：私聊 ${privateLimitText}，群 ${groupLimitText}`,
+    "定时任务：按任务单独配置 QQ 推送",
+    "工具权限：仅允许读取目录与文件",
+    `共享目录：${QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT}`,
+    "模型：跟随基础连接",
+  ].join("\n");
+};
+
+function normalizeScheduledTaskQqTargetType(value = "") {
+  return String(value || "").trim().toLowerCase() === "group" ? "group" : "private";
+}
+
+function formatScheduledTaskQqTargetLabel(targetType = "private", targetId = "") {
+  const normalizedId = String(targetId || "").trim();
+  if (!normalizedId) {
+    return "未配置";
+  }
+  return `${normalizeScheduledTaskQqTargetType(targetType) === "group" ? "群" : "QQ"} ${normalizedId}`;
+}
+
+function buildScheduledTaskQqPushSummary(task = {}) {
+  if (!task?.qqPushEnabled) {
+    return "QQ 推送：未启用";
+  }
+  return `QQ 推送：${formatScheduledTaskQqTargetLabel(task.qqTargetType, task.qqTargetId)}`;
+}
+
+function hasScheduledTaskQqPushPersistenceMismatch(task = {}, expectedSettings = {}) {
+  if (!expectedSettings?.qqPushEnabled) {
+    return false;
+  }
+  return !(
+    task &&
+    task.qqPushEnabled === true &&
+    normalizeScheduledTaskQqTargetType(task.qqTargetType || "private") === normalizeScheduledTaskQqTargetType(expectedSettings.qqTargetType || "private") &&
+    String(task.qqTargetId || "").trim() === String(expectedSettings.qqTargetId || "").trim()
+  );
+}
+
+function applyScheduledTaskQqPushDisabledState(targetTypeInput, targetIdInput, enabled) {
+  if (targetTypeInput) {
+    targetTypeInput.disabled = !enabled;
+  }
+  if (targetIdInput) {
+    targetIdInput.disabled = !enabled;
+  }
+}
+
+schedulerElements = function schedulerElementsQqPushFinal() {
+  return {
+    formSummary: $("#schedule-task-form-summary"),
+    name: $("#schedule-task-name"),
+    cron: $("#schedule-task-cron"),
+    prompt: $("#schedule-task-prompt"),
+    qqPushEnabled: $("#schedule-task-qq-push-enabled"),
+    qqTargetType: $("#schedule-task-qq-target-type"),
+    qqTargetId: $("#schedule-task-qq-target-id"),
+    createButton: $("#create-schedule-task"),
+    refreshButton: $("#refresh-schedule-tasks"),
+    meta: $("#schedule-task-meta"),
+    list: $("#schedule-task-list"),
+  };
+};
+
+function getScheduledTaskQqPushFormSettings() {
+  const { qqPushEnabled, qqTargetType, qqTargetId } = schedulerElements();
+  return {
+    qqPushEnabled: Boolean(qqPushEnabled?.checked),
+    qqTargetType: normalizeScheduledTaskQqTargetType(qqTargetType?.value || "private"),
+    qqTargetId: String(qqTargetId?.value || "").trim(),
+  };
+}
+
+function buildScheduledTaskQqPushPayload(settings = getScheduledTaskQqPushFormSettings()) {
+  return {
+    qqPushEnabled: Boolean(settings.qqPushEnabled),
+    qqTargetType: normalizeScheduledTaskQqTargetType(settings.qqTargetType || "private"),
+    qqTargetId: String(settings.qqTargetId || "").trim(),
+  };
+}
+
+function buildScheduledTaskResultText(task = {}) {
+  return String(task.lastError || task.lastResult || "最近还没有执行结果。").trim() || "最近还没有执行结果。";
+}
+
+function buildScheduledTaskResultPreview(task = {}) {
+  return buildScheduledTaskResultText(task).replace(/\s+/g, " ").trim();
+}
+
+function buildScheduledTaskResultStatusLabel(task = {}) {
+  if (task.running) {
+    return "执行中";
+  }
+  if (task.lastStatus === "error") {
+    return "最近执行失败";
+  }
+  if (task.lastStatus === "success") {
+    return "最近执行成功";
+  }
+  return "最近还没有执行";
+}
+
+function renderScheduledTaskComposerSummary() {
+  const { formSummary, cron } = schedulerElements();
+  if (!formSummary) return;
+  const modelText = selectedModel() || "未选择模型";
+  const cronText = String(cron?.value || "").trim() || "未填写";
+  const pushText = buildScheduledTaskQqPushSummary(getScheduledTaskQqPushFormSettings()).replace(/^QQ 推送：/, "");
+  formSummary.textContent = `执行模型：${modelText} · Cron：${cronText} · QQ 推送：${pushText}`;
+}
+
+function validateScheduledTaskQqPushSettings(settings = getScheduledTaskQqPushFormSettings()) {
+  if (settings.qqPushEnabled && !String(settings.qqTargetId || "").trim()) {
+    setStatus("开启 QQ 推送时，请填写推送对象 ID");
+    return false;
+  }
+  return true;
+}
+
+function renderScheduledTaskQqPushFormState() {
+  const { qqPushEnabled, qqTargetType, qqTargetId } = schedulerElements();
+  applyScheduledTaskQqPushDisabledState(qqTargetType, qqTargetId, Boolean(qqPushEnabled?.checked));
+  renderScheduledTaskComposerSummary();
+}
+
+createScheduledTask = async function createScheduledTaskQqPushFinal() {
+  const { name, cron, prompt } = schedulerElements();
+  const taskName = name?.value.trim() || "";
+  const cronExpression = cron?.value.trim() || "";
+  const taskPrompt = prompt?.value.trim() || "";
+  const qqPushSettings = getScheduledTaskQqPushFormSettings();
+
+  if (!taskName) {
+    setStatus("请输入任务标题");
+    return;
+  }
+  if (!cronExpression) {
+    setStatus("请输入 Cron 表达式");
+    return;
+  }
+  if (!taskPrompt) {
+    setStatus("请输入任务提示词");
+    return;
+  }
+  if (!selectedModel()) {
+    setStatus("请先在基础连接中选择模型");
+    return;
+  }
+  if (!validateScheduledTaskQqPushSettings(qqPushSettings)) {
+    return;
+  }
+
+  const response = await schedulerRequest("/scheduler/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: taskName,
+      prompt: taskPrompt,
+      model: taskModel,
+      scheduleType: "cron",
+      cronExpression,
+      enabled: true,
+      ...buildScheduledTaskQqPushPayload(qqPushSettings),
+    }),
+  });
+
+  const createdTask = response?.task || response;
+  if (hasScheduledTaskQqPushPersistenceMismatch(createdTask, qqPushSettings)) {
+    await loadScheduledTasksUI();
+    setStatus("定时任务已创建，但 QQ 推送配置没有落盘。请重启 node server.js 后重新保存或重建任务。");
+    return;
+  }
+
+  if (name) name.value = "";
+  if (cron) cron.value = "";
+  if (prompt) prompt.value = "";
+  renderScheduledTaskComposerSummary();
+  await loadScheduledTasksUI();
+  setStatus(`已创建定时任务：${taskName}`);
+};
+
+startInlineEditScheduledTask = function startInlineEditScheduledTaskQqPushFinal(task) {
+  scheduledTaskEditorRuntime.editingId = task.id;
+  scheduledTaskEditorRuntime.drafts[task.id] = {
+    cronExpression: String(task.cronExpression || "").trim(),
+    prompt: String(task.prompt || ""),
+    qqPushEnabled: Boolean(task.qqPushEnabled),
+    qqTargetType: normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"),
+    qqTargetId: String(task.qqTargetId || "").trim(),
+  };
+  loadScheduledTasksUI().catch(() => {});
+};
+
+saveInlineEditScheduledTask = async function saveInlineEditScheduledTaskQqPushFinal(task) {
+  const draft = scheduledTaskEditorRuntime.drafts[task.id] || {};
+  const cronExpression = String(draft.cronExpression || "").trim();
+  const prompt = String(draft.prompt || "").trim();
+  const qqPushSettings = {
+    qqPushEnabled: Boolean(draft.qqPushEnabled),
+    qqTargetType: normalizeScheduledTaskQqTargetType(draft.qqTargetType || "private"),
+    qqTargetId: String(draft.qqTargetId || "").trim(),
+  };
+
+  if (!cronExpression) {
+    setStatus("Cron 表达式不能为空");
+    return;
+  }
+  if (!prompt) {
+    setStatus("任务内容不能为空");
+    return;
+  }
+  if (!validateScheduledTaskQqPushSettings(qqPushSettings)) {
+    return;
+  }
+
+  const response = await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt,
+      scheduleType: "cron",
+      cronExpression,
+      ...buildScheduledTaskQqPushPayload(qqPushSettings),
+    }),
+  });
+
+  const updatedTask = response?.task || response;
+  if (hasScheduledTaskQqPushPersistenceMismatch(updatedTask, qqPushSettings)) {
+    await loadScheduledTasksUI();
+    setStatus("定时任务已更新，但 QQ 推送配置没有落盘。请重启 node server.js 后重新保存。");
+    return;
+  }
+
+  scheduledTaskEditorRuntime.editingId = null;
+  delete scheduledTaskEditorRuntime.drafts[task.id];
+  renderScheduledTaskComposerSummary();
+  await loadScheduledTasksUI();
+  setStatus(`已更新定时任务：${task.name}`);
+};
+
+function createScheduledTaskStatCard(label, value) {
+  const card = document.createElement("div");
+  card.className = "schedule-task-stat-card";
+
+  const labelEl = document.createElement("div");
+  labelEl.className = "schedule-task-stat-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("div");
+  valueEl.className = "schedule-task-stat-value";
+  valueEl.textContent = value;
+
+  card.append(labelEl, valueEl);
+  return card;
+}
+
+function createScheduledTaskSection(label, className, text) {
+  const section = document.createElement("div");
+  section.className = "schedule-task-section";
+
+  const labelEl = document.createElement("div");
+  labelEl.className = "schedule-task-section-label";
+  labelEl.textContent = label;
+
+  const content = document.createElement("div");
+  content.className = className;
+  content.textContent = text;
+
+  section.append(labelEl, content);
+  return section;
+}
+
+renderScheduledTasks = function renderScheduledTasksQqPushFinal(tasks) {
+  const { list, meta } = schedulerElements();
+  if (!list || !meta) return;
+
+  if (!tasks.length) {
+    meta.textContent = "当前还没有定时任务。";
+    list.innerHTML = '<div class="file-empty">还没有定时任务。</div>';
+    return;
+  }
+
+  const enabledCount = tasks.filter((task) => task.enabled).length;
+  const qqPushCount = tasks.filter((task) => task.qqPushEnabled).length;
+  meta.textContent = `共 ${tasks.length} 个任务，其中 ${enabledCount} 个已启用，${qqPushCount} 个开启 QQ 推送。`;
+
+  list.replaceChildren(...tasks.map((task) => {
+    const item = document.createElement("div");
+    item.className = "schedule-task-item";
+
+    const head = document.createElement("div");
+    head.className = "schedule-task-head";
+
+    const title = document.createElement("p");
+    title.className = "schedule-task-title";
+    title.textContent = task.name;
+
+    const badges = document.createElement("div");
+    badges.className = "schedule-task-badges";
+
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `schedule-task-badge ${task.running ? "running" : task.lastStatus === "success" ? "success" : task.lastStatus === "error" ? "error" : ""}`;
+    statusBadge.textContent = task.running ? "运行中" : task.enabled ? "已启用" : "已暂停";
+
+    const cronBadge = document.createElement("span");
+    cronBadge.className = "schedule-task-badge";
+    cronBadge.textContent = `Cron: ${task.cronExpression || ""}`;
+
+    badges.append(statusBadge, cronBadge);
+
+    if (task.qqPushEnabled) {
+      const pushBadge = document.createElement("span");
+      pushBadge.className = "schedule-task-badge";
+      pushBadge.textContent = "QQ 推送";
+      badges.append(pushBadge);
+    }
+
+    head.append(title, badges);
+
+    const metaLine = document.createElement("div");
+    metaLine.className = "schedule-task-meta-line";
+    metaLine.textContent = `模型：${task.model} · 下次：${formatScheduleTime(task.nextRunAt)} · 上次：${formatScheduleTime(task.lastRunAt)}`;
+
+    const isEditing = scheduledTaskEditorRuntime.editingId === task.id;
+    let bodyBlock;
+
+    if (isEditing) {
+      const draft = scheduledTaskEditorRuntime.drafts[task.id] || {
+        cronExpression: String(task.cronExpression || "").trim(),
+        prompt: String(task.prompt || ""),
+        qqPushEnabled: Boolean(task.qqPushEnabled),
+        qqTargetType: normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"),
+        qqTargetId: String(task.qqTargetId || "").trim(),
+      };
+      scheduledTaskEditorRuntime.drafts[task.id] = draft;
+
+      const editor = document.createElement("div");
+      editor.className = "schedule-task-editor";
+
+      const editorHead = document.createElement("div");
+      editorHead.className = "schedule-task-editor-head";
+
+      const editorTitle = document.createElement("strong");
+      editorTitle.className = "schedule-task-editor-title";
+      editorTitle.textContent = "编辑任务";
+
+      const editorClose = document.createElement("button");
+      editorClose.type = "button";
+      editorClose.className = "ghost-button schedule-task-editor-close";
+      editorClose.textContent = "×";
+      editorClose.title = "退出编辑";
+      editorClose.addEventListener("click", () => cancelInlineEditScheduledTask(task.id));
+
+      const cronLabel = document.createElement("label");
+      const cronText = document.createElement("span");
+      cronText.textContent = "Cron 表达式";
+      const cronInput = document.createElement("input");
+      cronInput.type = "text";
+      cronInput.value = draft.cronExpression;
+      cronInput.placeholder = "例如 0 9 * * *";
+      cronInput.addEventListener("input", (event) => {
+        draft.cronExpression = event.target.value;
+      });
+      cronLabel.append(cronText, cronInput);
+
+      const promptLabel = document.createElement("label");
+      const promptText = document.createElement("span");
+      promptText.textContent = "任务提示词";
+      const promptInput = document.createElement("textarea");
+      promptInput.rows = 4;
+      promptInput.value = draft.prompt;
+      promptInput.placeholder = "请输入任务执行时发给模型的内容";
+      promptInput.addEventListener("input", (event) => {
+        draft.prompt = event.target.value;
+      });
+      promptLabel.append(promptText, promptInput);
+
+      const pushToggle = document.createElement("label");
+      pushToggle.className = "toggle-row";
+      const pushToggleText = document.createElement("span");
+      pushToggleText.textContent = "推送到 QQ";
+      const pushToggleInput = document.createElement("input");
+      pushToggleInput.type = "checkbox";
+      pushToggleInput.checked = Boolean(draft.qqPushEnabled);
+      pushToggle.append(pushToggleText, pushToggleInput);
+
+      const pushGrid = document.createElement("div");
+      pushGrid.className = "schedule-task-editor-grid";
+
+      const targetTypeLabel = document.createElement("label");
+      const targetTypeText = document.createElement("span");
+      targetTypeText.textContent = "推送对象类型";
+      const targetTypeSelect = document.createElement("select");
+      const privateOption = document.createElement("option");
+      privateOption.value = "private";
+      privateOption.textContent = "私聊";
+      const groupOption = document.createElement("option");
+      groupOption.value = "group";
+      groupOption.textContent = "群聊";
+      targetTypeSelect.append(privateOption, groupOption);
+      targetTypeSelect.value = normalizeScheduledTaskQqTargetType(draft.qqTargetType || "private");
+      targetTypeSelect.addEventListener("change", (event) => {
+        draft.qqTargetType = normalizeScheduledTaskQqTargetType(event.target.value);
+      });
+      targetTypeLabel.append(targetTypeText, targetTypeSelect);
+
+      const targetIdLabel = document.createElement("label");
+      const targetIdText = document.createElement("span");
+      targetIdText.textContent = "推送对象 ID";
+      const targetIdInput = document.createElement("input");
+      targetIdInput.type = "text";
+      targetIdInput.value = draft.qqTargetId || "";
+      targetIdInput.placeholder = "例如 QQ 号或群号";
+      targetIdInput.addEventListener("input", (event) => {
+        draft.qqTargetId = event.target.value;
+      });
+      targetIdLabel.append(targetIdText, targetIdInput);
+
+      const syncDraftQqPushState = () => {
+        applyScheduledTaskQqPushDisabledState(targetTypeSelect, targetIdInput, Boolean(draft.qqPushEnabled));
+      };
+      pushToggleInput.addEventListener("change", (event) => {
+        draft.qqPushEnabled = Boolean(event.target.checked);
+        syncDraftQqPushState();
+      });
+      syncDraftQqPushState();
+
+      pushGrid.append(targetTypeLabel, targetIdLabel);
+      editorHead.append(editorTitle, editorClose);
+      editor.append(editorHead, cronLabel, promptLabel, pushToggle, pushGrid);
+      bodyBlock = editor;
+    } else {
+      const bodyWrap = document.createElement("div");
+
+      const promptPreview = document.createElement("div");
+      promptPreview.className = "schedule-task-prompt";
+      promptPreview.textContent = `任务内容：${task.prompt || "暂无内容"}`;
+
+      const pushLine = document.createElement("div");
+      pushLine.className = "schedule-task-push";
+      pushLine.textContent = buildScheduledTaskQqPushSummary(task);
+
+      const result = document.createElement("div");
+      result.className = "schedule-task-result";
+      result.textContent = task.lastError || task.lastResult || "最近还没有执行结果。";
+
+      bodyWrap.append(promptPreview, pushLine, result);
+      bodyBlock = bodyWrap;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "schedule-task-actions";
+
+    if (isEditing) {
+      const saveButton = document.createElement("button");
+      saveButton.type = "button";
+      saveButton.className = "ghost-button";
+      saveButton.textContent = "保存";
+      saveButton.addEventListener("click", async () => {
+        try {
+          await saveInlineEditScheduledTask(task);
+        } catch (error) {
+          setStatus(`更新定时任务失败：${error.message}`);
+        }
+      });
+
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.className = "ghost-button";
+      cancelButton.textContent = "取消";
+      cancelButton.addEventListener("click", () => cancelInlineEditScheduledTask(task.id));
+
+      actions.append(saveButton, cancelButton);
+    } else {
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "ghost-button";
+      editButton.textContent = "编辑";
+      editButton.addEventListener("click", () => editScheduledTask(task));
+
+      const toggleButton = document.createElement("button");
+      toggleButton.type = "button";
+      toggleButton.className = "ghost-button";
+      toggleButton.textContent = task.enabled ? "暂停" : "启用";
+      toggleButton.addEventListener("click", async () => {
+        try {
+          await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !task.enabled }),
+          });
+          await loadScheduledTasksUI();
+          setStatus(`已更新定时任务：${task.name}`);
+        } catch (error) {
+          setStatus(`更新定时任务失败：${error.message}`);
+        }
+      });
+
+      const runButton = document.createElement("button");
+      runButton.type = "button";
+      runButton.className = "ghost-button";
+      runButton.textContent = "立即执行";
+      runButton.addEventListener("click", async () => {
+        try {
+          await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
+          await loadScheduledTasksUI();
+          setStatus(`已执行定时任务：${task.name}`);
+        } catch (error) {
+          setStatus(`执行定时任务失败：${error.message}`);
+        }
+      });
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "ghost-button";
+      deleteButton.textContent = "删除";
+      deleteButton.addEventListener("click", async () => {
+        if (!window.confirm(`确定删除定时任务“${task.name}”吗？`)) return;
+        try {
+          await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+          cancelInlineEditScheduledTask(task.id);
+          await loadScheduledTasksUI();
+          setStatus(`已删除定时任务：${task.name}`);
+        } catch (error) {
+          setStatus(`删除定时任务失败：${error.message}`);
+        }
+      });
+
+      actions.append(editButton, toggleButton, runButton, deleteButton);
+    }
+
+    item.append(head, metaLine, bodyBlock, actions);
+    return item;
+  }));
+};
+
+pushScheduledTaskResultToChat = function pushScheduledTaskResultToChatDisabledFinal() {};
+
+syncScheduledTaskDeliveries = function syncScheduledTaskDeliveriesDisabledFinal(tasks) {
+  if (!Array.isArray(tasks) || !tasks.length) {
+    return;
+  }
+  tasks.forEach((task) => markScheduledTaskDelivery(task));
+};
+
+schedulerElements().qqPushEnabled?.addEventListener("change", renderScheduledTaskQqPushFormState);
+renderScheduledTaskQqPushFormState();
+persistLockedQqPublicSettingsRecord();
+renderQqPublicSummaryMetaLocked();
+renderQqPushMeta();
+renderQqBotMeta();
+renderQqToolPermissionMeta();
+renderQqTargetProfileMeta();
+loadScheduledTasksUI().catch(() => {});
+
+renderScheduledTaskComposerSummary = function renderScheduledTaskComposerSummaryNoModelDisplayReallyFinal() {
+  const { formSummary, cron } = getScheduledTaskWorkbenchElements();
+  if (!formSummary) return;
+
+  const cronText = String(cron?.value || "").trim() || "未填写";
+  const pushText = buildScheduledTaskQqPushSummary(getScheduledTaskQqPushFormSettings()).replace(/^QQ 推送：/, "");
+  formSummary.textContent = `Cron：${cronText} · QQ 推送：${pushText}`;
+};
+
+const renderScheduledTasksBeforeNoModelDisplayReallyFinal = renderScheduledTasks;
+renderScheduledTasks = function renderScheduledTasksNoModelDisplayReallyFinal(tasks) {
+  renderScheduledTasksBeforeNoModelDisplayReallyFinal(tasks);
+
+  const { list } = getScheduledTaskWorkbenchElements();
+  if (!list) return;
+
+  list.querySelectorAll(".schedule-task-summary-grid .schedule-task-stat-card").forEach((card) => {
+    const label = String(card.querySelector(".schedule-task-stat-label")?.textContent || "").trim();
+    if (/模型|妯/.test(label)) {
+      card.remove();
+    }
+  });
+};
+
+renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});
+
+renderScheduledTaskComposerSummary = function renderScheduledTaskComposerSummaryHideModelFinal() {
+  const { formSummary, cron } = getScheduledTaskWorkbenchElements();
+  if (!formSummary) return;
+
+  const cronText = String(cron?.value || "").trim() || "未填写";
+  const pushText = buildScheduledTaskQqPushSummary(getScheduledTaskQqPushFormSettings()).replace(/^QQ 推送：/, "");
+  formSummary.textContent = `Cron：${cronText} · QQ 推送：${pushText}`;
+};
+
+const renderScheduledTasksBeforeHideModelFinal = renderScheduledTasks;
+renderScheduledTasks = function renderScheduledTasksHideModelFinal(tasks) {
+  renderScheduledTasksBeforeHideModelFinal(tasks);
+
+  const { list } = getScheduledTaskWorkbenchElements();
+  if (!list) return;
+
+  list.querySelectorAll(".schedule-task-summary-grid .schedule-task-stat-card").forEach((card) => {
+    const label = String(card.querySelector(".schedule-task-stat-label")?.textContent || "").trim();
+    if (/模型|妯/.test(label)) {
+      card.remove();
+    }
+  });
+};
+
+renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});
+
+renderScheduledTaskComposerSummary = function renderScheduledTaskComposerSummaryNoModelDisplayFinal() {
+  const elements = typeof getScheduledTaskWorkbenchElements === "function"
+    ? getScheduledTaskWorkbenchElements()
+    : schedulerElements();
+  const formSummary = elements?.formSummary || schedulerElements()?.formSummary;
+  const cron = elements?.cron || schedulerElements()?.cron;
+  if (!formSummary) return;
+
+  const cronText = String(cron?.value || "").trim() || "未填写";
+  const pushText = buildScheduledTaskQqPushSummary(getScheduledTaskQqPushFormSettings()).replace(/^QQ 推送：/, "");
+  formSummary.textContent = `Cron：${cronText} · QQ 推送：${pushText}`;
+};
+
+const renderScheduledTasksBeforeNoModelDisplayFinal = renderScheduledTasks;
+renderScheduledTasks = function renderScheduledTasksNoModelDisplayFinal(tasks) {
+  renderScheduledTasksBeforeNoModelDisplayFinal(tasks);
+
+  const list = (typeof getScheduledTaskWorkbenchElements === "function"
+    ? getScheduledTaskWorkbenchElements()?.list
+    : null) || schedulerElements()?.list;
+  if (!list) return;
+
+  list.querySelectorAll(".schedule-task-summary-grid .schedule-task-stat-card").forEach((card) => {
+    const label = String(card.querySelector(".schedule-task-stat-label")?.textContent || "").trim();
+    if (/模型|妯/.test(label)) {
+      card.remove();
+    }
+  });
+};
+
+renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});
+
+renderScheduledTaskComposerSummary = function renderScheduledTaskComposerSummarySharedModelOnlyFinal() {
+  const { formSummary, cron } = getScheduledTaskWorkbenchElements();
+  if (!formSummary) return;
+  const modelText = selectedModel() || "未选择";
+  const cronText = String(cron?.value || "").trim() || "未填写";
+  const pushText = buildScheduledTaskQqPushSummary(getScheduledTaskQqPushFormSettings()).replace(/^QQ 推送：/, "");
+  formSummary.textContent = `基础连接模型：${modelText} · Cron：${cronText} · QQ 推送：${pushText}`;
+};
+
+const renderScheduledTasksBeforeSharedModelOnlyFinal = renderScheduledTasks;
+renderScheduledTasks = function renderScheduledTasksSharedModelOnlyFinal(tasks) {
+  renderScheduledTasksBeforeSharedModelOnlyFinal(tasks);
+
+  const { list } = getScheduledTaskWorkbenchElements();
+  if (!list) return;
+
+  list.querySelectorAll(".schedule-task-summary-grid .schedule-task-stat-card").forEach((card) => {
+    const label = String(card.querySelector(".schedule-task-stat-label")?.textContent || "").trim();
+    if (label.includes("模型")) {
+      card.remove();
+    }
+  });
+};
+
+renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});
+
+renderScheduledTaskComposerSummary = function renderScheduledTaskComposerSummaryWorkbenchFinal() {
+  const { formSummary, cron } = schedulerElements();
+  if (!formSummary) return;
+  const modelText = selectedModel() || "未选择模型";
+  const cronText = String(cron?.value || "").trim() || "未填写";
+  const pushText = buildScheduledTaskQqPushSummary(getScheduledTaskQqPushFormSettings()).replace(/^QQ 推送：/, "");
+  formSummary.textContent = `执行模型：${modelText} · Cron：${cronText} · QQ 推送：${pushText}`;
+};
+
+renderScheduledTasks = function renderScheduledTasksWorkbenchFinal(tasks) {
+  const { list, meta } = schedulerElements();
+  if (!list || !meta) return;
+
+  if (!tasks.length) {
+    meta.textContent = "当前还没有定时任务。";
+    list.innerHTML = '<div class="file-empty">还没有定时任务。</div>';
+    return;
+  }
+
+  const enabledCount = tasks.filter((task) => task.enabled).length;
+  const qqPushCount = tasks.filter((task) => task.qqPushEnabled).length;
+  meta.textContent = `共 ${tasks.length} 个任务，其中 ${enabledCount} 个已启用，${qqPushCount} 个开启 QQ 推送。`;
+
+  list.replaceChildren(...tasks.map((task) => {
+    const item = document.createElement("div");
+    item.className = "schedule-task-item";
+    const isEditing = scheduledTaskEditorRuntime.editingId === task.id;
+    if (isEditing) {
+      item.classList.add("is-editing");
+    }
+
+    const head = document.createElement("div");
+    head.className = "schedule-task-head";
+
+    const title = document.createElement("p");
+    title.className = "schedule-task-title";
+    title.textContent = task.name;
+
+    const badges = document.createElement("div");
+    badges.className = "schedule-task-badges";
+
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `schedule-task-badge ${task.running ? "running" : task.lastStatus === "success" ? "success" : task.lastStatus === "error" ? "error" : ""}`;
+    statusBadge.textContent = task.running ? "运行中" : task.enabled ? "已启用" : "已暂停";
+
+    const cronBadge = document.createElement("span");
+    cronBadge.className = "schedule-task-badge";
+    cronBadge.textContent = `Cron: ${task.cronExpression || ""}`;
+
+    badges.append(statusBadge, cronBadge);
+
+    if (task.qqPushEnabled) {
+      const pushBadge = document.createElement("span");
+      pushBadge.className = "schedule-task-badge";
+      pushBadge.textContent = "QQ 推送";
+      badges.append(pushBadge);
+    }
+
+    head.append(title, badges);
+
+    const metaLine = document.createElement("div");
+    metaLine.className = "schedule-task-meta-line";
+    metaLine.textContent = `上次执行：${formatScheduleTime(task.lastRunAt)} · 最近状态：${buildScheduledTaskResultStatusLabel(task)}`;
+
+    const summaryGrid = document.createElement("div");
+    summaryGrid.className = "schedule-task-summary-grid";
+    summaryGrid.append(
+      createScheduledTaskStatCard("执行模型", task.model || "未设置"),
+      createScheduledTaskStatCard("执行计划", task.cronExpression || "未设置"),
+      createScheduledTaskStatCard("下次执行", formatScheduleTime(task.nextRunAt)),
+      createScheduledTaskStatCard("QQ 推送", buildScheduledTaskQqPushSummary(task).replace(/^QQ 推送：/, ""))
+    );
+
+    let bodyBlock;
+    if (isEditing) {
+      const draft = scheduledTaskEditorRuntime.drafts[task.id] || {
+        cronExpression: String(task.cronExpression || "").trim(),
+        prompt: String(task.prompt || ""),
+        qqPushEnabled: Boolean(task.qqPushEnabled),
+        qqTargetType: normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"),
+        qqTargetId: String(task.qqTargetId || "").trim(),
+      };
+      scheduledTaskEditorRuntime.drafts[task.id] = draft;
+
+      const editor = document.createElement("div");
+      editor.className = "schedule-task-editor";
+
+      const editorHead = document.createElement("div");
+      editorHead.className = "schedule-task-editor-head";
+
+      const editorTitle = document.createElement("strong");
+      editorTitle.className = "schedule-task-editor-title";
+      editorTitle.textContent = "编辑任务";
+
+      const editorClose = document.createElement("button");
+      editorClose.type = "button";
+      editorClose.className = "ghost-button schedule-task-editor-close";
+      editorClose.textContent = "×";
+      editorClose.title = "退出编辑";
+      editorClose.addEventListener("click", () => cancelInlineEditScheduledTask(task.id));
+
+      const cronLabel = document.createElement("label");
+      const cronText = document.createElement("span");
+      cronText.textContent = "Cron 表达式";
+      const cronInput = document.createElement("input");
+      cronInput.type = "text";
+      cronInput.value = draft.cronExpression;
+      cronInput.placeholder = "例如 0 9 * * *";
+      cronInput.addEventListener("input", (event) => {
+        draft.cronExpression = event.target.value;
+      });
+      cronLabel.append(cronText, cronInput);
+
+      const promptLabel = document.createElement("label");
+      const promptText = document.createElement("span");
+      promptText.textContent = "任务提示词";
+      const promptInput = document.createElement("textarea");
+      promptInput.rows = 6;
+      promptInput.value = draft.prompt;
+      promptInput.placeholder = "请输入任务执行时发给模型的内容";
+      promptInput.addEventListener("input", (event) => {
+        draft.prompt = event.target.value;
+      });
+      promptLabel.append(promptText, promptInput);
+
+      const pushToggle = document.createElement("label");
+      pushToggle.className = "toggle-row";
+      const pushToggleText = document.createElement("span");
+      pushToggleText.textContent = "推送到 QQ";
+      const pushToggleInput = document.createElement("input");
+      pushToggleInput.type = "checkbox";
+      pushToggleInput.checked = Boolean(draft.qqPushEnabled);
+      pushToggle.append(pushToggleText, pushToggleInput);
+
+      const pushGrid = document.createElement("div");
+      pushGrid.className = "schedule-task-editor-grid";
+
+      const targetTypeLabel = document.createElement("label");
+      const targetTypeText = document.createElement("span");
+      targetTypeText.textContent = "推送对象类型";
+      const targetTypeSelect = document.createElement("select");
+      const privateOption = document.createElement("option");
+      privateOption.value = "private";
+      privateOption.textContent = "私聊";
+      const groupOption = document.createElement("option");
+      groupOption.value = "group";
+      groupOption.textContent = "群聊";
+      targetTypeSelect.append(privateOption, groupOption);
+      targetTypeSelect.value = normalizeScheduledTaskQqTargetType(draft.qqTargetType || "private");
+      targetTypeSelect.addEventListener("change", (event) => {
+        draft.qqTargetType = normalizeScheduledTaskQqTargetType(event.target.value);
+      });
+      targetTypeLabel.append(targetTypeText, targetTypeSelect);
+
+      const targetIdLabel = document.createElement("label");
+      const targetIdText = document.createElement("span");
+      targetIdText.textContent = "推送对象 ID";
+      const targetIdInput = document.createElement("input");
+      targetIdInput.type = "text";
+      targetIdInput.value = draft.qqTargetId || "";
+      targetIdInput.placeholder = "例如 QQ 号或群号";
+      targetIdInput.addEventListener("input", (event) => {
+        draft.qqTargetId = event.target.value;
+      });
+      targetIdLabel.append(targetIdText, targetIdInput);
+
+      const syncDraftQqPushState = () => {
+        applyScheduledTaskQqPushDisabledState(targetTypeSelect, targetIdInput, Boolean(draft.qqPushEnabled));
+      };
+      pushToggleInput.addEventListener("change", (event) => {
+        draft.qqPushEnabled = Boolean(event.target.checked);
+        syncDraftQqPushState();
+      });
+      syncDraftQqPushState();
+
+      pushGrid.append(targetTypeLabel, targetIdLabel);
+      editorHead.append(editorTitle, editorClose);
+      editor.append(editorHead, cronLabel, promptLabel, pushToggle, pushGrid);
+      bodyBlock = editor;
+    } else {
+      const bodyWrap = document.createElement("div");
+      bodyWrap.className = "schedule-task-content";
+
+      const promptSection = createScheduledTaskSection("任务内容", "schedule-task-prompt", task.prompt || "暂无内容");
+      const pushSection = createScheduledTaskSection("推送配置", "schedule-task-push", buildScheduledTaskQqPushSummary(task));
+
+      const resultPanel = document.createElement("details");
+      resultPanel.className = "schedule-task-result-panel";
+      if (task.lastStatus === "error") {
+        resultPanel.open = true;
+      }
+
+      const resultSummary = document.createElement("summary");
+      const resultSummaryCopy = document.createElement("div");
+      resultSummaryCopy.className = "schedule-task-result-summary";
+
+      const resultStatus = document.createElement("div");
+      resultStatus.className = "schedule-task-result-status";
+      resultStatus.textContent = buildScheduledTaskResultStatusLabel(task);
+
+      const resultPreview = document.createElement("div");
+      resultPreview.className = "schedule-task-result-preview";
+      resultPreview.textContent = buildScheduledTaskResultPreview(task);
+
+      const resultToggle = document.createElement("span");
+      resultToggle.className = "schedule-task-result-toggle";
+      resultToggle.textContent = "查看详情";
+
+      const result = document.createElement("div");
+      result.className = "schedule-task-result";
+      result.textContent = buildScheduledTaskResultText(task);
+
+      resultSummaryCopy.append(resultStatus, resultPreview);
+      resultSummary.append(resultSummaryCopy, resultToggle);
+      resultPanel.append(resultSummary, result);
+
+      bodyWrap.append(promptSection, pushSection, resultPanel);
+      bodyBlock = bodyWrap;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "schedule-task-actions";
+
+    if (isEditing) {
+      actions.classList.add("is-editing");
+
+      const saveButton = document.createElement("button");
+      saveButton.type = "button";
+      saveButton.className = "primary-button";
+      saveButton.textContent = "保存修改";
+      saveButton.addEventListener("click", async () => {
+        try {
+          await saveInlineEditScheduledTask(task);
+        } catch (error) {
+          setStatus(`更新定时任务失败：${error.message}`);
+        }
+      });
+
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.className = "ghost-button";
+      cancelButton.textContent = "取消编辑";
+      cancelButton.addEventListener("click", () => cancelInlineEditScheduledTask(task.id));
+
+      actions.append(saveButton, cancelButton);
+    } else {
+      const runButton = document.createElement("button");
+      runButton.type = "button";
+      runButton.className = "primary-button";
+      runButton.textContent = "立即执行";
+      runButton.addEventListener("click", async () => {
+        try {
+          await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
+          await loadScheduledTasksUI();
+          setStatus(`已执行定时任务：${task.name}`);
+        } catch (error) {
+          setStatus(`执行定时任务失败：${error.message}`);
+        }
+      });
+
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "ghost-button";
+      editButton.textContent = "编辑配置";
+      editButton.addEventListener("click", () => editScheduledTask(task));
+
+      const toggleButton = document.createElement("button");
+      toggleButton.type = "button";
+      toggleButton.className = "ghost-button";
+      toggleButton.textContent = task.enabled ? "暂停任务" : "启用任务";
+      toggleButton.addEventListener("click", async () => {
+        try {
+          await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !task.enabled }),
+          });
+          await loadScheduledTasksUI();
+          setStatus(`已更新定时任务：${task.name}`);
+        } catch (error) {
+          setStatus(`更新定时任务失败：${error.message}`);
+        }
+      });
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "ghost-button";
+      deleteButton.textContent = "删除任务";
+      deleteButton.addEventListener("click", async () => {
+        if (!window.confirm(`确定删除定时任务“${task.name}”吗？`)) return;
+        try {
+          await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+          cancelInlineEditScheduledTask(task.id);
+          await loadScheduledTasksUI();
+          setStatus(`已删除定时任务：${task.name}`);
+        } catch (error) {
+          setStatus(`删除定时任务失败：${error.message}`);
+        }
+      });
+
+      actions.append(runButton, editButton, toggleButton, deleteButton);
+    }
+
+    item.append(head, metaLine, summaryGrid, bodyBlock, actions);
+    return item;
+  }));
+};
+
+[schedulerElements().cron, schedulerElements().qqPushEnabled, schedulerElements().qqTargetType].forEach((el) => {
+  el?.addEventListener("change", renderScheduledTaskComposerSummary);
+});
+schedulerElements().name?.addEventListener("input", renderScheduledTaskComposerSummary);
+schedulerElements().cron?.addEventListener("input", renderScheduledTaskComposerSummary);
+schedulerElements().qqTargetId?.addEventListener("input", renderScheduledTaskComposerSummary);
+els.modelSelect?.addEventListener("change", renderScheduledTaskComposerSummary);
+
+renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});
+
+const scheduledTaskWorkbenchRuntime = {
+  editingId: null,
+  expandedTaskIds: new Set(),
+  tasksById: new Map(),
+};
+
+function getScheduledTaskWorkbenchElements() {
+  const base = schedulerElements();
+  return {
+    ...base,
+    formTitle: $("#schedule-task-form-title"),
+    formDescription: $("#schedule-task-form-description"),
+    cancelEditButton: $("#schedule-task-edit-cancel"),
+    composePanel: document.querySelector(".scheduler-compose-panel"),
+  };
+}
+
+function syncScheduledTaskWorkbenchComposerUi() {
+  const { formTitle, formDescription, createButton, cancelEditButton } = getScheduledTaskWorkbenchElements();
+  const editing = Boolean(scheduledTaskWorkbenchRuntime.editingId);
+  if (formTitle) {
+    formTitle.textContent = editing ? "编辑任务" : "新建任务";
+  }
+  if (formDescription) {
+    formDescription.textContent = editing
+      ? "当前正在编辑已有任务，保存后会直接覆盖原任务配置。"
+      : "先配置执行内容，再决定是否推送到 QQ。";
+  }
+  if (createButton) {
+    createButton.textContent = editing ? "编辑任务" : "创建任务";
+  }
+  if (cancelEditButton) {
+    cancelEditButton.hidden = !editing;
+  }
+}
+
+function fillScheduledTaskWorkbenchComposer(task = {}) {
+  const { name, cron, prompt, qqPushEnabled, qqTargetType, qqTargetId } = getScheduledTaskWorkbenchElements();
+  if (name) name.value = String(task.name || "");
+  if (cron) cron.value = String(task.cronExpression || "");
+  if (prompt) prompt.value = String(task.prompt || "");
+  if (qqPushEnabled) qqPushEnabled.checked = Boolean(task.qqPushEnabled);
+  if (qqTargetType) qqTargetType.value = normalizeScheduledTaskQqTargetType(task.qqTargetType || "private");
+  if (qqTargetId) qqTargetId.value = String(task.qqTargetId || "");
+  renderScheduledTaskQqPushFormState();
+  renderScheduledTaskComposerSummary();
+}
+
+function resetScheduledTaskWorkbenchComposer() {
+  scheduledTaskWorkbenchRuntime.editingId = null;
+  const { name, cron, prompt, qqPushEnabled, qqTargetType, qqTargetId } = getScheduledTaskWorkbenchElements();
+  if (name) name.value = "";
+  if (cron) cron.value = "";
+  if (prompt) prompt.value = "";
+  if (qqPushEnabled) qqPushEnabled.checked = false;
+  if (qqTargetType) qqTargetType.value = "private";
+  if (qqTargetId) qqTargetId.value = "";
+  syncScheduledTaskWorkbenchComposerUi();
+  renderScheduledTaskQqPushFormState();
+  renderScheduledTaskComposerSummary();
+}
+
+function focusScheduledTaskWorkbenchComposer() {
+  const { composePanel, name, prompt } = getScheduledTaskWorkbenchElements();
+  composePanel?.scrollIntoView({ behavior: "smooth", block: "start" });
+  window.setTimeout(() => {
+    (prompt || name)?.focus?.();
+  }, 140);
+}
+
+function toggleScheduledTaskWorkbenchDetails(taskId = "") {
+  if (!taskId) return;
+  if (scheduledTaskWorkbenchRuntime.expandedTaskIds.has(taskId)) {
+    scheduledTaskWorkbenchRuntime.expandedTaskIds.delete(taskId);
+  } else {
+    scheduledTaskWorkbenchRuntime.expandedTaskIds.add(taskId);
+  }
+  loadScheduledTasksUI().catch(() => {});
+}
+
+editScheduledTask = async function editScheduledTaskWorkbenchFinal(task) {
+  if (!task?.id) return;
+  scheduledTaskWorkbenchRuntime.editingId = task.id;
+  fillScheduledTaskWorkbenchComposer(task);
+  syncScheduledTaskWorkbenchComposerUi();
+  focusScheduledTaskWorkbenchComposer();
+  loadScheduledTasksUI().catch(() => {});
+};
+
+createScheduledTask = async function createScheduledTaskWorkbenchFinal() {
+  const { name, cron, prompt } = getScheduledTaskWorkbenchElements();
+  const taskName = name?.value.trim() || "";
+  const cronExpression = cron?.value.trim() || "";
+  const taskPrompt = prompt?.value.trim() || "";
+  const sharedModel = selectedModel();
+  const qqPushSettings = getScheduledTaskQqPushFormSettings();
+
+  if (!taskName) {
+    setStatus("请输入任务标题");
+    return;
+  }
+  if (!cronExpression) {
+    setStatus("请输入 Cron 表达式");
+    return;
+  }
+  if (!taskPrompt) {
+    setStatus("请输入任务提示词");
+    return;
+  }
+  if (!sharedModel) {
+    setStatus("请先在基础连接中选择模型");
+    return;
+  }
+  if (!validateScheduledTaskQqPushSettings(qqPushSettings)) {
+    return;
+  }
+
+  const payload = {
+    name: taskName,
+    prompt: taskPrompt,
+    scheduleType: "cron",
+    cronExpression,
+    enabled: true,
+    ...buildScheduledTaskQqPushPayload(qqPushSettings),
+  };
+
+  if (scheduledTaskWorkbenchRuntime.editingId) {
+    const currentTask = scheduledTaskWorkbenchRuntime.tasksById.get(scheduledTaskWorkbenchRuntime.editingId);
+    payload.enabled = currentTask ? Boolean(currentTask.enabled) : true;
+    const response = await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(scheduledTaskWorkbenchRuntime.editingId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const updatedTask = response?.task || response;
+    if (hasScheduledTaskQqPushPersistenceMismatch(updatedTask, qqPushSettings)) {
+      await loadScheduledTasksUI();
+      setStatus("定时任务已更新，但 QQ 推送配置没有落盘。请重启 node server.js 后重新保存。");
+      return;
+    }
+    scheduledTaskWorkbenchRuntime.expandedTaskIds.add(scheduledTaskWorkbenchRuntime.editingId);
+    const editedName = taskName;
+    resetScheduledTaskWorkbenchComposer();
+    await loadScheduledTasksUI();
+    setStatus(`已更新定时任务：${editedName}`);
+    return;
+  }
+
+  const response = await schedulerRequest("/scheduler/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const createdTask = response?.task || response;
+  if (hasScheduledTaskQqPushPersistenceMismatch(createdTask, qqPushSettings)) {
+    await loadScheduledTasksUI();
+    setStatus("定时任务已创建，但 QQ 推送配置没有落盘。请重启 node server.js 后重新保存或重建任务。");
+    return;
+  }
+
+  if (createdTask?.id) {
+    scheduledTaskWorkbenchRuntime.expandedTaskIds.add(createdTask.id);
+  }
+  resetScheduledTaskWorkbenchComposer();
+  await loadScheduledTasksUI();
+  setStatus(`已创建定时任务：${taskName}`);
+};
+
+renderScheduledTasks = function renderScheduledTasksWorkbenchCompactFinal(tasks) {
+  const { list, meta } = getScheduledTaskWorkbenchElements();
+  if (!list || !meta) return;
+
+  if (!tasks.length) {
+    meta.textContent = "当前还没有定时任务。";
+    list.innerHTML = '<div class="file-empty">还没有定时任务。</div>';
+    return;
+  }
+
+  const enabledCount = tasks.filter((task) => task.enabled).length;
+  const qqPushCount = tasks.filter((task) => task.qqPushEnabled).length;
+  scheduledTaskWorkbenchRuntime.tasksById = new Map(tasks.map((task) => [task.id, task]));
+  meta.textContent = `共 ${tasks.length} 个任务，其中 ${enabledCount} 个已启用，${qqPushCount} 个开启 QQ 推送。`;
+
+  list.replaceChildren(...tasks.map((task) => {
+    const item = document.createElement("div");
+    item.className = "schedule-task-item";
+    if (scheduledTaskWorkbenchRuntime.editingId === task.id) {
+      item.classList.add("is-editing");
+    }
+
+    const head = document.createElement("div");
+    head.className = "schedule-task-head";
+
+    const title = document.createElement("p");
+    title.className = "schedule-task-title";
+    title.textContent = task.name;
+
+    const badges = document.createElement("div");
+    badges.className = "schedule-task-badges";
+
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `schedule-task-badge ${task.running ? "running" : task.lastStatus === "success" ? "success" : task.lastStatus === "error" ? "error" : ""}`;
+    statusBadge.textContent = task.running ? "运行中" : task.enabled ? "已启用" : "已暂停";
+
+    const cronBadge = document.createElement("span");
+    cronBadge.className = "schedule-task-badge";
+    cronBadge.textContent = `Cron: ${task.cronExpression || ""}`;
+
+    badges.append(statusBadge, cronBadge);
+    if (task.qqPushEnabled) {
+      const pushBadge = document.createElement("span");
+      pushBadge.className = "schedule-task-badge";
+      pushBadge.textContent = "QQ 推送";
+      badges.append(pushBadge);
+    }
+    head.append(title, badges);
+
+    const metaLine = document.createElement("div");
+    metaLine.className = "schedule-task-meta-line";
+    metaLine.textContent = `下次执行：${formatScheduleTime(task.nextRunAt)} · 上次执行：${formatScheduleTime(task.lastRunAt)}`;
+
+    const summaryGrid = document.createElement("div");
+    summaryGrid.className = "schedule-task-summary-grid";
+    summaryGrid.append(
+      createScheduledTaskStatCard("执行模型", task.model || "未设置"),
+      createScheduledTaskStatCard("最近状态", buildScheduledTaskResultStatusLabel(task)),
+      createScheduledTaskStatCard("执行计划", task.cronExpression || "未设置"),
+      createScheduledTaskStatCard("QQ 推送", buildScheduledTaskQqPushSummary(task).replace(/^QQ 推送：/, ""))
+    );
+
+    const expanded = scheduledTaskWorkbenchRuntime.expandedTaskIds.has(task.id);
+    let detailsBlock = null;
+    if (expanded) {
+      const content = document.createElement("div");
+      content.className = "schedule-task-content";
+      content.append(
+        createScheduledTaskSection("任务内容", "schedule-task-prompt", task.prompt || "暂无内容"),
+        createScheduledTaskSection("推送配置", "schedule-task-push", buildScheduledTaskQqPushSummary(task))
+      );
+
+      const resultPanel = document.createElement("details");
+      resultPanel.className = "schedule-task-result-panel";
+      if (task.lastStatus === "error") {
+        resultPanel.open = true;
+      }
+
+      const resultSummary = document.createElement("summary");
+      const resultSummaryCopy = document.createElement("div");
+      resultSummaryCopy.className = "schedule-task-result-summary";
+
+      const resultStatus = document.createElement("div");
+      resultStatus.className = "schedule-task-result-status";
+      resultStatus.textContent = buildScheduledTaskResultStatusLabel(task);
+
+      const resultPreview = document.createElement("div");
+      resultPreview.className = "schedule-task-result-preview";
+      resultPreview.textContent = buildScheduledTaskResultPreview(task);
+
+      const resultToggle = document.createElement("span");
+      resultToggle.className = "schedule-task-result-toggle";
+      resultToggle.textContent = "查看结果";
+
+      const result = document.createElement("div");
+      result.className = "schedule-task-result";
+      result.textContent = buildScheduledTaskResultText(task);
+
+      resultSummaryCopy.append(resultStatus, resultPreview);
+      resultSummary.append(resultSummaryCopy, resultToggle);
+      resultPanel.append(resultSummary, result);
+      content.append(resultPanel);
+      detailsBlock = content;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "schedule-task-actions";
+
+    const detailButton = document.createElement("button");
+    detailButton.type = "button";
+    detailButton.className = "ghost-button schedule-task-action-button";
+    detailButton.textContent = expanded ? "收起详情" : "查看详情";
+    detailButton.addEventListener("click", () => toggleScheduledTaskWorkbenchDetails(task.id));
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "ghost-button schedule-task-action-button";
+    editButton.textContent = "编辑任务";
+    editButton.addEventListener("click", () => editScheduledTask(task));
+
+    const runButton = document.createElement("button");
+    runButton.type = "button";
+    runButton.className = "ghost-button schedule-task-action-button schedule-task-action-button-accent";
+    runButton.textContent = "立即执行";
+    runButton.addEventListener("click", async () => {
+      try {
+        await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
+        scheduledTaskWorkbenchRuntime.expandedTaskIds.add(task.id);
+        await loadScheduledTasksUI();
+        setStatus(`已执行定时任务：${task.name}`);
+      } catch (error) {
+        setStatus(`执行定时任务失败：${error.message}`);
+      }
+    });
+
+    const toggleButton = document.createElement("button");
+    toggleButton.type = "button";
+    toggleButton.className = "ghost-button schedule-task-action-button";
+    toggleButton.textContent = task.enabled ? "暂停任务" : "启用任务";
+    toggleButton.addEventListener("click", async () => {
+      try {
+        await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: !task.enabled }),
+        });
+        await loadScheduledTasksUI();
+        setStatus(`已更新定时任务：${task.name}`);
+      } catch (error) {
+        setStatus(`更新定时任务失败：${error.message}`);
+      }
+    });
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "ghost-button schedule-task-action-button";
+    deleteButton.textContent = "删除任务";
+    deleteButton.addEventListener("click", async () => {
+      if (!window.confirm(`确定删除定时任务“${task.name}”吗？`)) return;
+      try {
+        await schedulerRequest(`/scheduler/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+        scheduledTaskWorkbenchRuntime.expandedTaskIds.delete(task.id);
+        if (scheduledTaskWorkbenchRuntime.editingId === task.id) {
+          resetScheduledTaskWorkbenchComposer();
+        }
+        await loadScheduledTasksUI();
+        setStatus(`已删除定时任务：${task.name}`);
+      } catch (error) {
+        setStatus(`删除定时任务失败：${error.message}`);
+      }
+    });
+
+    actions.append(editButton, detailButton, runButton, toggleButton, deleteButton);
+
+    item.append(head, metaLine, summaryGrid);
+    if (detailsBlock) {
+      item.append(detailsBlock);
+    }
+    item.append(actions);
+    return item;
+  }));
+};
+
+getScheduledTaskWorkbenchElements().cancelEditButton?.addEventListener("click", () => {
+  resetScheduledTaskWorkbenchComposer();
+  loadScheduledTasksUI().catch(() => {});
+});
+
+syncScheduledTaskWorkbenchComposerUi();
+renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});
+
+const SHARED_CONNECTION_CONFIG_ENDPOINT = "/connection-config";
+const sharedConnectionModelRuntime = {
+  applyingRemoteModel: false,
+  lastKnownModel: "",
+};
+
+function ensureSharedConnectionModelOption(modelName = "") {
+  const normalized = String(modelName || "").trim();
+  if (!normalized || !els.modelSelect) return;
+  const hasOption = Array.from(els.modelSelect.options || []).some((option) => option.value === normalized);
+  if (hasOption) return;
+  const option = document.createElement("option");
+  option.value = normalized;
+  option.textContent = normalized;
+  els.modelSelect.append(option);
+}
+
+function applySharedConnectionModelToUi(modelName = "", { persistLocal = true } = {}) {
+  const normalized = String(modelName || "").trim();
+  if (!normalized || !els.modelSelect) return false;
+  if (selectedModel() === normalized) {
+    sharedConnectionModelRuntime.lastKnownModel = normalized;
+    return true;
+  }
+  sharedConnectionModelRuntime.applyingRemoteModel = true;
+  try {
+    ensureSharedConnectionModelOption(normalized);
+    els.modelSelect.value = normalized;
+    applyContextLimitForModel(normalized);
+    if (persistLocal) {
+      save();
+    } else {
+      renderModelMeta();
+      refreshMetrics();
+    }
+    renderQqBotMeta();
+    renderQqToolPermissionMeta();
+    sharedConnectionModelRuntime.lastKnownModel = normalized;
+    return true;
+  } finally {
+    sharedConnectionModelRuntime.applyingRemoteModel = false;
+  }
+}
+
+async function persistSharedConnectionModelToServer(modelName = selectedModel(), { quiet = false } = {}) {
+  const normalized = String(modelName || "").trim();
+  if (!normalized) return "";
+  try {
+    const response = await j(SHARED_CONNECTION_CONFIG_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: normalized }),
+    });
+    const savedModel = String(response?.config?.model || normalized).trim() || normalized;
+    sharedConnectionModelRuntime.lastKnownModel = savedModel;
+    return savedModel;
+  } catch (error) {
+    if (!quiet) {
+      setStatus(`同步基础连接模型失败：${String(error?.message || "未知错误")}`, "error");
+    }
+    throw error;
+  }
+}
+
+async function syncSharedConnectionModelFromServer({ quiet = true } = {}) {
+  try {
+    const response = await j(SHARED_CONNECTION_CONFIG_ENDPOINT);
+    const sharedModel = String(response?.config?.model || "").trim();
+    if (sharedModel) {
+      applySharedConnectionModelToUi(sharedModel, { persistLocal: true });
+      return sharedModel;
+    }
+    const localModel = selectedModel();
+    if (localModel) {
+      return await persistSharedConnectionModelToServer(localModel, { quiet: true });
+    }
+    return "";
+  } catch (error) {
+    if (!quiet) {
+      setStatus(`读取基础连接模型失败：${String(error?.message || "未知错误")}`, "error");
+    }
+    return "";
+  }
+}
+
+els.modelSelect?.addEventListener("change", () => {
+  if (sharedConnectionModelRuntime.applyingRemoteModel) {
+    return;
+  }
+  persistSharedConnectionModelToServer(selectedModel(), { quiet: false }).catch(() => {});
+});
+
+window.addEventListener("focus", () => {
+  syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
+});
+
+syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
+
+function seemsNaturalScheduledTaskIntentText(text = "") {
+  const source = String(text || "").trim();
+  if (!source) return false;
+  return /(定时任务|任务列表|cron|schedule|提醒|通知|每天|每日|每周|每星期|工作日)/i.test(source);
+}
+
+async function tryHandleScheduledTaskIntentFromNaturalText(text = "") {
+  const source = String(text || "").trim();
+  if (!source || !seemsNaturalScheduledTaskIntentText(source)) {
+    return null;
+  }
+
+  try {
+    const data = await schedulerRequest("/scheduler/intent/handle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: source,
+        model: selectedModel(),
+      }),
+    });
+    return data?.intent ? data : null;
+  } catch (error) {
+    if (error.status === 400) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+const askModelBeforeServerScheduledTaskIntent = askModel;
+askModel = async function askModelWithServerScheduledTaskIntent(userText) {
+  const directScheduledTaskResult = await tryHandleScheduledTaskIntentFromNaturalText(userText);
+  if (directScheduledTaskResult?.intent) {
+    const summary = String(directScheduledTaskResult.message || "").trim() || "定时任务操作已完成。";
+    const messageTimestamp = Date.now();
+    state.lastRequestedUserText = userText || "";
+    state.messages.push(
+      { role: "user", content: userText || "请继续处理", timestamp: messageTimestamp },
+      { role: "assistant", content: summary, timestamp: Date.now() }
+    );
+    save();
+    refreshMetrics();
+    autoSaveCurrentChat();
+    loadScheduledTasksUI().catch(() => {});
+    return summary;
+  }
+
+  return askModelBeforeServerScheduledTaskIntent(userText);
+};
+
+function parseNaturalSequenceIndex(token = "") {
+  const source = String(token || "").trim();
+  if (!source) return 0;
+  if (/^\d+$/.test(source)) {
+    return Number(source);
+  }
+
+  const digitMap = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+  if (source === "十") {
+    return 10;
+  }
+  if (source.includes("十")) {
+    const [tensToken, unitsToken] = source.split("十");
+    const tens = tensToken ? (digitMap[tensToken] || 0) : 1;
+    const units = unitsToken ? (digitMap[unitsToken] || 0) : 0;
+    return tens * 10 + units;
+  }
+  return digitMap[source] || 0;
+}
+
+function normalizeNaturalLookupValue(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+async function fetchAvailableModelIdsForChatCommand() {
+  const data = await j(modelsEndpoint());
+  return (data?.data || []).map((item) => String(item?.id || "").trim()).filter(Boolean);
+}
+
+async function ensurePersonaPresetsForChatCommand() {
+  if (!workspacePersonaPresets.length) {
+    await loadWorkspacePersonaPresets();
+  }
+  return allPersonaPresets()
+    .filter((preset) => preset && preset.id !== "none")
+    .map((preset) => ({ ...preset }));
+}
+
+function resolveModelCommandIntent(text = "") {
+  const source = String(text || "").trim();
+  if (!source) return null;
+
+  const switchByIndex = source.match(/(?:切|切换|更换|改用|使用)\s*第\s*([0-9]+|[一二两三四五六七八九十]{1,3})\s*个模型/i);
+  if (switchByIndex) {
+    return { action: "switch_by_index", index: parseNaturalSequenceIndex(switchByIndex[1]) };
+  }
+
+  const switchByValue = source.match(/(?:切换|更换|改用|使用)(?:当前)?模型[:：\s]+(.+)$/i);
+  if (switchByValue) {
+    const target = String(switchByValue[1] || "").trim();
+    if (/^\d+$/.test(target)) {
+      return { action: "switch_by_index", index: Number(target) };
+    }
+    return target ? { action: "switch_by_name", target } : null;
+  }
+
+  if (/(?:当前|现在|正在使用).{0,4}模型/i.test(source)) {
+    return { action: "current" };
+  }
+
+  if (/(?:查看|列出|显示|看看|查询).*(?:模型列表|模型)|模型列表|有哪些模型/i.test(source)) {
+    return { action: "list" };
+  }
+
+  return null;
+}
+
+function resolvePersonaCommandIntent(text = "") {
+  const source = String(text || "").trim();
+  if (!source) return null;
+
+  if (/(?:恢复默认人设|恢复默认预设|清空人设|清空预设|不用人设|不使用预设)/i.test(source)) {
+    return { action: "clear" };
+  }
+
+  const switchByIndex = source.match(/(?:切|切换|更换|改用|使用)\s*第\s*([0-9]+|[一二两三四五六七八九十]{1,3})\s*个(?:人设|预设)/i);
+  if (switchByIndex) {
+    return { action: "switch_by_index", index: parseNaturalSequenceIndex(switchByIndex[1]) };
+  }
+
+  const switchByValue = source.match(/(?:切换|更换|改用|使用)(?:当前)?(?:人设|预设)[:：\s]+(.+)$/i);
+  if (switchByValue) {
+    const target = String(switchByValue[1] || "").trim();
+    if (/^\d+$/.test(target)) {
+      return { action: "switch_by_index", index: Number(target) };
+    }
+    return target ? { action: "switch_by_name", target } : null;
+  }
+
+  if (/(?:当前|现在|正在使用).{0,4}(?:人设|预设)/i.test(source)) {
+    return { action: "current" };
+  }
+
+  if (/(?:查看|列出|显示|看看|查询).*(?:人设列表|人设|预设列表|预设)|(?:人设|预设)列表|有哪些人设|有哪些预设/i.test(source)) {
+    return { action: "list" };
+  }
+
+  return null;
+}
+
+function commitDirectChatAdminReply(userText = "", replyText = "") {
+  const summary = String(replyText || "").trim();
+  if (!summary) {
+    return "";
+  }
+
+  const messageTimestamp = Date.now();
+  state.lastRequestedUserText = userText || "";
+  state.messages.push(
+    { role: "user", content: userText || "请继续处理", timestamp: messageTimestamp },
+    { role: "assistant", content: summary, timestamp: Date.now() }
+  );
+  save();
+  refreshMetrics();
+  autoSaveCurrentChat();
+  return summary;
+}
+
+function buildCurrentPersonaSummary() {
+  const presetId = String(els.personaPreset?.value || "none").trim() || "none";
+  const selectedPreset = presetId !== "none"
+    ? allPersonaPresets().find((preset) => preset.id === presetId)
+    : null;
+  const personaPrompt = String(els.personaPrompt?.value || "").trim();
+
+  if (selectedPreset) {
+    return `当前人设：${selectedPreset.name}`;
+  }
+  if (personaPrompt) {
+    return `当前人设：自定义人设\n内容预览：${personaPrompt.slice(0, 120)}${personaPrompt.length > 120 ? "…" : ""}`;
+  }
+  return "当前人设：未设置";
+}
+
+async function tryHandleModelOrPersonaChatCommand(text = "") {
+  const source = String(text || "").trim();
+  if (!source) {
+    return null;
+  }
+
+  const modelIntent = resolveModelCommandIntent(source);
+  if (modelIntent) {
+    if (modelIntent.action === "current") {
+      return commitDirectChatAdminReply(source, `当前模型：${selectedModel() || "未选择"}`);
+    }
+
+    const models = await fetchAvailableModelIdsForChatCommand();
+    if (!models.length) {
+      return commitDirectChatAdminReply(source, "当前没有读取到可用模型。");
+    }
+
+    if (modelIntent.action === "list") {
+      const currentModel = selectedModel();
+      const summary = [
+        `当前模型：${currentModel || "未选择"}`,
+        "可用模型：",
+        ...models.map((modelName, index) => `${index + 1}. ${modelName}${modelName === currentModel ? "（当前）" : ""}`),
+      ].join("\n");
+      return commitDirectChatAdminReply(source, summary);
+    }
+
+    let targetModel = "";
+    if (modelIntent.action === "switch_by_index") {
+      targetModel = models[modelIntent.index - 1] || "";
+      if (!targetModel) {
+        return commitDirectChatAdminReply(source, `没有找到第 ${modelIntent.index} 个模型。当前一共 ${models.length} 个模型。`);
+      }
+    } else if (modelIntent.action === "switch_by_name") {
+      const normalizedTarget = normalizeNaturalLookupValue(modelIntent.target);
+      const exactMatch = models.find((modelName) => normalizeNaturalLookupValue(modelName) === normalizedTarget);
+      const fuzzyMatch = exactMatch || models.find((modelName) => normalizeNaturalLookupValue(modelName).includes(normalizedTarget));
+      targetModel = fuzzyMatch || "";
+      if (!targetModel) {
+        return commitDirectChatAdminReply(source, `没有找到模型：${modelIntent.target}`);
+      }
+    }
+
+    applySharedConnectionModelToUi(targetModel, { persistLocal: true });
+    await persistSharedConnectionModelToServer(targetModel, { quiet: false });
+    renderQqBotModelOptions?.();
+    renderScheduledTaskComposerSummary?.();
+    syncQqBotConfig?.().catch(() => {});
+    return commitDirectChatAdminReply(source, `已切换模型：${targetModel}`);
+  }
+
+  const personaIntent = resolvePersonaCommandIntent(source);
+  if (!personaIntent) {
+    return null;
+  }
+
+  if (personaIntent.action === "current") {
+    return commitDirectChatAdminReply(source, buildCurrentPersonaSummary());
+  }
+
+  if (personaIntent.action === "clear") {
+    if (els.personaPreset) {
+      els.personaPreset.value = "none";
+      els.personaPreset.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    if (els.personaPrompt) {
+      els.personaPrompt.value = "";
+    }
+    renderPersonaPresetDescription?.();
+    renderConversationMiniheadMeta?.();
+    save();
+    refreshMetrics();
+    return commitDirectChatAdminReply(source, "已恢复默认人设。");
+  }
+
+  const presets = await ensurePersonaPresetsForChatCommand();
+  if (!presets.length) {
+    return commitDirectChatAdminReply(source, "当前没有可切换的人设。");
+  }
+
+  if (personaIntent.action === "list") {
+    const currentPresetId = String(els.personaPreset?.value || "none").trim() || "none";
+    const summary = [
+      buildCurrentPersonaSummary(),
+      "可用人设：",
+      ...presets.map((preset, index) => `${index + 1}. ${preset.name}${preset.id === currentPresetId ? "（当前）" : ""}`),
+    ].join("\n");
+    return commitDirectChatAdminReply(source, summary);
+  }
+
+  let targetPreset = null;
+  if (personaIntent.action === "switch_by_index") {
+    targetPreset = presets[personaIntent.index - 1] || null;
+    if (!targetPreset) {
+      return commitDirectChatAdminReply(source, `没有找到第 ${personaIntent.index} 个人设。当前一共 ${presets.length} 个人设。`);
+    }
+  } else if (personaIntent.action === "switch_by_name") {
+    const normalizedTarget = normalizeNaturalLookupValue(personaIntent.target);
+    const exactMatch = presets.find((preset) => normalizeNaturalLookupValue(preset.name) === normalizedTarget || normalizeNaturalLookupValue(preset.id) === normalizedTarget);
+    targetPreset = exactMatch || presets.find((preset) => {
+      const normalizedName = normalizeNaturalLookupValue(preset.name);
+      const normalizedId = normalizeNaturalLookupValue(preset.id);
+      return normalizedName.includes(normalizedTarget) || normalizedId.includes(normalizedTarget);
+    }) || null;
+    if (!targetPreset) {
+      return commitDirectChatAdminReply(source, `没有找到人设：${personaIntent.target}`);
+    }
+  }
+
+  if (els.personaPreset) {
+    els.personaPreset.value = targetPreset.id;
+    els.personaPreset.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  if (els.personaPrompt && targetPreset.prompt) {
+    els.personaPrompt.value = targetPreset.prompt;
+  }
+  renderPersonaPresetDescription?.();
+  renderConversationMiniheadMeta?.();
+  save();
+  refreshMetrics();
+  return commitDirectChatAdminReply(source, `已切换人设：${targetPreset.name}`);
+}
+
+const askModelBeforeWebAdminCommandFinal = askModel;
+askModel = async function askModelWithWebAdminCommandFinal(userText) {
+  const directAdminReply = await tryHandleModelOrPersonaChatCommand(userText);
+  if (directAdminReply) {
+    return directAdminReply;
+  }
+  return askModelBeforeWebAdminCommandFinal(userText);
+};
+
+renderConversationMiniheadMeta = function renderConversationMiniheadMetaModelPersonaOnlyFinal() {
+  if (!els.conversationMiniheadText) return;
+  const modelText = selectedModel() || "未选择模型";
+  const personaContent = String(els.personaPrompt?.value || "").trim();
+  const personaPresetId = els.personaPreset?.value || "none";
+  const personaPresetName = personaPresetId !== "none"
+    ? String(els.personaPreset?.selectedOptions?.[0]?.textContent || "").trim()
+    : "";
+  const personaText = personaPresetName || (personaContent ? "自定义人设" : "无人设");
+  const personaMarkup = `<span class="minihead-meta-value${personaContent ? " is-hoverable" : ""}"${personaContent ? ` title="${esc(personaContent)}"` : ""}>${esc(personaText)}</span>`;
+  els.conversationMiniheadText.innerHTML = [
+    `<span class="minihead-meta-item"><span class="minihead-meta-label">模型</span><span class="minihead-meta-value">${esc(modelText)}</span></span>`,
+    `<span class="minihead-meta-separator">·</span>`,
+    `<span class="minihead-meta-item"><span class="minihead-meta-label">人设</span>${personaMarkup}</span>`,
+  ].join("");
+};
+
+renderConversationMiniheadMeta();
+
+function buildScheduledTaskTimestampMetaText(task = {}) {
+  return `创建：${formatScheduleTime(task.createdAt)} · 最后修改：${formatScheduleTime(task.updatedAt)} · 上次执行：${formatScheduleTime(task.lastRunAt)}`;
+}
+
+function buildScheduledTaskTimestampDetailText(task = {}) {
+  return [
+    `创建：${formatScheduleTime(task.createdAt)}`,
+    `最后修改：${formatScheduleTime(task.updatedAt)}`,
+    `下次执行：${formatScheduleTime(task.nextRunAt)}`,
+    `上次执行：${formatScheduleTime(task.lastRunAt)}`,
+  ].join("\n");
+}
+
+const renderScheduledTasksBeforeTimestampMetaFinal = renderScheduledTasks;
+renderScheduledTasks = function renderScheduledTasksWithTimestampMetaFinal(tasks) {
+  renderScheduledTasksBeforeTimestampMetaFinal(tasks);
+
+  const { list } = getScheduledTaskWorkbenchElements();
+  if (!list || !Array.isArray(tasks) || !tasks.length) {
+    return;
+  }
+
+  const items = Array.from(list.querySelectorAll(".schedule-task-item"));
+  items.forEach((item, index) => {
+    const task = tasks[index];
+    if (!task) return;
+
+    const metaLine = item.querySelector(".schedule-task-meta-line");
+    if (metaLine) {
+      metaLine.textContent = buildScheduledTaskTimestampMetaText(task);
+    }
+
+    const summaryGrid = item.querySelector(".schedule-task-summary-grid");
+    if (summaryGrid && !summaryGrid.querySelector('[data-schedule-stat="next-run"]')) {
+      const nextRunCard = createScheduledTaskStatCard("下次执行", formatScheduleTime(task.nextRunAt));
+      nextRunCard.dataset.scheduleStat = "next-run";
+      const qqPushCard = summaryGrid.lastElementChild;
+      if (qqPushCard) {
+        summaryGrid.insertBefore(nextRunCard, qqPushCard);
+      } else {
+        summaryGrid.append(nextRunCard);
+      }
+    }
+
+    const content = item.querySelector(".schedule-task-content");
+    if (content && !content.querySelector(".schedule-task-time-info-section")) {
+      const timeSection = createScheduledTaskSection("时间信息", "schedule-task-push", buildScheduledTaskTimestampDetailText(task));
+      timeSection.classList.add("schedule-task-time-info-section");
+      const resultPanel = content.querySelector(".schedule-task-result-panel");
+      if (resultPanel) {
+        content.insertBefore(timeSection, resultPanel);
+      } else {
+        content.append(timeSection);
+      }
+    }
+  });
+};
+
+loadScheduledTasksUI().catch(() => {});
+
+renderScheduledTaskComposerSummary = function renderScheduledTaskComposerSummaryNoModelDisplayTailFinal() {
+  const { formSummary, cron } = getScheduledTaskWorkbenchElements();
+  if (!formSummary) return;
+
+  const cronText = String(cron?.value || "").trim() || "未填写";
+  const pushText = buildScheduledTaskQqPushSummary(getScheduledTaskQqPushFormSettings()).replace(/^QQ 推送：/, "");
+  formSummary.textContent = `Cron：${cronText} · QQ 推送：${pushText}`;
+};
+
+const renderScheduledTasksBeforeNoModelDisplayTailFinal = renderScheduledTasks;
+renderScheduledTasks = function renderScheduledTasksNoModelDisplayTailFinal(tasks) {
+  renderScheduledTasksBeforeNoModelDisplayTailFinal(tasks);
+
+  const { list } = getScheduledTaskWorkbenchElements();
+  if (!list) return;
+
+  list.querySelectorAll(".schedule-task-summary-grid .schedule-task-stat-card").forEach((card) => {
+    const label = String(card.querySelector(".schedule-task-stat-label")?.textContent || "").trim();
+    if (/模型|妯/.test(label)) {
+      card.remove();
+    }
+  });
+};
+
+renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});

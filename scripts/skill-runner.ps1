@@ -112,6 +112,34 @@ function Detect-MissingRuntimeIssue {
   return ''
 }
 
+function Get-ConfigBoolean {
+  param(
+    [hashtable]$Config,
+    [string]$Key,
+    [bool]$Default = $false
+  )
+
+  if ($null -eq $Config -or -not $Config.ContainsKey($Key)) {
+    return $Default
+  }
+
+  $value = $Config[$Key]
+  if ($value -is [bool]) {
+    return [bool]$value
+  }
+
+  $normalized = [string]$value
+  if ([string]::IsNullOrWhiteSpace($normalized)) {
+    return $Default
+  }
+
+  switch -Regex ($normalized.Trim().ToLowerInvariant()) {
+    '^(1|true|yes|on)$' { return $true }
+    '^(0|false|no|off)$' { return $false }
+    default { return $Default }
+  }
+}
+
 function Invoke-ExternalProcess {
   param(
     [string]$FilePath,
@@ -255,6 +283,7 @@ function Invoke-WorkspaceSkill {
 
   $payload = $Job.payload
   $skillName = [string]$payload.skillName
+  $runnerConfig = Get-RunnerConfig
   $entryPath = Get-SkillEntryPath -SkillName $skillName
   $runtimePrepared = New-Object System.Collections.Generic.List[string]
 
@@ -271,11 +300,14 @@ function Invoke-WorkspaceSkill {
   $externalChrome = $null
 
   try {
-    if ($skillName -eq 'lxj') {
+    $useExternalChromeCdp = $skillName -eq 'lxj' -and (Get-ConfigBoolean -Config $runnerConfig -Key 'useExternalChromeCdpForLxj' -Default $false)
+    if ($useExternalChromeCdp) {
       $externalChrome = Start-ExternalChromeCdp -Headless:([bool]$payload.headless)
       $nodeEnvironment['PLAYWRIGHT_CDP_URL'] = $externalChrome.cdpUrl
       [void]$runtimePrepared.Add('external browser cdp')
       Write-RunnerLog "skill $skillName using browser $($externalChrome.chromePath) via $($externalChrome.cdpUrl)"
+    } elseif ($skillName -eq 'lxj') {
+      Write-RunnerLog "skill $skillName using direct playwright launch mode"
     }
 
     $result = Invoke-ExternalProcess -FilePath $nodePath -ArgumentList $cliArgs.ToArray() -WorkingDirectory $projectRoot -TimeoutMs $skillRunTimeoutMs -Environment $nodeEnvironment

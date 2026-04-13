@@ -6,9 +6,8 @@ function createExecuteToolCall(deps) {
     root,
     resolveWorkspacePath,
     getWeatherByLocation,
-    searchClawHubSkills,
-    installClawHubSkill,
-    runWorkspaceSkill,
+    runShellCommand,
+    runCliCommand,
     listScheduledTasks,
     validateScheduledTaskPayload,
     findEquivalentScheduledTask,
@@ -22,6 +21,17 @@ function createExecuteToolCall(deps) {
     setScheduledTasks,
     runningScheduledTaskIds,
   } = deps;
+
+  function ensureScheduledTaskQqPushConfig(task = {}) {
+    if (!task.qqPushEnabled) {
+      return;
+    }
+    if (!String(task.qqTargetId || "").trim()) {
+      const error = new Error("QQ target ID is required when QQ push is enabled");
+      error.statusCode = 400;
+      throw error;
+    }
+  }
 
   return async function executeToolCall(name, args = {}) {
     switch (name) {
@@ -71,20 +81,11 @@ function createExecuteToolCall(deps) {
       case "get_weather": {
         return await getWeatherByLocation(args.location);
       }
-      case "search_clawhub_skills": {
-        const query = String(args.query || "").trim();
-        const skills = await searchClawHubSkills(query, Number(args.limit) || 6);
-        return {
-          query,
-          preferredSource: "https://clawhub.ai/skills?sort=downloads&nonSuspicious=true",
-          skills,
-        };
+      case "run_shell_command": {
+        return await runShellCommand(args);
       }
-      case "install_clawhub_skill": {
-        return await installClawHubSkill(args);
-      }
-      case "run_workspace_skill": {
-        return await runWorkspaceSkill(args);
+      case "run_cli_command": {
+        return await runCliCommand(args);
       }
       case "list_scheduled_tasks": {
         return { tasks: listScheduledTasks() };
@@ -105,6 +106,7 @@ function createExecuteToolCall(deps) {
           ...input,
           enabled: args.enabled !== false,
         });
+        ensureScheduledTaskQqPushConfig(task);
         const nextTasks = getScheduledTasks();
         nextTasks.unshift(task);
         setScheduledTasks(nextTasks);
@@ -114,7 +116,13 @@ function createExecuteToolCall(deps) {
       case "update_scheduled_task": {
         const task = ensureScheduledTask(args.id);
         const patch = validateScheduledTaskPayload(args, { partial: true });
-        Object.assign(task, patch);
+        const nextTask = sanitizeScheduledTask({
+          ...task,
+          ...patch,
+          updatedAt: Date.now(),
+        });
+        ensureScheduledTaskQqPushConfig(nextTask);
+        Object.assign(task, nextTask);
         task.updatedAt = Date.now();
         task.nextRunAt = task.enabled ? computeNextRunAt(task, Date.now()) : null;
         await saveScheduledTasks();

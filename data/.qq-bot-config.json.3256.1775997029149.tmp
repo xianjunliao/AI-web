@@ -1,0 +1,135 @@
+{
+  "enabled": true,
+  "groupMentionOnly": true,
+  "taskPushEnabled": true,
+  "triggerPrefix": "",
+  "allowedUsers": [],
+  "allowedGroups": [],
+  "persona": "你是一名严谨、可靠、表达清晰的 AI 助手。\n优先保证事实准确，先给结论，再给关键依据。",
+  "personaPreset": "workspace:精准助手.md",
+  "bridgeUrl": "http://127.0.0.1:3000/",
+  "accessToken": "gm9SlX6~-R6WFo0s",
+  "defaultTargetType": "private",
+  "defaultTargetId": "1036986718",
+  "model": "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-v2",
+  "systemPrompt": "严禁只说不做，禁止幻觉输出。",
+  "assistantName": "繁星",
+  "selectedSkill": {
+    "name": "shirehuo",
+    "source": "workspace",
+    "summary": "",
+    "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射",
+    "files": [
+      {
+        "path": "SKILL.md",
+        "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射"
+      }
+    ]
+  },
+  "activeSkills": [
+    {
+      "name": "shirehuo",
+      "source": "workspace",
+      "summary": "",
+      "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射"
+        }
+      ]
+    }
+  ],
+  "targetProfiles": {
+    "private:1036986718": {
+      "name": "QQ 1036986718",
+      "targetType": "private",
+      "targetId": "1036986718",
+      "enabled": false,
+      "groupMentionOnly": true,
+      "taskPushEnabled": false,
+      "triggerPrefix": "",
+      "allowedUsers": [],
+      "allowedGroups": [],
+      "persona": "你是一名严谨、可靠、表达清晰的 AI 助手。\n优先保证事实准确，先给结论，再给关键依据。",
+      "personaPreset": "workspace:精准助手.md",
+      "bridgeUrl": "",
+      "accessToken": "",
+      "defaultTargetType": "private",
+      "defaultTargetId": "1036986718",
+      "model": "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-v2",
+      "systemPrompt": "严禁只说不做，禁止幻觉输出。",
+      "assistantName": "繁星",
+      "selectedSkill": {
+        "name": "shirehuo",
+        "source": "workspace",
+        "summary": "",
+        "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射",
+        "files": [
+          {
+            "path": "SKILL.md",
+            "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射"
+          }
+        ]
+      },
+      "activeSkills": [
+        {
+          "name": "shirehuo",
+          "source": "workspace",
+          "summary": "",
+          "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "content": "# 微博热搜技能 v2.1.0\n\n自动获取微博热搜榜并按主题分类输出。\n\n## 功能\n\n- 输入“热搜”即可获取微博热搜榜\n- 直接请求微博热搜 AJAX JSON 接口，不再启动浏览器\n- 自动分类为娱乐、社会、科技、体育、电竞、财经、生活、国际、其他\n- 输出热度标签和热度值\n\n## 使用方式\n\n在对话中直接输入：\n\n```text\n热搜\n```\n\n## 技术说明\n\n- 当前版本使用微博热搜 AJAX 接口：`https://weibo.com/ajax/side/hotSearch`\n- 输出前会统一字段格式，并补充微博搜索链接\n- 如果微博接口结构变化，需要调整字段映射"
+            }
+          ]
+        }
+      ]
+    },
+    "private:717606120": {
+      "name": "QQ 717606120",
+      "targetType": "private",
+      "targetId": "717606120",
+      "enabled": false,
+      "groupMentionOnly": true,
+      "taskPushEnabled": false,
+      "triggerPrefix": "",
+      "allowedUsers": [],
+      "allowedGroups": [],
+      "persona": "你是一名严谨、可靠、表达清晰的 AI 助手。\n优先保证事实准确，先给结论，再给关键依据。",
+      "personaPreset": "none",
+      "bridgeUrl": "",
+      "accessToken": "",
+      "defaultTargetType": "private",
+      "defaultTargetId": "717606120",
+      "model": "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-v2",
+      "systemPrompt": "严禁只说不做，禁止幻觉输出。",
+      "assistantName": "繁星",
+      "selectedSkill": null,
+      "activeSkills": []
+    },
+    "group:1094801112": {
+      "name": "群 1094801112",
+      "targetType": "group",
+      "targetId": "1094801112",
+      "enabled": false,
+      "groupMentionOnly": true,
+      "taskPushEnabled": false,
+      "triggerPrefix": "",
+      "allowedUsers": [],
+      "allowedGroups": [],
+      "persona": "你是一名严谨、可靠、表达清晰的 AI 助手。\n优先保证事实准确，先给结论，再给关键依据。",
+      "personaPreset": "precise-assistant",
+      "bridgeUrl": "",
+      "accessToken": "",
+      "defaultTargetType": "group",
+      "defaultTargetId": "1094801112",
+      "model": "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-v2",
+      "systemPrompt": "严禁只说不做，禁止幻觉输出。",
+      "assistantName": "繁星",
+      "selectedSkill": null,
+      "activeSkills": []
+    }
+  }
+}

@@ -1,7 +1,6 @@
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { URL } = require("url");
@@ -18,6 +17,12 @@ const { createQqModule } = require("./server/server-qq");
 const { createTaskModelInvoker } = require("./server/server-task-model");
 const { createPersonaHandlers } = require("./server/server-personas");
 const { createScheduler } = require("./server/server-scheduler");
+const {
+  inferScheduledTaskArgsFromText,
+  inferScheduledTaskIntentFromText,
+  formatScheduledTaskCreationReply,
+  formatScheduledTaskActionReply,
+} = require("./server/server-schedule-intent");
 
 const HOST = "127.0.0.1";
 const PORT = 8000;
@@ -30,67 +35,44 @@ const LEGACY_PERSONA_PRESETS_DIR = path.join(ROOT, "人设");
 const LEGACY_SCHEDULED_TASKS_FILE = path.join(ROOT, "scheduled-tasks.json");
 const LEGACY_QQ_BOT_CONFIG_FILE = path.join(ROOT, "qq-bot-config.json");
 const LEGACY_QQ_BOT_SESSIONS_FILE = path.join(ROOT, "qq-bot-sessions.json");
+const LEGACY_CONNECTION_CONFIG_FILE = path.join(ROOT, "connection-config.json");
 const SCHEDULED_TASKS_FILE = path.join(DATA_DIR, "scheduled-tasks.json");
 const QQ_BOT_CONFIG_FILE = path.join(DATA_DIR, "qq-bot-config.json");
 const QQ_BOT_SESSIONS_FILE = path.join(DATA_DIR, "qq-bot-sessions.json");
+const CONNECTION_CONFIG_FILE = path.join(DATA_DIR, "connection-config.json");
 const PERSONA_PRESETS_DIR = path.join(DATA_DIR, "personas");
-const SKILL_SOURCES = {
-  workspace: path.join(ROOT, "skills"),
-  codex: path.join(os.homedir(), ".codex", "skills"),
-};
-const SKILL_TEXT_EXTENSIONS = new Set([
-  ".md",
-  ".txt",
-  ".json",
-  ".yaml",
-  ".yml",
-  ".js",
-  ".ts",
-  ".py",
-  ".sh",
-  ".ps1",
-  ".xml",
-  ".csv",
-  ".html",
-  ".css",
-]);
-const MAX_SKILL_FILES = 24;
-const MAX_SKILL_FILE_SIZE = 64 * 1024;
-const MAX_SKILL_ARCHIVE_BYTES = 25 * 1024 * 1024;
-const SKILL_ARCHIVE_REQUEST_LIMIT = 40 * 1024 * 1024;
-const SKILL_RUN_TIMEOUT_MS = 5 * 60 * 1000;
 const SCHEDULER_TICK_MS = 30 * 1000;
-const SKILL_RUNNER_POLL_MS = 1500;
-const SKILL_RUNNER_PROTOCOL_VERSION = "2";
 const PUBLIC_STATIC_PATHS = new Set(["/"]);
 const isPublicStaticPath = createStaticPathGuard(ROOT, {
   exactPaths: PUBLIC_STATIC_PATHS,
   publicDir: "public",
 });
 
-function getRuntimeIdentityName() {
-  try {
-    return String(process.env.USERNAME || os.userInfo().username || "").trim();
-  } catch {
-    return String(process.env.USERNAME || "").trim();
-  }
-}
-
-function isRestrictedDesktopAutomationIdentity() {
-  const identity = getRuntimeIdentityName().toLowerCase();
-  return identity.includes("codexsandbox");
-}
-
-function buildRestrictedDesktopAutomationMessage(skillName = "当前技能") {
-  const identity = getRuntimeIdentityName() || "unknown";
-  return `${skillName} 需要在本机正常桌面用户会话中运行浏览器自动化。当前服务身份为 ${identity}，属于受限运行身份，浏览器进程会被系统拒绝。请在你自己的 Windows 用户终端中手动启动 \`node server.js\` 和 \`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/skill-runner.ps1\` 后再试。`;
-}
-
 function appendServerDebugLog(message) {
   try {
     fs.mkdirSync(LOGS_DIR, { recursive: true });
     fs.appendFileSync(path.join(LOGS_DIR, "server-debug.log"), `${new Date().toISOString()} ${message}\n`, "utf8");
   } catch {}
+}
+
+function appendCommandAuditLog(record = {}) {
+  try {
+    fs.mkdirSync(LOGS_DIR, { recursive: true });
+    fs.appendFileSync(
+      path.join(LOGS_DIR, "command-audit.log"),
+      `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        ...record,
+      })}\n`,
+      "utf8"
+    );
+  } catch {}
+}
+
+function createRemovedSkillsFeatureError() {
+  const error = new Error("Skills have been removed from this app.");
+  error.statusCode = 410;
+  return error;
 }
 
 let scheduledTasks = [];
@@ -134,8 +116,12 @@ let sendQqMessage;
 let handleQqBotConfigGet;
 let handleQqBotConfigPost;
 let handleQqWebhook;
+let pushScheduledTaskResultToQq;
 let getQqBotConfig;
-let skillRunnerJobs = [];
+const DEFAULT_CONNECTION_CONFIG = {
+  model: "",
+};
+let sharedConnectionConfigState = { ...DEFAULT_CONNECTION_CONFIG };
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -385,218 +371,184 @@ async function handleToolRequest(req, res) {
   }
 }
 
-function getSkillRoot(source) {
-  const root = SKILL_SOURCES[source];
-  if (!root) {
-    const error = new Error("Unknown skill source");
-    error.statusCode = 400;
-    throw error;
+const COMMAND_TOOL_DEFAULT_TIMEOUT_MS = 120000;
+const COMMAND_TOOL_MAX_TIMEOUT_MS = 300000;
+const COMMAND_TOOL_OUTPUT_LIMIT = 20000;
+
+function clampCommandTimeout(timeoutMs) {
+  const numeric = Number(timeoutMs);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return COMMAND_TOOL_DEFAULT_TIMEOUT_MS;
   }
-  return root;
+  return Math.min(Math.max(Math.floor(numeric), 1000), COMMAND_TOOL_MAX_TIMEOUT_MS);
 }
 
-async function listSkills(filterSource = "") {
-  const skills = [];
-
-  for (const [source, root] of Object.entries(SKILL_SOURCES)) {
-    if (filterSource && source !== filterSource) {
-      continue;
-    }
-    try {
-      await collectSkillsFromRoot(source, root, root, skills);
-    } catch (error) {
-      // Ignore missing roots
-    }
+function truncateCommandOutput(text = "") {
+  const value = String(text || "");
+  if (value.length <= COMMAND_TOOL_OUTPUT_LIMIT) {
+    return { text: value, truncated: false };
   }
-
-  skills.sort((left, right) => left.name.localeCompare(right.name));
-  return skills;
-}
-
-async function collectSkillsFromRoot(source, sourceRoot, currentDir, skills) {
-  const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
-    const fullPath = path.join(currentDir, entry.name);
-    const relativePath = path.relative(sourceRoot, fullPath).replace(/\\/g, "/");
-    const skillFile = path.join(fullPath, "SKILL.md");
-
-    try {
-      const content = await fs.promises.readFile(skillFile, "utf8");
-      const summary = content
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find((line) => line && line !== "---" && !line.startsWith("#")) || "No summary available.";
-
-      skills.push({
-        source,
-        name: relativePath,
-        summary,
-      });
-      continue;
-    } catch (error) {
-      // Not a skill root, continue walking.
-    }
-
-    if (entry.name === ".git" || entry.name === "node_modules") {
-      continue;
-    }
-
-    await collectSkillsFromRoot(source, sourceRoot, fullPath, skills);
-  }
-}
-
-async function collectSkillFiles(rootDir, currentDir, files = []) {
-  const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (files.length >= MAX_SKILL_FILES) {
-      break;
-    }
-
-    const fullPath = path.join(currentDir, entry.name);
-    const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, "/");
-
-    if (entry.isDirectory()) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name.startsWith(".")) {
-        continue;
-      }
-      await collectSkillFiles(rootDir, fullPath, files);
-      continue;
-    }
-
-    const ext = path.extname(entry.name).toLowerCase();
-    if (!SKILL_TEXT_EXTENSIONS.has(ext) && entry.name !== "SKILL.md") {
-      continue;
-    }
-
-    const stat = await fs.promises.stat(fullPath);
-    if (stat.size > MAX_SKILL_FILE_SIZE) {
-      continue;
-    }
-
-    const content = await fs.promises.readFile(fullPath, "utf8");
-    files.push({
-      path: relativePath,
-      content,
-    });
-  }
-
-  return files;
-}
-
-async function readSkill(source, name) {
-  const root = getSkillRoot(source);
-  const skillDir = path.resolve(root, name);
-  if (!skillDir.startsWith(root)) {
-    const error = new Error("Skill path escapes source root");
-    error.statusCode = 403;
-    throw error;
-  }
-
-  const files = await collectSkillFiles(skillDir, skillDir);
-  const skillFile = files.find((file) => file.path === "SKILL.md");
   return {
-    source,
-    name,
-    content: skillFile?.content || "",
-    files,
+    text: `${value.slice(0, COMMAND_TOOL_OUTPUT_LIMIT)}\n...[truncated]`,
+    truncated: true,
   };
 }
 
-async function handleSkillsListRequest(res, searchParams) {
-  try {
-    const source = searchParams.get("source") || "";
-    const skills = await listSkills(source);
-    sendJson(res, 200, { ok: true, skills });
-  } catch (error) {
-    sendJson(res, error.statusCode || 500, {
-      error: error.message || "Failed to list skills",
-    });
-  }
+function resolveCommandWorkingDirectory(workingDirectory = ".") {
+  return resolveWorkspacePath(ROOT, workingDirectory || ".");
 }
 
-async function handleSkillsReadRequest(res, searchParams) {
-  try {
-    const source = searchParams.get("source") || "workspace";
-    const name = searchParams.get("name");
-    if (!name) {
-      sendJson(res, 400, { error: "Missing skill name" });
-      return;
-    }
+async function executeProcessTool(filePath, args = [], options = {}) {
+  const cwd = resolveCommandWorkingDirectory(options.workingDirectory);
+  const timeoutMs = clampCommandTimeout(options.timeoutMs);
+  const auditBase = {
+    tool: String(options.toolName || "process"),
+    executable: filePath,
+    args: Array.isArray(args) ? args : [],
+    cwd: path.relative(ROOT, cwd).replace(/\\/g, "/") || ".",
+    timeoutMs,
+  };
 
-    const skill = await readSkill(source, name);
-    sendJson(res, 200, { ok: true, skill });
-  } catch (error) {
-    sendJson(res, error.statusCode || 500, {
-      error: error.message || "Failed to read skill",
-    });
-  }
-}
+  appendCommandAuditLog({
+    event: "start",
+    ...auditBase,
+  });
 
-async function copyDirectoryRecursive(sourceDir, targetDir) {
-  await fs.promises.mkdir(targetDir, { recursive: true });
-  const entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const sourcePath = path.join(sourceDir, entry.name);
-    const targetPath = path.join(targetDir, entry.name);
-
-    if (entry.isDirectory()) {
-      await copyDirectoryRecursive(sourcePath, targetPath);
-      continue;
-    }
-
-    await fs.promises.copyFile(sourcePath, targetPath);
-  }
-}
-
-function sanitizeSkillDirectoryName(name = "") {
-  const normalized = String(name || "")
-    .trim()
-    .replace(/\.zip$/i, "")
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  return normalized || `skill-${Date.now()}`;
-}
-
-function isZipArchiveBuffer(buffer) {
-  return Buffer.isBuffer(buffer)
-    && buffer.length >= 4
-    && buffer[0] === 0x50
-    && buffer[1] === 0x4b;
-}
-
-function escapePowerShellLiteral(value) {
-  return String(value || "").replace(/'/g, "''");
-}
-
-async function runPowerShellCommand(command) {
-  await new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(filePath, args, {
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
+
+    let stdout = "";
     let stderr = "";
+    let settled = false;
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch {}
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
     });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      const error = new Error(stderr.trim() || `PowerShell command failed with exit code ${code}`);
-      error.statusCode = 500;
+
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      appendCommandAuditLog({
+        event: "error",
+        ...auditBase,
+        error: String(error?.message || "unknown"),
+      });
       reject(error);
     });
+
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const stdoutInfo = truncateCommandOutput(stdout);
+      const stderrInfo = truncateCommandOutput(stderr);
+      if (timedOut) {
+        appendCommandAuditLog({
+          event: "timeout",
+          ...auditBase,
+          exitCode: code,
+          signal,
+          stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+          stderrBytes: Buffer.byteLength(stderr, "utf8"),
+        });
+        const error = new Error(`Command timed out after ${timeoutMs}ms`);
+        error.statusCode = 504;
+        error.result = {
+          cwd: path.relative(ROOT, cwd).replace(/\\/g, "/") || ".",
+          exitCode: code,
+          signal,
+          timedOut: true,
+          stdout: stdoutInfo.text,
+          stderr: stderrInfo.text,
+          stdoutTruncated: stdoutInfo.truncated,
+          stderrTruncated: stderrInfo.truncated,
+        };
+        reject(error);
+        return;
+      }
+      const result = {
+        cwd: path.relative(ROOT, cwd).replace(/\\/g, "/") || ".",
+        exitCode: code,
+        signal,
+        timedOut: false,
+        stdout: stdoutInfo.text,
+        stderr: stderrInfo.text,
+        stdoutTruncated: stdoutInfo.truncated,
+        stderrTruncated: stderrInfo.truncated,
+      };
+      appendCommandAuditLog({
+        event: "finish",
+        ...auditBase,
+        exitCode: code,
+        signal,
+        timedOut: false,
+        stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+        stderrBytes: Buffer.byteLength(stderr, "utf8"),
+      });
+      resolve(result);
+    });
   });
+}
+
+async function runShellCommand(args = {}) {
+  const command = String(args.command || "").trim();
+  if (!command) {
+    const error = new Error("Shell command is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const result = await executeProcessTool("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+    toolName: "run_shell_command",
+    workingDirectory: args.workingDirectory || ".",
+    timeoutMs: args.timeoutMs,
+  });
+
+  return {
+    command,
+    ...result,
+  };
+}
+
+async function runCliCommand(args = {}) {
+  const executable = String(args.executable || "").trim();
+  if (!executable) {
+    const error = new Error("CLI executable is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const cliArgs = Array.isArray(args.args)
+    ? args.args.map((item) => String(item))
+    : [];
+
+  const result = await executeProcessTool(executable, cliArgs, {
+    toolName: "run_cli_command",
+    workingDirectory: args.workingDirectory || ".",
+    timeoutMs: args.timeoutMs,
+  });
+
+  return {
+    executable,
+    args: cliArgs,
+    ...result,
+  };
 }
 
 async function extractZipArchive(zipPath, destinationDir) {
@@ -675,125 +627,35 @@ async function detectSkillNameFromSkillMarkdown(skillDir) {
 }
 
 function createSkillRunnerJob(args = {}) {
-  const skillName = String(args.skillName || args.name || "").trim();
-  if (!skillName) {
-    const error = new Error("Missing workspace skill name");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const workspaceSkillsRoot = getSkillRoot("workspace");
-  const skillDir = resolveWorkspacePath(workspaceSkillsRoot, skillName);
-  const payload = {
-    skillName,
-    username: typeof args.username === "string" ? args.username.trim() : "",
-    headless: args.headless === true ? true : (args.headless === false ? false : null),
-    notify: args.notify === false ? false : true,
-    skillDir: path.relative(ROOT, skillDir).replace(/\\/g, "/"),
-  };
-
-  const job = {
-    id: `skill-job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    status: "pending",
-    payload,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    startedAt: null,
-    completedAt: null,
-    result: null,
-    error: "",
-  };
-  skillRunnerJobs.unshift(job);
-  skillRunnerJobs = skillRunnerJobs.slice(0, 100);
-  return job;
+  void args;
+  throw createRemovedSkillsFeatureError();
 }
 
 function getNextPendingSkillRunnerJob() {
-  const job = skillRunnerJobs.find((item) => item.status === "pending");
-  if (!job) return null;
-  job.status = "running";
-  job.startedAt = Date.now();
-  job.updatedAt = Date.now();
-  return job;
+  return null;
 }
 
 function completeSkillRunnerJob(jobId, payload = {}) {
-  const job = skillRunnerJobs.find((item) => item.id === jobId);
-  if (!job) {
-    const error = new Error("Skill runner job not found");
-    error.statusCode = 404;
-    throw error;
-  }
-  job.status = payload.ok === false ? "failed" : "done";
-  job.updatedAt = Date.now();
-  job.completedAt = Date.now();
-  job.result = payload.result || null;
-  job.error = String(payload.error || "").trim();
-  return job;
+  void jobId;
+  void payload;
+  throw createRemovedSkillsFeatureError();
 }
 
-async function waitForSkillRunnerJob(jobId, timeoutMs = SKILL_RUN_TIMEOUT_MS) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const job = skillRunnerJobs.find((item) => item.id === jobId);
-    if (!job) {
-      const error = new Error("Skill runner job disappeared");
-      error.statusCode = 500;
-      throw error;
-    }
-    if (job.status === "done") {
-      return job.result || {};
-    }
-    if (job.status === "failed") {
-      const error = new Error(job.error || "Skill runner execution failed");
-      error.statusCode = 500;
-      throw error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, SKILL_RUNNER_POLL_MS));
-  }
-  const timedOutJob = skillRunnerJobs.find((item) => item.id === jobId);
-  if (timedOutJob && (timedOutJob.status === "pending" || timedOutJob.status === "running")) {
-    timedOutJob.status = "failed";
-    timedOutJob.updatedAt = Date.now();
-    timedOutJob.completedAt = Date.now();
-    timedOutJob.error = "Skill runner execution timed out";
-  }
-  const error = new Error("Skill runner execution timed out");
-  error.statusCode = 504;
-  throw error;
+async function waitForSkillRunnerJob(jobId, timeoutMs = 0) {
+  void jobId;
+  void timeoutMs;
+  throw createRemovedSkillsFeatureError();
 }
 
 async function handleSkillRunnerNextJobRequest(req, res) {
-  const runnerVersion = String(req.headers["x-skill-runner-version"] || "").trim();
-  if (runnerVersion !== SKILL_RUNNER_PROTOCOL_VERSION) {
-    sendJson(res, 200, { ok: true, job: null });
-    return;
-  }
-  const job = getNextPendingSkillRunnerJob();
-  sendJson(res, 200, { ok: true, job });
+  void req;
+  sendJson(res, 410, { error: "Skills have been removed from this app." });
 }
 
 async function handleSkillRunnerJobResultRequest(req, res, jobId) {
-  try {
-    const runnerVersion = String(req.headers["x-skill-runner-version"] || "").trim();
-    if (runnerVersion !== SKILL_RUNNER_PROTOCOL_VERSION) {
-      appendServerDebugLog(`skill runner result rejected: unsupported version job=${jobId} version=${runnerVersion || "empty"}`);
-      sendJson(res, 403, { error: "Unsupported skill runner version" });
-      return;
-    }
-    const rawBody = await readRequestBody(req);
-    appendServerDebugLog(`skill runner result raw body: job=${jobId} body=${(rawBody || "").slice(0, 600)}`);
-    const payload = rawBody ? JSON.parse(rawBody) : {};
-    appendServerDebugLog(`skill runner result received: job=${jobId} ok=${payload?.ok} keys=${Object.keys(payload || {}).join(",")}`);
-    const job = completeSkillRunnerJob(jobId, payload);
-    appendServerDebugLog(`skill runner result stored: job=${jobId} status=${job.status}`);
-    sendJson(res, 200, { ok: true, job });
-  } catch (error) {
-    appendServerDebugLog(`skill runner result failed: job=${jobId} error=${error.message || "unknown"}`);
-    sendJson(res, error.statusCode || 500, {
-      error: error.message || "Failed to store skill runner result",
-    });
-  }
+  void req;
+  void jobId;
+  sendJson(res, 410, { error: "Skills have been removed from this app." });
 }
 
 async function installSkillArchiveToWorkspace({ buffer, archiveName = "", targetName = "", source = "upload", sourceUrl = "" }) {
@@ -938,6 +800,8 @@ async function installSkillToWorkspace(source, name) {
 }
 
 async function runWorkspaceSkill(args = {}) {
+  void args;
+  throw createRemovedSkillsFeatureError();
   if (isRestrictedDesktopAutomationIdentity()) {
     const error = new Error(buildRestrictedDesktopAutomationMessage(String(args.skillName || "当前技能")));
     error.statusCode = 503;
@@ -964,6 +828,9 @@ async function runWorkspaceSkill(args = {}) {
 }
 
 async function handleSkillsInstallRequest(req, res) {
+  void req;
+  sendJson(res, 410, { error: "Skills have been removed from this app." });
+  return;
   try {
     const rawBody = await readRequestBody(req);
     const payload = rawBody ? JSON.parse(rawBody) : {};
@@ -1491,6 +1358,9 @@ async function fetchTopClawHubSkills(limit = 8) {
 }
 
 async function searchClawHubSkills(query = "", limit = 8) {
+  void query;
+  void limit;
+  throw createRemovedSkillsFeatureError();
   const text = String(query || "").trim();
   let items = [];
 
@@ -1592,6 +1462,8 @@ function extractDownloadZipUrl(html, pageUrl) {
 }
 
 async function installClawHubSkill(args = {}) {
+  void args;
+  throw createRemovedSkillsFeatureError();
   const query = String(args.query || args.name || "").trim();
   let skillPageUrl = String(args.url || args.clawhubUrl || "").trim();
   let targetName = String(args.targetName || "").trim();
@@ -1689,7 +1561,7 @@ async function getWeatherByLocation(location) {
   forecastUrl.searchParams.set("latitude", String(place.latitude));
   forecastUrl.searchParams.set("longitude", String(place.longitude));
   forecastUrl.searchParams.set("current", "temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m");
-  forecastUrl.searchParams.set("timezone", "auto");
+  forecastUrl.searchParams.set("timezone", "Asia/Shanghai");
 
   const forecast = await requestJson(forecastUrl);
   return {
@@ -2019,6 +1891,11 @@ async function legacyExecuteToolCallV2(name, args = {}) {
         ...input,
         enabled: args.enabled !== false,
       });
+      if (task.qqPushEnabled && !String(task.qqTargetId || "").trim()) {
+        const error = new Error("QQ target ID is required when QQ push is enabled");
+        error.statusCode = 400;
+        throw error;
+      }
       scheduledTasks.unshift(task);
       await saveScheduledTasks();
       return task;
@@ -2026,7 +1903,17 @@ async function legacyExecuteToolCallV2(name, args = {}) {
     case "update_scheduled_task": {
       const task = resolveScheduledTask(args);
       const patch = validateScheduledTaskPayload(args, { partial: true });
-      Object.assign(task, patch);
+      const nextTask = sanitizeScheduledTask({
+        ...task,
+        ...patch,
+        updatedAt: Date.now(),
+      });
+      if (nextTask.qqPushEnabled && !String(nextTask.qqTargetId || "").trim()) {
+        const error = new Error("QQ target ID is required when QQ push is enabled");
+        error.statusCode = 400;
+        throw error;
+      }
+      Object.assign(task, nextTask);
       task.updatedAt = Date.now();
       task.nextRunAt = task.enabled ? computeNextRunAt(task, Date.now()) : null;
       await saveScheduledTasks();
@@ -2060,32 +1947,61 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
+function sanitizeSharedConnectionConfig(input = {}) {
+  return {
+    model: String(input?.model || "").trim(),
+  };
+}
+
+async function loadSharedConnectionConfig() {
+  const loaded = await readJsonFile(CONNECTION_CONFIG_FILE, {});
+  sharedConnectionConfigState = {
+    ...DEFAULT_CONNECTION_CONFIG,
+    ...sanitizeSharedConnectionConfig(loaded),
+  };
+  return sharedConnectionConfigState;
+}
+
+async function saveSharedConnectionConfig(nextConfig = {}) {
+  sharedConnectionConfigState = {
+    ...sharedConnectionConfigState,
+    ...sanitizeSharedConnectionConfig(nextConfig),
+  };
+  await writeJsonFileAtomic(CONNECTION_CONFIG_FILE, sharedConnectionConfigState);
+  return sharedConnectionConfigState;
+}
+
+function getSharedConnectionConfig() {
+  return {
+    ...sharedConnectionConfigState,
+  };
+}
+
+function handleSharedConnectionConfigGet(res) {
+  sendJson(res, 200, {
+    ok: true,
+    config: getSharedConnectionConfig(),
+  });
+}
+
+async function handleSharedConnectionConfigPost(req, res) {
+  try {
+    const rawBody = await readRequestBody(req);
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+    const config = await saveSharedConnectionConfig(payload);
+    sendJson(res, 200, { ok: true, config });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || "Failed to save shared connection config",
+    });
+  }
+}
+
 const { handlePersonaPresetsListRequest, handlePersonaPresetSaveRequest, handlePersonaPresetDeleteRequest } = createPersonaHandlers({
   personaPresetsDir: PERSONA_PRESETS_DIR,
   sendJson,
   readRequestBody,
 });
-
-const qqModule = createQqModule({
-  qqBotConfigFile: QQ_BOT_CONFIG_FILE,
-  qqBotSessionsFile: QQ_BOT_SESSIONS_FILE,
-  readJsonFile,
-  writeJsonFileAtomic,
-  readRequestBody,
-  sendJson,
-  requestJson,
-  targetOrigin: TARGET_ORIGIN,
-});
-
-({
-  loadQqBotConfig,
-  loadQqBotSessions,
-  sendQqMessage,
-  handleQqBotConfigGet,
-  handleQqBotConfigPost,
-  handleQqWebhook,
-  getQqBotConfig,
-} = qqModule);
 
 async function callLocalModelWithTools({ model, messages, tools }) {
   const targetUrl = new URL("/v1/chat/completions", TARGET_ORIGIN);
@@ -2098,7 +2014,7 @@ async function callLocalModelWithTools({ model, messages, tools }) {
       messages: workingMessages,
       temperature: 0.7,
       tools,
-      tool_choice: "auto",
+      tool_choice: Array.isArray(tools) && tools.length ? "auto" : "none",
       stream: false,
     });
 
@@ -2194,16 +2110,15 @@ let executeToolCall = createExecuteToolCall({
   root: ROOT,
   resolveWorkspacePath,
   getWeatherByLocation,
-  searchClawHubSkills,
-  installClawHubSkill,
-  runWorkspaceSkill,
-  listScheduledTasks,
-  validateScheduledTaskPayload,
-  findEquivalentScheduledTask,
-  sanitizeScheduledTask,
-  saveScheduledTasks,
-  ensureScheduledTask,
-  computeNextRunAt,
+  runShellCommand,
+  runCliCommand,
+  listScheduledTasks: (...args) => listScheduledTasks(...args),
+  validateScheduledTaskPayload: (...args) => validateScheduledTaskPayload(...args),
+  findEquivalentScheduledTask: (...args) => findEquivalentScheduledTask(...args),
+  sanitizeScheduledTask: (...args) => sanitizeScheduledTask(...args),
+  saveScheduledTasks: (...args) => saveScheduledTasks(...args),
+  ensureScheduledTask: (...args) => ensureScheduledTask(...args),
+  computeNextRunAt: (...args) => computeNextRunAt(...args),
   runScheduledTask: (...args) => runScheduledTask(...args),
   sendQqMessage: (...args) => sendQqMessage(...args),
   getScheduledTasks: () => scheduledTasks,
@@ -2212,6 +2127,130 @@ let executeToolCall = createExecuteToolCall({
   },
   runningScheduledTaskIds,
 });
+
+async function handleScheduledTaskIntentCreate(req, res) {
+  try {
+    const rawBody = await readRequestBody(req);
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+    const text = String(payload.text || "").trim();
+    const inferredArgs = inferScheduledTaskArgsFromText(text);
+    if (!inferredArgs) {
+      const error = new Error("Unable to infer a scheduled task from the provided text");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const task = await executeToolCall("create_scheduled_task", inferredArgs);
+    sendJson(res, 200, {
+      ok: true,
+      inferred: true,
+      args: inferredArgs,
+      task,
+      message: formatScheduledTaskCreationReply(task),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || "Failed to infer scheduled task",
+    });
+  }
+}
+
+async function executeScheduledTaskIntent(text = "", model = "") {
+  const intent = inferScheduledTaskIntentFromText(text, {
+    tasks: listScheduledTasks(),
+  });
+  if (!intent) {
+    const error = new Error("Unable to infer a scheduled task action from the provided text");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  let result = null;
+  switch (intent.action) {
+    case "create":
+      result = await executeToolCall("create_scheduled_task", intent.args);
+      break;
+    case "list":
+      result = await executeToolCall("list_scheduled_tasks", {});
+      break;
+    case "update":
+      result = await executeToolCall("update_scheduled_task", intent.args);
+      break;
+    case "run":
+      result = await executeToolCall("run_scheduled_task", intent.args);
+      break;
+    case "delete":
+      result = await executeToolCall("delete_scheduled_task", intent.args);
+      break;
+    case "disable":
+    case "enable":
+      result = await executeToolCall("update_scheduled_task", intent.args);
+      break;
+    default: {
+      const error = new Error(`Unsupported scheduled task intent: ${intent.action}`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  return {
+    intent,
+    result,
+    message: formatScheduledTaskActionReply(intent, result, { tasks: listScheduledTasks() }),
+  };
+}
+
+async function handleScheduledTaskIntentHandle(req, res) {
+  try {
+    const rawBody = await readRequestBody(req);
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+    const text = String(payload.text || "").trim();
+    const model = String(payload.model || "").trim();
+    const handled = await executeScheduledTaskIntent(text, model);
+    sendJson(res, 200, {
+      ok: true,
+      inferred: true,
+      intent: handled.intent,
+      result: handled.result,
+      message: handled.message,
+      task: handled.intent.action === "create" ? handled.result : undefined,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || "Failed to handle scheduled task intent",
+    });
+  }
+}
+
+const qqModule = createQqModule({
+  root: ROOT,
+  personaPresetsDir: PERSONA_PRESETS_DIR,
+  qqBotConfigFile: QQ_BOT_CONFIG_FILE,
+  qqBotSessionsFile: QQ_BOT_SESSIONS_FILE,
+  readJsonFile,
+  writeJsonFileAtomic,
+  readRequestBody,
+  sendJson,
+  requestJson,
+  targetOrigin: TARGET_ORIGIN,
+  executeToolCall: (...args) => executeToolCall(...args),
+  callLocalModelWithTools: (...args) => callLocalModelWithTools(...args),
+  getScheduledTasks: () => listScheduledTasks(),
+  getSharedConnectionConfig,
+  saveSharedConnectionConfig,
+  logDebug: appendServerDebugLog,
+});
+
+({
+  loadQqBotConfig,
+  loadQqBotSessions,
+  sendQqMessage,
+  handleQqBotConfigGet,
+  handleQqBotConfigPost,
+  handleQqWebhook,
+  pushScheduledTaskResultToQq,
+  getQqBotConfig,
+} = qqModule);
 
 function serveStatic(req, res, pathname) {
   if (!isPublicStaticPath(pathname)) {
@@ -2278,7 +2317,10 @@ function proxyRequest(req, res, pathname) {
 }
 
 // Canonical scheduled-task model invocation flow.
-const callLocalModelForTask = createTaskModelInvoker({ callLocalModelWithTools });
+const callLocalModelForTask = createTaskModelInvoker({
+  callLocalModelWithTools,
+  getTaskModel: () => String(getSharedConnectionConfig()?.model || "").trim(),
+});
 
 ({
   loadScheduledTasks,
@@ -2304,6 +2346,7 @@ const callLocalModelForTask = createTaskModelInvoker({ callLocalModelWithTools }
   readRequestBody,
   sendJson,
   callLocalModelForTask,
+  afterRunScheduledTask: (...args) => pushScheduledTaskResultToQq(...args),
   schedulerTickMs: SCHEDULER_TICK_MS,
   getScheduledTasks: () => scheduledTasks,
   setScheduledTasks: (nextTasks) => {
@@ -2360,42 +2403,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (pathname === "/skills/list" && req.method === "GET") {
-    handleSkillsListRequest(res, url.searchParams);
-    return;
-  }
-
-  if (pathname === "/skills/read" && req.method === "GET") {
-    handleSkillsReadRequest(res, url.searchParams);
-    return;
-  }
-
-    if (pathname === "/skills/install" && req.method === "POST") {
-      handleSkillsInstallRequest(req, res);
-      return;
-    }
-
-    if (pathname === "/skills/upload" && req.method === "POST") {
-      handleSkillsUploadRequest(req, res);
-      return;
-    }
-
-    if (pathname === "/skills/download" && req.method === "POST") {
-      handleSkillsDownloadRequest(req, res);
-      return;
-    }
-
-    if (pathname === "/skill-runner/jobs/next" && req.method === "GET") {
-      handleSkillRunnerNextJobRequest(req, res);
-      return;
-    }
-
-    const skillRunnerJobResultMatch = pathname.match(/^\/skill-runner\/jobs\/([^/]+)\/result$/);
-    if (skillRunnerJobResultMatch && req.method === "POST") {
-      handleSkillRunnerJobResultRequest(req, res, decodeURIComponent(skillRunnerJobResultMatch[1]));
-      return;
-    }
-
   if ((pathname === "/personas/list" || pathname === "/personas/list/") && req.method === "GET") {
       handlePersonaPresetsListRequest(res);
       return;
@@ -2421,6 +2428,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (pathname === "/connection-config" && req.method === "GET") {
+    handleSharedConnectionConfigGet(res);
+    return;
+  }
+
+  if (pathname === "/connection-config" && req.method === "POST") {
+    handleSharedConnectionConfigPost(req, res);
+    return;
+  }
+
   if (pathname === "/qq/webhook" && req.method === "POST") {
     handleQqWebhook(req, res);
     return;
@@ -2433,6 +2450,16 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/scheduler/tasks" && req.method === "POST") {
     handleScheduledTasksCreate(req, res);
+    return;
+  }
+
+  if (pathname === "/scheduler/intent/create" && req.method === "POST") {
+    handleScheduledTaskIntentCreate(req, res);
+    return;
+  }
+
+  if (pathname === "/scheduler/intent/handle" && req.method === "POST") {
+    handleScheduledTaskIntentHandle(req, res);
     return;
   }
 
@@ -2756,6 +2783,9 @@ async function legacyHandleQqBotConfigPostV1(req, res) {
 }
 
 async function handleSkillsUploadRequest(req, res) {
+  void req;
+  sendJson(res, 410, { error: "Skills have been removed from this app." });
+  return;
   try {
     const rawBody = await readRequestBody(req, { limitBytes: SKILL_ARCHIVE_REQUEST_LIMIT });
     const payload = rawBody ? JSON.parse(rawBody) : {};
@@ -2787,6 +2817,9 @@ async function handleSkillsUploadRequest(req, res) {
 }
 
 async function handleSkillsDownloadRequest(req, res) {
+  void req;
+  sendJson(res, 410, { error: "Skills have been removed from this app." });
+  return;
   try {
     const rawBody = await readRequestBody(req);
     const payload = rawBody ? JSON.parse(rawBody) : {};
@@ -2861,15 +2894,17 @@ async function initializeDataFiles() {
     legacyPath: LEGACY_QQ_BOT_SESSIONS_FILE,
     fallbackValue: {},
   });
+  await migrateLegacyDataFile({
+    currentPath: CONNECTION_CONFIG_FILE,
+    legacyPath: LEGACY_CONNECTION_CONFIG_FILE,
+    fallbackValue: {},
+  });
 }
 
 executeToolCall = qqModule.wrapToolExecutor(executeToolCall);
 
-const runScheduledTaskBeforeQqPush = runScheduledTask;
-runScheduledTask = qqModule.wrapScheduledTaskRunner(runScheduledTaskBeforeQqPush);
-
 initializeDataFiles()
-  .then(() => Promise.all([loadScheduledTasks(), loadQqBotConfig(), loadQqBotSessions()]))
+  .then(() => Promise.all([loadScheduledTasks(), loadSharedConnectionConfig(), loadQqBotConfig(), loadQqBotSessions()]))
   .then(() => {
     startScheduledTaskLoop();
     server.listen(PORT, HOST, () => {

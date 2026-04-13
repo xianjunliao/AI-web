@@ -6,6 +6,7 @@ function createScheduler(deps) {
     readRequestBody,
     sendJson,
     callLocalModelForTask,
+    afterRunScheduledTask,
     schedulerTickMs,
     getScheduledTasks,
     setScheduledTasks,
@@ -18,6 +19,21 @@ function createScheduler(deps) {
 
   function normalizeScheduledTaskMatchValue(value) {
     return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  function normalizeScheduledTaskQqTargetType(value) {
+    return String(value || "").trim().toLowerCase() === "group" ? "group" : "private";
+  }
+
+  function ensureScheduledTaskQqPushConfig(task = {}) {
+    if (!task.qqPushEnabled) {
+      return;
+    }
+    if (!String(task.qqTargetId || "").trim()) {
+      const error = new Error("QQ target ID is required when QQ push is enabled");
+      error.statusCode = 400;
+      throw error;
+    }
   }
 
   function expandCronSegment(segment, min, max) {
@@ -124,11 +140,13 @@ function createScheduler(deps) {
       id: String(task.id || `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
       name: String(task.name || "未命名任务").trim() || "未命名任务",
       prompt: String(task.prompt || "").trim(),
-      model: String(task.model || "").trim(),
       scheduleType,
       intervalMinutes: 0,
       cronExpression: String(task.cronExpression || "").trim(),
       enabled,
+      qqPushEnabled: Boolean(task.qqPushEnabled),
+      qqTargetType: normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"),
+      qqTargetId: String(task.qqTargetId || "").trim(),
       createdAt: Number(task.createdAt) || Date.now(),
       updatedAt: Number(task.updatedAt) || Date.now(),
       nextRunAt: Number(task.nextRunAt) || null,
@@ -171,15 +189,6 @@ function createScheduler(deps) {
       }
     }
 
-    if (!partial || Object.prototype.hasOwnProperty.call(payload, "model")) {
-      next.model = String(payload.model || "").trim();
-      if (!next.model) {
-        const error = new Error("Task model is required");
-        error.statusCode = 400;
-        throw error;
-      }
-    }
-
     next.scheduleType = "cron";
     if (
       !partial ||
@@ -199,12 +208,48 @@ function createScheduler(deps) {
       next.enabled = Boolean(payload.enabled);
     }
 
+    const hasQqPushEnabled = Object.prototype.hasOwnProperty.call(payload, "qqPushEnabled");
+    const hasQqTargetType = Object.prototype.hasOwnProperty.call(payload, "qqTargetType");
+    const hasQqTargetId = Object.prototype.hasOwnProperty.call(payload, "qqTargetId");
+    if (!partial || hasQqPushEnabled || hasQqTargetType || hasQqTargetId) {
+      if (!partial || hasQqPushEnabled) {
+        next.qqPushEnabled = Boolean(payload.qqPushEnabled);
+      }
+      if (!partial || hasQqTargetType) {
+        next.qqTargetType = normalizeScheduledTaskQqTargetType(payload.qqTargetType || "private");
+      }
+      if (!partial || hasQqTargetId) {
+        next.qqTargetId = String(payload.qqTargetId || "").trim();
+      }
+      if (!partial) {
+        ensureScheduledTaskQqPushConfig({
+          qqPushEnabled: next.qqPushEnabled,
+          qqTargetId: next.qqTargetId,
+        });
+      }
+    }
+
     return next;
   }
 
   async function loadScheduledTasks() {
     const records = await readJsonFile(scheduledTasksFile, []);
-    setScheduledTasks(Array.isArray(records) ? records.map((task) => sanitizeScheduledTask(task)) : []);
+    const normalizedTasks = Array.isArray(records) ? records.map((task) => sanitizeScheduledTask(task)) : [];
+    setScheduledTasks(normalizedTasks);
+
+    if (Array.isArray(records)) {
+      const shouldPersistNormalizedTasks = records.some((task, index) => {
+        const normalizedTask = normalizedTasks[index];
+        if (!task || typeof task !== "object" || !normalizedTask) {
+          return false;
+        }
+        return Object.prototype.hasOwnProperty.call(task, "model")
+          || JSON.stringify(task) !== JSON.stringify(normalizedTask);
+      });
+      if (shouldPersistNormalizedTasks) {
+        await saveScheduledTasks();
+      }
+    }
   }
 
   async function saveScheduledTasks() {
@@ -215,10 +260,11 @@ function createScheduler(deps) {
     return getScheduledTasks()
       .slice()
       .sort((left, right) => {
-        if (left.enabled !== right.enabled) {
-          return left.enabled ? -1 : 1;
+        const createdDiff = Number(right.createdAt || 0) - Number(left.createdAt || 0);
+        if (createdDiff) {
+          return createdDiff;
         }
-        return (left.nextRunAt || Infinity) - (right.nextRunAt || Infinity);
+        return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
       })
       .map((task) => ({
         ...task,
@@ -230,8 +276,12 @@ function createScheduler(deps) {
     const scheduleType = "cron";
     const normalizedName = normalizeTaskSignatureValue(taskLike.name);
     const normalizedPrompt = normalizeTaskSignatureValue(taskLike.prompt);
-    const normalizedModel = normalizeTaskSignatureValue(taskLike.model);
     const normalizedCron = normalizeTaskSignatureValue(taskLike.cronExpression);
+    const normalizedQqPushEnabled = Boolean(taskLike.qqPushEnabled);
+    const normalizedQqTargetType = normalizeTaskSignatureValue(
+      normalizeScheduledTaskQqTargetType(taskLike.qqTargetType || "private")
+    );
+    const normalizedQqTargetId = normalizeTaskSignatureValue(taskLike.qqTargetId);
 
     return (
       getScheduledTasks().find((task) => {
@@ -244,10 +294,22 @@ function createScheduler(deps) {
         if (normalizeTaskSignatureValue(task.prompt) !== normalizedPrompt) {
           return false;
         }
-        if (normalizeTaskSignatureValue(task.model) !== normalizedModel) {
+        if (normalizeTaskSignatureValue(task.cronExpression) !== normalizedCron) {
           return false;
         }
-        return normalizeTaskSignatureValue(task.cronExpression) === normalizedCron;
+        if (Boolean(task.qqPushEnabled) !== normalizedQqPushEnabled) {
+          return false;
+        }
+        if (!normalizedQqPushEnabled) {
+          return true;
+        }
+        if (
+          normalizeTaskSignatureValue(normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"))
+          !== normalizedQqTargetType
+        ) {
+          return false;
+        }
+        return normalizeTaskSignatureValue(task.qqTargetId) === normalizedQqTargetId;
       }) || null
     );
   }
@@ -317,6 +379,14 @@ function createScheduler(deps) {
       await saveScheduledTasks();
     }
 
+    if (typeof afterRunScheduledTask === "function") {
+      try {
+        await afterRunScheduledTask(task);
+      } catch {
+        // Ignore post-run side effects such as QQ notifications.
+      }
+    }
+
     return task;
   }
 
@@ -363,6 +433,7 @@ function createScheduler(deps) {
         ...input,
         enabled: payload.enabled !== false,
       });
+      ensureScheduledTaskQqPushConfig(task);
       nextTasks.unshift(task);
       setScheduledTasks(nextTasks);
       await saveScheduledTasks();
@@ -380,7 +451,13 @@ function createScheduler(deps) {
       const rawBody = await readRequestBody(req);
       const payload = rawBody ? JSON.parse(rawBody) : {};
       const patch = validateScheduledTaskPayload(payload, { partial: true });
-      Object.assign(task, patch);
+      const nextTask = sanitizeScheduledTask({
+        ...task,
+        ...patch,
+        updatedAt: Date.now(),
+      });
+      ensureScheduledTaskQqPushConfig(nextTask);
+      Object.assign(task, nextTask);
       task.updatedAt = Date.now();
       task.nextRunAt = task.enabled ? computeNextRunAt(task, Date.now()) : null;
       await saveScheduledTasks();
