@@ -3003,6 +3003,132 @@ button:disabled {
   color: #203148;
 }
 
+.message.scheduled-task-chat .message-bubble {
+  background:
+    radial-gradient(circle at top right, rgba(120, 182, 255, 0.14), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(240, 246, 255, 0.94));
+  border-color: rgba(79, 140, 255, 0.18);
+  box-shadow: 0 14px 24px rgba(99, 125, 165, 0.12), 0 0 0 1px rgba(79, 140, 255, 0.04) inset;
+}
+
+.scheduled-task-chat-card {
+  display: grid;
+  gap: 10px;
+}
+
+.scheduled-task-chat-card.is-danger .scheduled-task-chat-title {
+  color: #874052;
+}
+
+.scheduled-task-chat-card.is-neutral .scheduled-task-chat-title {
+  color: #425975;
+}
+
+.scheduled-task-chat-title {
+  font-size: 14px;
+  line-height: 1.25;
+  font-weight: 700;
+  color: #1f3453;
+}
+
+.scheduled-task-chat-subtitle {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4f637f;
+}
+
+.scheduled-task-chat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scheduled-task-chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(104, 136, 173, 0.12);
+  background: rgba(248, 251, 255, 0.95);
+  color: #375173;
+}
+
+.scheduled-task-chat-chip.is-success {
+  border-color: rgba(77, 167, 123, 0.16);
+  background: rgba(241, 252, 246, 0.96);
+  color: #2f6c49;
+}
+
+.scheduled-task-chat-chip.is-danger {
+  border-color: rgba(205, 98, 110, 0.18);
+  background: rgba(255, 244, 246, 0.96);
+  color: #944655;
+}
+
+.scheduled-task-chat-chip-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(73, 96, 128, 0.76);
+}
+
+.scheduled-task-chat-chip-value {
+  font-size: 12px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+.scheduled-task-chat-list {
+  display: grid;
+  gap: 8px;
+}
+
+.scheduled-task-chat-item {
+  padding: 9px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(104, 136, 173, 0.12);
+  background: rgba(250, 252, 255, 0.94);
+}
+
+.scheduled-task-chat-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scheduled-task-chat-item-index {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(78, 102, 135, 0.78);
+}
+
+.scheduled-task-chat-item-title {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #203148;
+}
+
+.scheduled-task-chat-item-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #5d6f88;
+}
+
+.scheduled-task-chat-footer {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #617493;
+}
+
 .message.user .message-content,
 .message.error .message-content,
 .message.success .message-content {

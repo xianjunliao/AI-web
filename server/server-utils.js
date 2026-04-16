@@ -95,6 +95,14 @@ async function readJsonFile(filePath, fallbackValue) {
   }
 }
 
+function isRetryableAtomicRenameError(error) {
+  return ["EACCES", "EBUSY", "ENOTEMPTY", "EPERM"].includes(error?.code);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function writeJsonFileAtomic(filePath, value) {
   const dirPath = path.dirname(filePath);
   const tempPath = path.join(
@@ -103,8 +111,28 @@ async function writeJsonFileAtomic(filePath, value) {
   );
 
   await fs.promises.mkdir(dirPath, { recursive: true });
-  await fs.promises.writeFile(tempPath, JSON.stringify(value, null, 2), "utf8");
-  await fs.promises.rename(tempPath, filePath);
+  try {
+    await fs.promises.writeFile(tempPath, JSON.stringify(value, null, 2), "utf8");
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await fs.promises.rename(tempPath, filePath);
+        break;
+      } catch (error) {
+        if (!isRetryableAtomicRenameError(error) || attempt >= 5) {
+          throw error;
+        }
+        await wait(25 * (attempt + 1));
+      }
+    }
+  } finally {
+    try {
+      await fs.promises.unlink(tempPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
 }
 
 function createStaticPathGuard(rootPath, options = {}) {

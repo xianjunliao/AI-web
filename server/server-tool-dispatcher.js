@@ -6,6 +6,7 @@ function createExecuteToolCall(deps) {
     root,
     resolveWorkspacePath,
     getWeatherByLocation,
+    searchWeb,
     runShellCommand,
     runCliCommand,
     listScheduledTasks,
@@ -81,6 +82,9 @@ function createExecuteToolCall(deps) {
       case "get_weather": {
         return await getWeatherByLocation(args.location);
       }
+      case "web_search": {
+        return await searchWeb(args.query, args.limit);
+      }
       case "run_shell_command": {
         return await runShellCommand(args);
       }
@@ -88,14 +92,14 @@ function createExecuteToolCall(deps) {
         return await runCliCommand(args);
       }
       case "list_scheduled_tasks": {
-        return { tasks: listScheduledTasks() };
+        return { tasks: listScheduledTasks(args) };
       }
       case "create_scheduled_task": {
         const input = validateScheduledTaskPayload(args);
         const existingTask = findEquivalentScheduledTask({
           ...input,
           enabled: args.enabled !== false,
-        });
+        }, args);
         if (existingTask) {
           return {
             ...existingTask,
@@ -114,7 +118,7 @@ function createExecuteToolCall(deps) {
         return task;
       }
       case "update_scheduled_task": {
-        const task = ensureScheduledTask(args.id);
+        const task = ensureScheduledTask(args.id, args);
         const patch = validateScheduledTaskPayload(args, { partial: true });
         const nextTask = sanitizeScheduledTask({
           ...task,
@@ -129,14 +133,14 @@ function createExecuteToolCall(deps) {
         return task;
       }
       case "delete_scheduled_task": {
-        ensureScheduledTask(args.id);
-        setScheduledTasks(getScheduledTasks().filter((task) => task.id !== args.id));
-        runningScheduledTaskIds.delete(args.id);
+        const task = ensureScheduledTask(args.id, args);
+        setScheduledTasks(getScheduledTasks().filter((item) => item.id !== task.id));
+        runningScheduledTaskIds.delete(task.id);
         await saveScheduledTasks();
-        return { deleted: true, id: args.id };
+        return { deleted: true, id: task.id, name: task.name };
       }
       case "run_scheduled_task": {
-        return await runScheduledTask(args.id);
+        return await runScheduledTask(args.id, args);
       }
       case "send_qq_message": {
         return await sendQqMessage(args);

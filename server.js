@@ -17,6 +17,10 @@ const { createQqModule } = require("./server/server-qq");
 const { createTaskModelInvoker } = require("./server/server-task-model");
 const { createPersonaHandlers } = require("./server/server-personas");
 const { createScheduler } = require("./server/server-scheduler");
+const { createStartupCleanup } = require("./server/server-cleanup");
+const { createDataInitializer, createServerBootstrap } = require("./server/server-bootstrap");
+const { createSharedConnectionConfigModule } = require("./server/server-connection-config");
+const { createStaticServer, createApiProxy } = require("./server/server-http");
 const {
   inferScheduledTaskArgsFromText,
   inferScheduledTaskIntentFromText,
@@ -43,10 +47,19 @@ const CONNECTION_CONFIG_FILE = path.join(DATA_DIR, "connection-config.json");
 const PERSONA_PRESETS_DIR = path.join(DATA_DIR, "personas");
 const SCHEDULER_TICK_MS = 30 * 1000;
 const PUBLIC_STATIC_PATHS = new Set(["/"]);
+const DEFAULT_QQ_PUSH_TARGET_TYPE = "private";
+const DEFAULT_QQ_PUSH_TARGET_ID = "1036986718";
 const isPublicStaticPath = createStaticPathGuard(ROOT, {
   exactPaths: PUBLIC_STATIC_PATHS,
   publicDir: "public",
 });
+let loadSharedConnectionConfig;
+let saveSharedConnectionConfig;
+let getSharedConnectionConfig;
+let handleSharedConnectionConfigGet;
+let handleSharedConnectionConfigPost;
+let serveStatic;
+let proxyRequest;
 
 function appendServerDebugLog(message) {
   try {
@@ -68,6 +81,39 @@ function appendCommandAuditLog(record = {}) {
     );
   } catch {}
 }
+
+const runStartupCleanup = createStartupCleanup({
+  dataDir: DATA_DIR,
+  logsDir: LOGS_DIR,
+  appendServerDebugLog,
+});
+const initializeDataFiles = createDataInitializer({
+  dataDir: DATA_DIR,
+  personaPresetsDir: PERSONA_PRESETS_DIR,
+  legacyPersonaPresetsDir: LEGACY_PERSONA_PRESETS_DIR,
+  scheduledTasksFile: SCHEDULED_TASKS_FILE,
+  legacyScheduledTasksFile: LEGACY_SCHEDULED_TASKS_FILE,
+  qqBotConfigFile: QQ_BOT_CONFIG_FILE,
+  legacyQqBotConfigFile: LEGACY_QQ_BOT_CONFIG_FILE,
+  qqBotSessionsFile: QQ_BOT_SESSIONS_FILE,
+  legacyQqBotSessionsFile: LEGACY_QQ_BOT_SESSIONS_FILE,
+  connectionConfigFile: CONNECTION_CONFIG_FILE,
+  legacyConnectionConfigFile: LEGACY_CONNECTION_CONFIG_FILE,
+  migrateLegacyDataFile,
+});
+({
+  loadSharedConnectionConfig,
+  saveSharedConnectionConfig,
+  getSharedConnectionConfig,
+  handleSharedConnectionConfigGet,
+  handleSharedConnectionConfigPost,
+} = createSharedConnectionConfigModule({
+  connectionConfigFile: CONNECTION_CONFIG_FILE,
+  readJsonFile,
+  writeJsonFileAtomic,
+  readRequestBody,
+  sendJson,
+}));
 
 function createRemovedSkillsFeatureError() {
   const error = new Error("Skills have been removed from this app.");
@@ -103,8 +149,8 @@ let legacyQqBotConfigState = {
   persona: "",
   bridgeUrl: "",
   accessToken: "",
-  defaultTargetType: "private",
-  defaultTargetId: "",
+  defaultTargetType: DEFAULT_QQ_PUSH_TARGET_TYPE,
+  defaultTargetId: DEFAULT_QQ_PUSH_TARGET_ID,
   model: "",
   systemPrompt: "",
   assistantName: "繁星",
@@ -118,10 +164,6 @@ let handleQqBotConfigPost;
 let handleQqWebhook;
 let pushScheduledTaskResultToQq;
 let getQqBotConfig;
-const DEFAULT_CONNECTION_CONFIG = {
-  model: "",
-};
-let sharedConnectionConfigState = { ...DEFAULT_CONNECTION_CONFIG };
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -135,6 +177,28 @@ const MIME_TYPES = {
   ".jpeg": "image/jpeg",
   ".ico": "image/x-icon",
 };
+
+serveStatic = createStaticServer({
+  publicDir: PUBLIC_DIR,
+  mimeTypes: MIME_TYPES,
+  isPublicStaticPath,
+  sendJson,
+});
+proxyRequest = createApiProxy({
+  targetOrigin: TARGET_ORIGIN,
+  sendJson,
+});
+
+function clampTextForModel(value, maxLength) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "";
+  }
+  if (!Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
 
 async function legacyLoadQqBotConfigV1() {
   legacyQqBotConfigState = {
@@ -1577,6 +1641,55 @@ async function getWeatherByLocation(location) {
   };
 }
 
+async function searchWeb(query, limit = 3) {
+  const normalizedQuery = clampTextForModel(query, 120);
+  if (!normalizedQuery) {
+    const error = new Error("Search query is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const apiKey = String(process.env.TAVILY_API_KEY || process.env.WEB_SEARCH_API_KEY || "").trim();
+  if (!apiKey) {
+    const error = new Error("Web search is not configured. Set TAVILY_API_KEY before starting the server.");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const normalizedLimit = Math.min(Math.max(Number(limit) || 3, 1), 5);
+  const apiUrl = new URL(process.env.TAVILY_SEARCH_API_URL || "https://api.tavily.com/search");
+  const body = JSON.stringify({
+    api_key: apiKey,
+    query: normalizedQuery,
+    max_results: normalizedLimit,
+    topic: "general",
+    search_depth: "basic",
+    include_answer: false,
+    include_images: false,
+    include_raw_content: false,
+  });
+
+  const data = await requestJson(apiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": Buffer.byteLength(body, "utf8"),
+    },
+    body,
+  });
+
+  const results = Array.isArray(data?.results) ? data.results : [];
+  return {
+    query: normalizedQuery,
+    results: results.slice(0, normalizedLimit).map((item = {}) => ({
+      title: clampTextForModel(item.title, 120),
+      url: clampTextForModel(item.url, 300),
+      snippet: clampTextForModel(item.content || item.snippet, 220),
+      source: clampTextForModel(item.source || item.url, 120),
+    })),
+  };
+}
+
 function expandCronSegment(segment, min, max) {
   const values = new Set();
   const trimmed = String(segment || "").trim();
@@ -1947,74 +2060,101 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
-function sanitizeSharedConnectionConfig(input = {}) {
-  return {
-    model: String(input?.model || "").trim(),
-  };
-}
-
-async function loadSharedConnectionConfig() {
-  const loaded = await readJsonFile(CONNECTION_CONFIG_FILE, {});
-  sharedConnectionConfigState = {
-    ...DEFAULT_CONNECTION_CONFIG,
-    ...sanitizeSharedConnectionConfig(loaded),
-  };
-  return sharedConnectionConfigState;
-}
-
-async function saveSharedConnectionConfig(nextConfig = {}) {
-  sharedConnectionConfigState = {
-    ...sharedConnectionConfigState,
-    ...sanitizeSharedConnectionConfig(nextConfig),
-  };
-  await writeJsonFileAtomic(CONNECTION_CONFIG_FILE, sharedConnectionConfigState);
-  return sharedConnectionConfigState;
-}
-
-function getSharedConnectionConfig() {
-  return {
-    ...sharedConnectionConfigState,
-  };
-}
-
-function handleSharedConnectionConfigGet(res) {
-  sendJson(res, 200, {
-    ok: true,
-    config: getSharedConnectionConfig(),
-  });
-}
-
-async function handleSharedConnectionConfigPost(req, res) {
-  try {
-    const rawBody = await readRequestBody(req);
-    const payload = rawBody ? JSON.parse(rawBody) : {};
-    const config = await saveSharedConnectionConfig(payload);
-    sendJson(res, 200, { ok: true, config });
-  } catch (error) {
-    sendJson(res, error.statusCode || 500, {
-      error: error.message || "Failed to save shared connection config",
-    });
-  }
-}
-
 const { handlePersonaPresetsListRequest, handlePersonaPresetSaveRequest, handlePersonaPresetDeleteRequest } = createPersonaHandlers({
   personaPresetsDir: PERSONA_PRESETS_DIR,
   sendJson,
   readRequestBody,
 });
 
-async function callLocalModelWithTools({ model, messages, tools }) {
+function serializeToolResultForModel(toolName, result) {
+  if (toolName === "web_search") {
+    const query = clampTextForModel(result?.query, 120);
+    const results = Array.isArray(result?.results) ? result.results.slice(0, 3) : [];
+    const lines = [];
+    if (query) {
+      lines.push(`Search query: ${query}`);
+    }
+    if (!results.length) {
+      lines.push("No search results returned.");
+      return lines.join("\n");
+    }
+    results.forEach((item, index) => {
+      lines.push(`Result ${index + 1}`);
+      lines.push(`Title: ${clampTextForModel(item?.title, 120) || "(untitled)"}`);
+      if (item?.url) {
+        lines.push(`URL: ${clampTextForModel(item.url, 300)}`);
+      }
+      if (item?.snippet) {
+        lines.push(`Snippet: ${clampTextForModel(item.snippet, 220)}`);
+      }
+    });
+    return lines.join("\n");
+  }
+
+  if (toolName === "get_weather") {
+    const location = result?.location || {};
+    const current = result?.current || {};
+    return [
+      `Location: ${clampTextForModel(
+        [location.country, location.admin1, location.name].filter(Boolean).join(" "),
+        120
+      ) || clampTextForModel(location.query, 120) || "unknown"}`,
+      `Temperature: ${current.temperature_2m ?? "unknown"}`,
+      `Humidity: ${current.relative_humidity_2m ?? "unknown"}`,
+      `Precipitation: ${current.precipitation ?? "unknown"}`,
+      `Wind: ${current.wind_speed_10m ?? "unknown"}`,
+      `Weather code: ${current.weather_code ?? "unknown"}`,
+    ].join("\n");
+  }
+
+  return clampTextForModel(JSON.stringify(result, null, 2), 2400);
+}
+
+async function callLocalModelWithTools({
+  model,
+  messages,
+  tools,
+  requiredToolName = "",
+  singleUseToolNames = [],
+  temperature = 0.7,
+  maxRounds = 6,
+}) {
   const targetUrl = new URL("/v1/chat/completions", TARGET_ORIGIN);
   let workingMessages = [...messages];
   let finalText = "";
+  const normalizedRequiredToolName = String(requiredToolName || "").trim();
+  const normalizedSingleUseToolNames = new Set(
+    Array.isArray(singleUseToolNames)
+      ? singleUseToolNames.map((name) => String(name || "").trim()).filter(Boolean)
+      : []
+  );
+  const availableTools = Array.isArray(tools) ? tools : [];
+  const hasRequiredTool = normalizedRequiredToolName
+    && availableTools.some((tool) => tool?.function?.name === normalizedRequiredToolName);
+  let requiredToolUsed = false;
+  let requiredToolReminderSent = false;
+  const usedSingleUseToolNames = new Set();
 
-  for (let i = 0; i < 6; i += 1) {
+  const normalizedMaxRounds = Math.min(Math.max(Number(maxRounds) || 6, 1), 6);
+  const normalizedTemperature = Number.isFinite(Number(temperature)) ? Number(temperature) : 0.7;
+
+  for (let i = 0; i < normalizedMaxRounds; i += 1) {
+    const requestTools = (hasRequiredTool && !requiredToolUsed
+      ? availableTools.filter((tool) => tool?.function?.name === normalizedRequiredToolName)
+      : availableTools
+    ).filter((tool) => {
+      const toolName = String(tool?.function?.name || "").trim();
+      return toolName && !usedSingleUseToolNames.has(toolName);
+    });
+    const toolChoice = Array.isArray(requestTools) && requestTools.length
+      ? (hasRequiredTool && !requiredToolUsed ? "required" : "auto")
+      : "none";
     const requestBody = JSON.stringify({
       model,
       messages: workingMessages,
-      temperature: 0.7,
-      tools,
-      tool_choice: Array.isArray(tools) && tools.length ? "auto" : "none",
+      temperature: normalizedTemperature,
+      tools: requestTools,
+      tool_choice: toolChoice,
       stream: false,
     });
 
@@ -2050,21 +2190,39 @@ async function callLocalModelWithTools({ model, messages, tools }) {
     });
 
     if (!Array.isArray(message.tool_calls) || !message.tool_calls.length) {
+      if (hasRequiredTool && !requiredToolUsed && !requiredToolReminderSent) {
+        requiredToolReminderSent = true;
+        workingMessages.push({
+          role: "system",
+          content: `You must call ${normalizedRequiredToolName} before giving the final answer for this task.`,
+        });
+        finalText = "";
+        continue;
+      }
       break;
     }
 
     for (const toolCall of message.tool_calls) {
       const toolName = toolCall?.function?.name || "";
+      if (hasRequiredTool && toolName === normalizedRequiredToolName) {
+        requiredToolUsed = true;
+      }
       const args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
       const result = await executeToolCall(toolName, args);
+      if (normalizedSingleUseToolNames.has(toolName)) {
+        usedSingleUseToolNames.add(toolName);
+      }
       workingMessages.push({
         role: "tool",
         tool_call_id: toolCall.id || `${toolName}-${Date.now()}`,
-        content: JSON.stringify(result, null, 2),
+        content: serializeToolResultForModel(toolName, result),
       });
     }
   }
 
+  if (hasRequiredTool && !requiredToolUsed) {
+    throw new Error(`Model did not call required tool: ${normalizedRequiredToolName}`);
+  }
   if (!finalText) {
     throw new Error("Model completed without final text");
   }
@@ -2110,6 +2268,7 @@ let executeToolCall = createExecuteToolCall({
   root: ROOT,
   resolveWorkspacePath,
   getWeatherByLocation,
+  searchWeb,
   runShellCommand,
   runCliCommand,
   listScheduledTasks: (...args) => listScheduledTasks(...args),
@@ -2252,74 +2411,11 @@ const qqModule = createQqModule({
   getQqBotConfig,
 } = qqModule);
 
-function serveStatic(req, res, pathname) {
-  if (!isPublicStaticPath(pathname)) {
-    sendJson(res, 404, { error: "Not found" });
-    return;
-  }
-
-  const safePath = pathname === "/" ? "/index.html" : pathname;
-  const relativePublicPath = safePath.replace(/^\/+/, "");
-  const resolvedPath = path.normalize(path.join(PUBLIC_DIR, relativePublicPath));
-
-  if (!resolvedPath.startsWith(PUBLIC_DIR)) {
-    sendJson(res, 403, { error: "Forbidden" });
-    return;
-  }
-
-  fs.readFile(resolvedPath, (error, data) => {
-    if (error) {
-      if (error.code === "ENOENT") {
-        sendJson(res, 404, { error: "Not found" });
-        return;
-      }
-      sendJson(res, 500, { error: "Failed to read file" });
-      return;
-    }
-
-    const ext = path.extname(resolvedPath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || "application/octet-stream";
-    res.writeHead(200, { "Content-Type": contentType });
-    res.end(data);
-  });
-}
-
-function proxyRequest(req, res, pathname) {
-  const targetUrl = new URL(pathname.replace(/^\/api/, "") + (req.url.includes("?") ? `?${req.url.split("?")[1]}` : ""), TARGET_ORIGIN);
-
-  const proxyReq = http.request(
-    targetUrl,
-    {
-      method: req.method,
-      headers: {
-        ...req.headers,
-        host: targetUrl.host,
-      },
-    },
-    (proxyRes) => {
-      const headers = { ...proxyRes.headers };
-      delete headers["access-control-allow-origin"];
-      delete headers["access-control-allow-credentials"];
-
-      res.writeHead(proxyRes.statusCode || 500, headers);
-      proxyRes.pipe(res);
-    }
-  );
-
-  proxyReq.on("error", (error) => {
-    sendJson(res, 502, {
-      error: "Proxy request failed",
-      details: error.message,
-    });
-  });
-
-  req.pipe(proxyReq);
-}
-
 // Canonical scheduled-task model invocation flow.
 const callLocalModelForTask = createTaskModelInvoker({
   callLocalModelWithTools,
   getTaskModel: () => String(getSharedConnectionConfig()?.model || "").trim(),
+  searchWeb,
 });
 
 ({
@@ -2444,7 +2540,10 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === "/scheduler/tasks" && req.method === "GET") {
-    handleScheduledTasksList(res);
+    handleScheduledTasksList(res, {
+      creatorType: url.searchParams.get("creatorType") || "",
+      creatorId: url.searchParams.get("creatorId") || "",
+    });
     return;
   }
 
@@ -2770,8 +2869,8 @@ async function legacyHandleQqBotConfigPostV1(req, res) {
       persona: String(payload.persona || "").trim(),
       bridgeUrl: String(payload.bridgeUrl || "").trim(),
       accessToken: String(payload.accessToken || "").trim(),
-      defaultTargetType: String(payload.defaultTargetType || "private").trim().toLowerCase() === "group" ? "group" : "private",
-      defaultTargetId: String(payload.defaultTargetId || "").trim(),
+      defaultTargetType: String(payload.defaultTargetType || DEFAULT_QQ_PUSH_TARGET_TYPE).trim().toLowerCase() === "group" ? "group" : "private",
+      defaultTargetId: String(payload.defaultTargetId || DEFAULT_QQ_PUSH_TARGET_ID).trim(),
       model: String(payload.model || "").trim(),
       systemPrompt: String(payload.systemPrompt || "").trim(),
       assistantName: String(payload.assistantName || "繁星").trim() || "繁星",
@@ -2865,54 +2964,23 @@ async function handleSkillsDownloadRequest(req, res) {
   }
 }
 
-async function initializeDataFiles() {
-  await fs.promises.mkdir(DATA_DIR, { recursive: true });
-  try {
-    await fs.promises.access(PERSONA_PRESETS_DIR, fs.constants.F_OK);
-  } catch {
-    try {
-      await fs.promises.rename(LEGACY_PERSONA_PRESETS_DIR, PERSONA_PRESETS_DIR);
-    } catch (error) {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-      await fs.promises.mkdir(PERSONA_PRESETS_DIR, { recursive: true });
-    }
-  }
-  await migrateLegacyDataFile({
-    currentPath: SCHEDULED_TASKS_FILE,
-    legacyPath: LEGACY_SCHEDULED_TASKS_FILE,
-    fallbackValue: [],
-  });
-  await migrateLegacyDataFile({
-    currentPath: QQ_BOT_CONFIG_FILE,
-    legacyPath: LEGACY_QQ_BOT_CONFIG_FILE,
-    fallbackValue: {},
-  });
-  await migrateLegacyDataFile({
-    currentPath: QQ_BOT_SESSIONS_FILE,
-    legacyPath: LEGACY_QQ_BOT_SESSIONS_FILE,
-    fallbackValue: {},
-  });
-  await migrateLegacyDataFile({
-    currentPath: CONNECTION_CONFIG_FILE,
-    legacyPath: LEGACY_CONNECTION_CONFIG_FILE,
-    fallbackValue: {},
-  });
-}
-
 executeToolCall = qqModule.wrapToolExecutor(executeToolCall);
 
-initializeDataFiles()
-  .then(() => Promise.all([loadScheduledTasks(), loadSharedConnectionConfig(), loadQqBotConfig(), loadQqBotSessions()]))
-  .then(() => {
-    startScheduledTaskLoop();
-    server.listen(PORT, HOST, () => {
-      console.log(`Local AI workbench running at http://${HOST}:${PORT}`);
-      console.log(`Proxy target: ${TARGET_ORIGIN}`);
-      console.log(`QQ bot webhook: http://${HOST}:${PORT}/qq/webhook`);
-    });
-  })
+const bootstrapServer = createServerBootstrap({
+  initializeDataFiles,
+  runStartupCleanup,
+  loadScheduledTasks,
+  loadSharedConnectionConfig,
+  loadQqBotConfig,
+  loadQqBotSessions,
+  startScheduledTaskLoop,
+  server,
+  port: PORT,
+  host: HOST,
+  targetOrigin: TARGET_ORIGIN,
+});
+
+bootstrapServer()
   .catch((error) => {
     console.error("Failed to initialize scheduler:", error);
     process.exit(1);

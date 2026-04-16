@@ -6,6 +6,7 @@ const {
   formatScheduledTaskCreationReply,
   formatScheduledTaskActionReply,
 } = require("./server-schedule-intent");
+const { maybeRunDirectWebSearch } = require("./server-live-web-search");
 
 function createQqModule(deps) {
   const {
@@ -26,9 +27,14 @@ function createQqModule(deps) {
     saveSharedConnectionConfig,
     logDebug,
   } = deps;
+  const DEFAULT_QQ_PUSH_TARGET_TYPE = "private";
+  const DEFAULT_QQ_PUSH_TARGET_ID = "1036986718";
+  // The public QQ settings UI no longer exposes an enable toggle, so keep the
+  // webhook listener enabled by default and normalize persisted records to on.
+  const QQ_BOT_PUBLIC_ENABLE_LOCKED = true;
 
   const DEFAULT_QQ_BOT_CONFIG = {
-    enabled: false,
+    enabled: QQ_BOT_PUBLIC_ENABLE_LOCKED,
     groupMentionOnly: true,
     taskPushEnabled: false,
     triggerPrefix: "",
@@ -38,8 +44,8 @@ function createQqModule(deps) {
     personaPreset: "none",
     bridgeUrl: "",
     accessToken: "",
-    defaultTargetType: "private",
-    defaultTargetId: "",
+    defaultTargetType: DEFAULT_QQ_PUSH_TARGET_TYPE,
+    defaultTargetId: DEFAULT_QQ_PUSH_TARGET_ID,
     model: "",
     superPermissionEnabled: false,
     systemPrompt: "",
@@ -55,7 +61,89 @@ function createQqModule(deps) {
   let qqBotConfig = { ...DEFAULT_QQ_BOT_CONFIG };
   let qqBotSessions = {};
   const BEIJING_TIME_ZONE = "Asia/Shanghai";
+  const SCHEDULED_TASK_ADMIN_ID = "1036986718";
   let currentQqToolContext = null;
+
+  function isScheduledTaskAdminActor(actorUserId = "") {
+    return String(actorUserId || "").trim() === SCHEDULED_TASK_ADMIN_ID;
+  }
+
+  function canUseGlobalScheduledTaskScope({
+    targetType = "private",
+    targetId = "",
+    actorUserId = "",
+  } = {}) {
+    if (!isScheduledTaskAdminActor(actorUserId)) {
+      return false;
+    }
+    const normalizedTargetType = normalizeTargetType(targetType || "private");
+    const normalizedTargetId = String(targetId || "").trim();
+    if (normalizedTargetType === "group" && normalizedTargetId) {
+      return false;
+    }
+    return true;
+  }
+
+  function getCurrentQqScheduledTaskScope() {
+    const targetId = String(currentQqToolContext?.targetId || "").trim();
+    const targetType = normalizeTargetType(currentQqToolContext?.targetType || "private");
+    const actorUserId = String(currentQqToolContext?.actorUserId || "").trim();
+    if (canUseGlobalScheduledTaskScope({ targetType, targetId, actorUserId })) {
+      return { actorUserId };
+    }
+    if (!targetId) {
+      return { actorUserId };
+    }
+    return {
+      actorUserId,
+      creatorType: targetType,
+      creatorId: targetId,
+      scopeTargetType: targetType,
+      scopeTargetId: targetId,
+    };
+  }
+
+  function listVisibleScheduledTasksForQq({
+    targetType = "private",
+    targetId = "",
+    actorUserId = "",
+  } = {}) {
+    const tasks = typeof getScheduledTasks === "function" ? getScheduledTasks() : [];
+    if (!Array.isArray(tasks) || !tasks.length) {
+      return [];
+    }
+    const normalizedTargetId = String(targetId || "").trim();
+    const normalizedTargetType = normalizeTargetType(targetType || "private");
+    if (canUseGlobalScheduledTaskScope({
+      targetType: normalizedTargetType,
+      targetId: normalizedTargetId,
+      actorUserId,
+    })) {
+      return tasks;
+    }
+    if (!normalizedTargetId) {
+      return tasks;
+    }
+    return tasks.filter((task) => {
+      const creatorType = normalizeTargetType(task?.creatorType || task?.qqTargetType || "private");
+      const creatorId = String(task?.creatorId || task?.qqTargetId || "").trim();
+      return creatorType === normalizedTargetType && creatorId === normalizedTargetId;
+    });
+  }
+
+  function getQqScheduledTaskReplyOptions({
+    targetType = "private",
+    targetId = "",
+    actorUserId = "",
+  } = {}) {
+    if (!canUseGlobalScheduledTaskScope({ targetType, targetId, actorUserId })) {
+      return {};
+    }
+    return {
+      highlightCreatorType: "private",
+      highlightCreatorId: String(actorUserId || "").trim(),
+    };
+  }
 
   function debug(message) {
     try {
@@ -106,6 +194,21 @@ function createQqModule(deps) {
             location: { type: "string" },
           },
           required: ["location"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description: "Search the live web for current information and return titles, links, and snippets.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "number" },
+          },
+          required: ["query"],
         },
       },
     },
@@ -427,7 +530,7 @@ function createQqModule(deps) {
       name: String(profile.name || `${targetType === "group" ? "Group" : "QQ"} ${targetId}`).trim(),
       targetType,
       targetId,
-      enabled: Boolean(profile.enabled),
+      enabled: QQ_BOT_PUBLIC_ENABLE_LOCKED,
       groupMentionOnly: profile.groupMentionOnly !== false,
       taskPushEnabled: Boolean(profile.taskPushEnabled),
       triggerPrefix: String(profile.triggerPrefix || "").trim(),
@@ -463,7 +566,7 @@ function createQqModule(deps) {
 
   function sanitizeQqBotConfig(input = {}) {
     return {
-      enabled: Boolean(input.enabled),
+      enabled: QQ_BOT_PUBLIC_ENABLE_LOCKED,
       groupMentionOnly: input.groupMentionOnly !== false,
       taskPushEnabled: Boolean(input.taskPushEnabled),
       triggerPrefix: String(input.triggerPrefix || "").trim(),
@@ -473,8 +576,8 @@ function createQqModule(deps) {
       personaPreset: String(input.personaPreset || "none").trim() || "none",
       bridgeUrl: String(input.bridgeUrl || "").trim(),
       accessToken: String(input.accessToken || "").trim(),
-      defaultTargetType: normalizeTargetType(input.defaultTargetType || "private"),
-      defaultTargetId: String(input.defaultTargetId || "").trim(),
+      defaultTargetType: normalizeTargetType(input.defaultTargetType || DEFAULT_QQ_PUSH_TARGET_TYPE),
+      defaultTargetId: String(input.defaultTargetId || DEFAULT_QQ_PUSH_TARGET_ID).trim(),
       model: String(input.model || "").trim(),
       superPermissionEnabled: Boolean(input.superPermissionEnabled),
       systemPrompt: String(input.systemPrompt || "").trim(),
@@ -587,6 +690,7 @@ function createQqModule(deps) {
       allowedNames.add("list_dir");
       allowedNames.add("read_file");
       allowedNames.add("get_weather");
+      allowedNames.add("web_search");
     }
     if (config.toolWriteEnabled) {
       allowedNames.add("write_file");
@@ -619,6 +723,16 @@ function createQqModule(deps) {
     throw error;
   }
 
+  function hasBuiltinQqSuperPermission({ targetType = "private", targetId = "", actorUserId = "" } = {}) {
+    const normalizedTargetType = normalizeTargetType(targetType || "private");
+    const normalizedTargetId = String(targetId || "").trim();
+    const normalizedActorUserId = String(actorUserId || "").trim();
+    if (normalizedActorUserId && normalizedActorUserId === SCHEDULED_TASK_ADMIN_ID) {
+      return true;
+    }
+    return normalizedTargetType === "private" && normalizedTargetId === SCHEDULED_TASK_ADMIN_ID;
+  }
+
   function hasQqSuperPermission({ targetType = "private", targetId = "", actorUserId = "" } = {}) {
     const normalizedTargetId = String(targetId || "").trim();
     const normalizedActorUserId = String(actorUserId || "").trim();
@@ -626,6 +740,9 @@ function createQqModule(deps) {
       ? getResolvedQqConfig(targetType, normalizedTargetId)
       : qqBotConfig;
     if (resolvedConfig.superPermissionEnabled) {
+      return true;
+    }
+    if (hasBuiltinQqSuperPermission({ targetType, targetId, actorUserId })) {
       return true;
     }
     if (!normalizedActorUserId) {
@@ -875,6 +992,9 @@ function createQqModule(deps) {
   parseQqModelAdminCommand = function parseQqModelAdminCommandByIndex(text = "") {
     const normalized = String(text || "").trim();
     if (!normalized) return null;
+    if (/(?:当前|现在|正在使用).{0,4}模型/u.test(normalized)) {
+      return { type: "current" };
+    }
 
     if (
       /^(?:查看|列出|显示)?(?:可用)?模型(?:列表)?$/u.test(normalized)
@@ -906,6 +1026,11 @@ function createQqModule(deps) {
 
     return null;
   };
+
+  function formatQqModelCurrentReply(result = {}) {
+    const currentModel = String(result.currentModel || "").trim();
+    return `当前模型：${currentModel || "未选择"}`;
+  }
 
   formatQqModelListReply = function formatQqModelListReplyWithIndexes(result = {}) {
     const models = Array.isArray(result.models) ? result.models : [];
@@ -1127,6 +1252,9 @@ function createQqModule(deps) {
   function parseQqPersonaAdminCommand(text = "") {
     const normalized = String(text || "").trim();
     if (!normalized) return null;
+    if (/(?:当前|现在|正在使用).{0,4}(?:人设|预设)/u.test(normalized)) {
+      return { type: "current" };
+    }
 
     if (
       /^(?:查看|列出|显示)?人设(?:列表)?$/u.test(normalized)
@@ -1161,6 +1289,30 @@ function createQqModule(deps) {
     }
 
     return null;
+  }
+
+  async function buildCurrentQqPersonaSummary(targetType = "private", targetId = "") {
+    const resolvedConfig = getResolvedQqConfig(targetType, targetId);
+    const currentPersonaPreset = String(resolvedConfig.personaPreset || "none").trim() || "none";
+    const currentPersona = String(resolvedConfig.persona || "").trim();
+
+    if (currentPersonaPreset !== "none") {
+      const presets = await listQqPersonaPresets();
+      const preset = presets.find((item) => String(item?.id || "").trim() === currentPersonaPreset);
+      if (preset?.name) {
+        return `当前人设：${preset.name}`;
+      }
+      return `当前人设：${currentPersonaPreset}`;
+    }
+
+    if (currentPersona) {
+      const preview = currentPersona.length > 120
+        ? `${currentPersona.slice(0, 120)}…`
+        : currentPersona;
+      return `当前人设：自定义人设\n内容预览：${preview}`;
+    }
+
+    return "当前人设：未设置";
   }
 
   function formatQqPersonaListReply(result = {}) {
@@ -1207,7 +1359,9 @@ function createQqModule(deps) {
     let reply = "";
     try {
       assertQqSuperPermission(targetType, targetId, actorUserId);
-      if (command.type === "list") {
+      if (command.type === "current") {
+        reply = await buildCurrentQqPersonaSummary(targetType, targetId);
+      } else if (command.type === "list") {
         reply = formatQqPersonaListReply(await listQqPersonaPresetsForTarget(targetType, targetId));
       } else if (command.type === "switch") {
         reply = formatQqPersonaSwitchReply(await switchQqPersonaForTarget({
@@ -1226,7 +1380,7 @@ function createQqModule(deps) {
         return null;
       }
     } catch (error) {
-      reply = command.type === "list"
+      reply = (command.type === "list" || command.type === "current")
         ? `查看人设列表失败：${error.message || "未知错误"}`
         : `切换人设失败：${error.message || "未知错误"}`;
     }
@@ -1261,7 +1415,11 @@ function createQqModule(deps) {
     model = "",
   } = {}) {
     const intent = inferScheduledTaskIntentFromText(userText, {
-      tasks: typeof getScheduledTasks === "function" ? getScheduledTasks() : [],
+      tasks: listVisibleScheduledTasksForQq({
+        targetType,
+        targetId,
+        actorUserId,
+      }),
     });
     if (!intent) {
       return null;
@@ -1302,7 +1460,16 @@ function createQqModule(deps) {
           return null;
       }
       reply = formatScheduledTaskActionReply(intent, result, {
-        tasks: typeof getScheduledTasks === "function" ? getScheduledTasks() : [],
+        tasks: listVisibleScheduledTasksForQq({
+          targetType,
+          targetId,
+          actorUserId,
+        }),
+        ...getQqScheduledTaskReplyOptions({
+          targetType,
+          targetId,
+          actorUserId,
+        }),
       });
     } catch (error) {
       reply = `定时任务操作失败：${error.message || "未知错误"}`;
@@ -1331,7 +1498,11 @@ function createQqModule(deps) {
     let reply = "";
     try {
       assertQqSuperPermission(targetType, targetId, actorUserId);
-      if (command.type === "list") {
+      if (command.type === "current") {
+        reply = formatQqModelCurrentReply({
+          currentModel: getSharedConnectionModel(),
+        });
+      } else if (command.type === "list") {
         reply = formatQqModelListReply(await listAvailableModelsForQq());
       } else if (command.type === "switch") {
         reply = formatQqModelSwitchReply(await switchActiveModelForQq({ model: command.model, index: command.index }));
@@ -1468,7 +1639,10 @@ function createQqModule(deps) {
     const fileHintText = enabledToolNames.includes("send_qq_file")
       ? ` send_qq_file is limited to these workspace directories: ${sanitizeFileShareRoots(config.fileShareRoots).join(", ")}.`
       : "";
-    return `Enabled QQ tools for this target: ${enabledToolNames.join(", ")}. Only call tools from this list. If a risky tool is not enabled, explain that the current QQ target is not authorized for it.${fileHintText}`;
+    const webSearchHintText = enabledToolNames.includes("web_search")
+      ? " If the user needs current internet information such as news, prices, releases, or webpage findings, use web_search instead of guessing."
+      : "";
+    return `Enabled QQ tools for this target: ${enabledToolNames.join(", ")}. Only call tools from this list. If a risky tool is not enabled, explain that the current QQ target is not authorized for it.${fileHintText}${webSearchHintText}`;
     const allowedNames = buildQqAllowedTools(config).map((tool) => tool.function.name);
     if (!allowedNames.length) {
       return "当前 QQ 对象未开放任何文件、命令或技能执行工具。只能直接文本回复，不能声称自己已经写文件、执行命令、运行技能或发送文件。";
@@ -1610,6 +1784,30 @@ function createQqModule(deps) {
     return messages.slice(-24);
   }
 
+  const LIVE_WEB_QUERY_HINT_RE = /(?:\bweb_search\b|联网|上网|网页|网络搜索|联网搜索|搜索工具|联网工具|最新|实时|热搜|新闻|资讯|热点|榜单|要点)/i;
+  const LIVE_WEB_QUERY_ACTION_RE = /(?:查|查询|搜索|搜|获取|整理|汇总|总结|播报|看下|看看)/i;
+
+  function shouldUseLeanQqWebSearchMode(userText = "", tools = []) {
+    const text = String(userText || "").trim();
+    if (!text) {
+      return false;
+    }
+    if (/(?:定时任务|计划任务|cron|发送文件|发文件)/i.test(text) || parseQqModelAdminCommand(text) || parseQqPersonaAdminCommand(text)) {
+      return false;
+    }
+    const toolNames = Array.isArray(tools)
+      ? tools.map((tool) => String(tool?.function?.name || "").trim()).filter(Boolean)
+      : [];
+    if (!toolNames.includes("web_search")) {
+      return false;
+    }
+    return LIVE_WEB_QUERY_HINT_RE.test(text) && LIVE_WEB_QUERY_ACTION_RE.test(text);
+  }
+
+  function trimQqSessionForLeanWebSearch(messages = []) {
+    return Array.isArray(messages) ? messages.slice(-4) : [];
+  }
+
   function collectStructuredContentText(content, bucket = []) {
     if (typeof content === "string") {
       const trimmed = content.trim();
@@ -1710,6 +1908,32 @@ function createQqModule(deps) {
     return `当前系统时间（以北京时间为准）是：${currentTime}。涉及今天、昨天、明天、当前日期、当前时间、本周、本月等相对时间时，必须以这个时间为准，不要自行假设或沿用过期时间。`;
   }
 
+  function clampLeanQqSystemText(value = "", maxLength = 520) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return "";
+    }
+    if (!Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) {
+      return text;
+    }
+    return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+  }
+
+  function buildLeanQqWebSearchSystemPrompt(resolvedConfig = {}) {
+    const parts = [];
+    const personaText = clampLeanQqSystemText(
+      resolvedConfig.persona || resolvedConfig.systemPrompt || "",
+      520
+    );
+    if (personaText) {
+      parts.push(personaText);
+    }
+    parts.push(`You are replying as QQ assistant "${resolvedConfig.assistantName || DEFAULT_QQ_BOT_CONFIG.assistantName}". Reply directly to the user and do not explain tool calls or internal system details.`);
+    parts.push(getCurrentTimeCalibrationText());
+    parts.push("This is a live web search request. Focus on current facts, use web_search when needed, and answer concisely in Chinese.");
+    return parts.filter(Boolean).join("\n\n");
+  }
+
   async function generateQqBotReply(event = {}) {
     const targetType = event.message_type === "group" ? "group" : "private";
     const targetId = targetType === "group" ? String(event.group_id || "") : String(event.user_id || "");
@@ -1733,6 +1957,18 @@ function createQqModule(deps) {
       return directModelAdminReply;
     }
 
+    const directWebSearchTools = buildQqAllowedTools(toolScopedConfig);
+    const directWebSearch = await maybeRunDirectWebSearch({
+      text: userText,
+      enabled: directWebSearchTools.some((tool) => tool?.function?.name === "web_search"),
+      searchWeb: async (query, limit) => await executeToolCall("web_search", { query, limit }),
+      intro: "联网搜索结果",
+    });
+    if (directWebSearch?.reply) {
+      await saveQqSessionReply(sessionKey, session, userText, directWebSearch.reply);
+      debug(`chat direct_web_search target=${targetType}:${targetId} query=${directWebSearch.query}`);
+      return directWebSearch.reply;
+    }
     const model = String(resolvedConfig.model || "").trim();
     if (!model) {
       const error = new Error("QQ 机器人未配置模型。请先在页面的基础连接中选择模型，并同步 QQ 配置。");
@@ -1866,6 +2102,19 @@ function createQqModule(deps) {
       return directScheduledTaskReply;
     }
 
+    const directWebSearchTools = buildQqAllowedTools(toolScopedConfig);
+    const directWebSearchResult = await maybeRunDirectWebSearch({
+      text: userText,
+      enabled: directWebSearchTools.some((tool) => tool?.function?.name === "web_search"),
+      searchWeb: async (query, limit) => await executeToolCall("web_search", { query, limit }),
+      intro: "联网搜索结果",
+    });
+    if (directWebSearchResult?.reply) {
+      await saveQqSessionReply(sessionKey, session, userText, directWebSearchResult.reply);
+      debug(`chat direct_web_search target=${targetType}:${targetId} query=${directWebSearchResult.query}`);
+      return directWebSearchResult.reply;
+    }
+
     const model = String(resolvedConfig.model || "").trim();
     if (!model) {
       const error = new Error("QQ 机器人未配置模型。请先在页面的基础连接中选择模型，并同步 QQ 配置。");
@@ -1874,21 +2123,28 @@ function createQqModule(deps) {
     }
 
     const tools = buildQqAllowedTools(toolScopedConfig);
-    const systemPrompt = [
-      resolvedConfig.persona || resolvedConfig.systemPrompt || "",
-      `You are replying as QQ assistant "${resolvedConfig.assistantName || DEFAULT_QQ_BOT_CONFIG.assistantName}". Reply directly to the user and do not explain tool calls or internal system details.`,
-      getCurrentTimeCalibrationText(),
-      buildQqToolSystemPrompt(toolScopedConfig),
-      buildQqSkillSystemPrompt(resolvedConfig),
-    ].filter(Boolean).join("\n\n");
+    const leanWebSearchMode = shouldUseLeanQqWebSearchMode(userText, tools);
+    const requestTools = leanWebSearchMode
+      ? tools.filter((tool) => tool?.function?.name === "web_search")
+      : tools;
+    const requestSession = leanWebSearchMode ? trimQqSessionForLeanWebSearch(session) : session;
+    const systemPrompt = leanWebSearchMode
+      ? buildLeanQqWebSearchSystemPrompt(resolvedConfig)
+      : [
+        resolvedConfig.persona || resolvedConfig.systemPrompt || "",
+        `You are replying as QQ assistant "${resolvedConfig.assistantName || DEFAULT_QQ_BOT_CONFIG.assistantName}". Reply directly to the user and do not explain tool calls or internal system details.`,
+        getCurrentTimeCalibrationText(),
+        buildQqToolSystemPrompt(toolScopedConfig),
+        buildQqSkillSystemPrompt(resolvedConfig),
+      ].filter(Boolean).join("\n\n");
 
     let workingMessages = [
       ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
-      ...session,
+      ...requestSession,
       { role: "user", content: userText },
     ];
 
-    debug(`chat request target=${targetType}:${targetId} model=${model} messages=${workingMessages.length} tools=${tools.map((tool) => tool?.function?.name).filter(Boolean).join(",") || "none"}`);
+    debug(`chat request target=${targetType}:${targetId} model=${model} messages=${workingMessages.length} tools=${requestTools.map((tool) => tool?.function?.name).filter(Boolean).join(",") || "none"} lean_web_search=${leanWebSearchMode ? 1 : 0}`);
     try {
       currentQqToolContext = {
         bridgeUrl: resolvedConfig.bridgeUrl,
@@ -1901,7 +2157,11 @@ function createQqModule(deps) {
       const helperReply = await callLocalModelWithTools({
         model,
         messages: workingMessages,
-        tools,
+        tools: requestTools,
+        requiredToolName: leanWebSearchMode ? "web_search" : "",
+        singleUseToolNames: leanWebSearchMode ? ["web_search"] : [],
+        temperature: leanWebSearchMode ? 0.2 : 0.7,
+        maxRounds: leanWebSearchMode ? 2 : 6,
       });
       debug(`chat response target=${targetType}:${targetId} content_length=${String(helperReply || "").length}`);
       if (!helperReply) {
@@ -2130,6 +2390,21 @@ function createQqModule(deps) {
     return nextArgs;
   }
 
+  function withCurrentQqTaskCreator(args = {}) {
+    const nextArgs = args && typeof args === "object" ? { ...args } : {};
+    const currentTargetId = String(currentQqToolContext?.targetId || "").trim();
+    if (!currentTargetId) {
+      return nextArgs;
+    }
+    if (!String(nextArgs.creatorId || "").trim()) {
+      nextArgs.creatorId = currentTargetId;
+    }
+    if (!String(nextArgs.creatorType || "").trim()) {
+      nextArgs.creatorType = normalizeTargetType(currentQqToolContext?.targetType || "private");
+    }
+    return nextArgs;
+  }
+
   function formatScheduledTaskQqPushMessage(task = {}) {
     const taskName = String(task.name || "Scheduled task").trim() || "Scheduled task";
     const runAt = Number(task.lastRunAt) || Date.now();
@@ -2184,11 +2459,26 @@ function createQqModule(deps) {
         );
         return await switchActiveModelForQq(args);
       }
+      if (name === "list_scheduled_tasks") {
+        return await baseExecuteToolCall(name, {
+          ...args,
+          ...getCurrentQqScheduledTaskScope(),
+        });
+      }
       if (name === "create_scheduled_task") {
-        return await baseExecuteToolCall(name, withCurrentQqTaskPush(args));
+        return await baseExecuteToolCall(name, withCurrentQqTaskCreator(withCurrentQqTaskPush(args)));
       }
       if (name === "update_scheduled_task") {
-        return await baseExecuteToolCall(name, withCurrentQqTaskPush(args, { forUpdate: true }));
+        return await baseExecuteToolCall(name, {
+          ...getCurrentQqScheduledTaskScope(),
+          ...withCurrentQqTaskCreator(withCurrentQqTaskPush(args, { forUpdate: true })),
+        });
+      }
+      if (name === "delete_scheduled_task" || name === "run_scheduled_task") {
+        return await baseExecuteToolCall(name, {
+          ...args,
+          ...getCurrentQqScheduledTaskScope(),
+        });
       }
       return baseExecuteToolCall(name, args);
     };

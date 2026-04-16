@@ -370,6 +370,7 @@ function createScheduler(deps) {
       task.lastError = "";
     } catch (error) {
       task.lastStatus = "error";
+      task.lastResult = "";
       task.lastError = error.message || "Task execution failed";
       task.lastRunAt = Date.now();
       task.updatedAt = task.lastRunAt;
@@ -492,6 +493,321 @@ function createScheduler(deps) {
         error: error.message || "Failed to run scheduled task",
       });
     }
+  }
+
+  const SCHEDULED_TASK_ADMIN_ID = "1036986718";
+
+  function resolveScheduledTaskCreator(task = {}) {
+    const creatorType = normalizeScheduledTaskQqTargetType(
+      task.creatorType || task.ownerType || task.qqTargetType || "private"
+    );
+    const creatorId = String(
+      task.creatorId || task.ownerId || task.qqTargetId || SCHEDULED_TASK_ADMIN_ID
+    ).trim() || SCHEDULED_TASK_ADMIN_ID;
+    return {
+      creatorType,
+      creatorId,
+    };
+  }
+
+  function formatScheduledTaskCreatorLabel(task = {}) {
+    const creator = resolveScheduledTaskCreator(task);
+    return `${creator.creatorType === "group" ? "群" : "QQ"} ${creator.creatorId}`;
+  }
+
+  function isScheduledTaskAdminScope(scope = {}) {
+    const scopeCreatorId = String(
+      scope.creatorId || scope.targetId || scope.scopeTargetId || ""
+    ).trim();
+    if (scopeCreatorId) {
+      const scopeCreatorType = normalizeScheduledTaskQqTargetType(
+        scope.creatorType || scope.targetType || scope.scopeTargetType || "private"
+      );
+      return scopeCreatorType === "private" && scopeCreatorId === SCHEDULED_TASK_ADMIN_ID;
+    }
+    return String(scope.actorUserId || "").trim() === SCHEDULED_TASK_ADMIN_ID;
+  }
+
+  function matchesScheduledTaskScope(task = {}, scope = {}) {
+    if (!scope || typeof scope !== "object") {
+      return true;
+    }
+    if (isScheduledTaskAdminScope(scope)) {
+      return true;
+    }
+
+    const scopeCreatorId = String(
+      scope.creatorId || scope.targetId || scope.scopeTargetId || ""
+    ).trim();
+    if (!scopeCreatorId) {
+      return true;
+    }
+
+    const scopeCreatorType = normalizeScheduledTaskQqTargetType(
+      scope.creatorType || scope.targetType || scope.scopeTargetType || "private"
+    );
+    const creator = resolveScheduledTaskCreator(task);
+    return creator.creatorType === scopeCreatorType && creator.creatorId === scopeCreatorId;
+  }
+
+  function sanitizeScheduledTask(task = {}) {
+    const scheduleType = "cron";
+    const enabled = Boolean(task.enabled);
+    const creator = resolveScheduledTaskCreator(task);
+    const sanitized = {
+      id: String(task.id || `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+      name: String(task.name || "\u672a\u547d\u540d\u4efb\u52a1").trim() || "\u672a\u547d\u540d\u4efb\u52a1",
+      prompt: String(task.prompt || "").trim(),
+      scheduleType,
+      intervalMinutes: 0,
+      cronExpression: String(task.cronExpression || "").trim(),
+      enabled,
+      qqPushEnabled: Boolean(task.qqPushEnabled),
+      qqTargetType: normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"),
+      qqTargetId: String(task.qqTargetId || "").trim(),
+      creatorType: creator.creatorType,
+      creatorId: creator.creatorId,
+      createdAt: Number(task.createdAt) || Date.now(),
+      updatedAt: Number(task.updatedAt) || Date.now(),
+      nextRunAt: Number(task.nextRunAt) || null,
+      lastRunAt: Number(task.lastRunAt) || null,
+      lastStatus: String(task.lastStatus || "idle"),
+      lastResult: String(task.lastResult || ""),
+      lastError: String(task.lastError || ""),
+    };
+
+    if (!sanitized.cronExpression) {
+      sanitized.enabled = false;
+      sanitized.nextRunAt = null;
+    }
+
+    if (!sanitized.nextRunAt && sanitized.enabled) {
+      sanitized.nextRunAt = computeNextRunAt(sanitized, Date.now());
+    }
+
+    return sanitized;
+  }
+
+  function validateScheduledTaskPayload(payload = {}, { partial = false } = {}) {
+    const next = {};
+
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, "name")) {
+      next.name = String(payload.name || "").trim();
+      if (!next.name) {
+        const error = new Error("Task name is required");
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, "prompt")) {
+      next.prompt = String(payload.prompt || "").trim();
+      if (!next.prompt) {
+        const error = new Error("Task prompt is required");
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    next.scheduleType = "cron";
+    if (
+      !partial ||
+      Object.prototype.hasOwnProperty.call(payload, "cronExpression") ||
+      Object.prototype.hasOwnProperty.call(payload, "scheduleType")
+    ) {
+      next.cronExpression = String(payload.cronExpression || "").trim();
+      if (!next.cronExpression) {
+        const error = new Error("cronExpression is required");
+        error.statusCode = 400;
+        throw error;
+      }
+      parseCronExpression(next.cronExpression);
+    }
+
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, "enabled")) {
+      next.enabled = Boolean(payload.enabled);
+    }
+
+    const hasQqPushEnabled = Object.prototype.hasOwnProperty.call(payload, "qqPushEnabled");
+    const hasQqTargetType = Object.prototype.hasOwnProperty.call(payload, "qqTargetType");
+    const hasQqTargetId = Object.prototype.hasOwnProperty.call(payload, "qqTargetId");
+    if (!partial || hasQqPushEnabled || hasQqTargetType || hasQqTargetId) {
+      if (!partial || hasQqPushEnabled) {
+        next.qqPushEnabled = Boolean(payload.qqPushEnabled);
+      }
+      if (!partial || hasQqTargetType) {
+        next.qqTargetType = normalizeScheduledTaskQqTargetType(payload.qqTargetType || "private");
+      }
+      if (!partial || hasQqTargetId) {
+        next.qqTargetId = String(payload.qqTargetId || "").trim();
+      }
+      if (!partial) {
+        ensureScheduledTaskQqPushConfig({
+          qqPushEnabled: next.qqPushEnabled,
+          qqTargetId: next.qqTargetId,
+        });
+      }
+    }
+
+    const hasCreatorType = Object.prototype.hasOwnProperty.call(payload, "creatorType");
+    const hasCreatorId = Object.prototype.hasOwnProperty.call(payload, "creatorId");
+    if (!partial || hasCreatorType || hasCreatorId) {
+      if (!partial || hasCreatorType) {
+        next.creatorType = normalizeScheduledTaskQqTargetType(payload.creatorType || "private");
+      }
+      if (!partial || hasCreatorId) {
+        next.creatorId = String(payload.creatorId || "").trim() || SCHEDULED_TASK_ADMIN_ID;
+      }
+    }
+
+    return next;
+  }
+
+  function listScheduledTasks(scope = {}) {
+    return getScheduledTasks()
+      .filter((task) => matchesScheduledTaskScope(task, scope))
+      .slice()
+      .sort((left, right) => {
+        const createdDiff = Number(right.createdAt || 0) - Number(left.createdAt || 0);
+        if (createdDiff) {
+          return createdDiff;
+        }
+        return Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+      })
+      .map((task) => ({
+        ...task,
+        creatorLabel: formatScheduledTaskCreatorLabel(task),
+        running: runningScheduledTaskIds.has(task.id),
+      }));
+  }
+
+  function findEquivalentScheduledTask(taskLike = {}, scope = {}) {
+    const scheduleType = "cron";
+    const normalizedName = normalizeTaskSignatureValue(taskLike.name);
+    const normalizedPrompt = normalizeTaskSignatureValue(taskLike.prompt);
+    const normalizedCron = normalizeTaskSignatureValue(taskLike.cronExpression);
+    const normalizedQqPushEnabled = Boolean(taskLike.qqPushEnabled);
+    const normalizedQqTargetType = normalizeTaskSignatureValue(
+      normalizeScheduledTaskQqTargetType(taskLike.qqTargetType || "private")
+    );
+    const normalizedQqTargetId = normalizeTaskSignatureValue(taskLike.qqTargetId);
+    const normalizedCreator = resolveScheduledTaskCreator(taskLike);
+    const normalizedCreatorType = normalizeTaskSignatureValue(normalizedCreator.creatorType);
+    const normalizedCreatorId = normalizeTaskSignatureValue(normalizedCreator.creatorId);
+
+    return (
+      getScheduledTasks().find((task) => {
+        if (!matchesScheduledTaskScope(task, scope)) {
+          return false;
+        }
+        if (task.scheduleType !== scheduleType) {
+          return false;
+        }
+        if (normalizeTaskSignatureValue(task.name) !== normalizedName) {
+          return false;
+        }
+        if (normalizeTaskSignatureValue(task.prompt) !== normalizedPrompt) {
+          return false;
+        }
+        if (normalizeTaskSignatureValue(task.cronExpression) !== normalizedCron) {
+          return false;
+        }
+        if (Boolean(task.qqPushEnabled) !== normalizedQqPushEnabled) {
+          return false;
+        }
+        if (normalizedQqPushEnabled) {
+          if (
+            normalizeTaskSignatureValue(normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"))
+            !== normalizedQqTargetType
+          ) {
+            return false;
+          }
+          if (normalizeTaskSignatureValue(task.qqTargetId) !== normalizedQqTargetId) {
+            return false;
+          }
+        }
+        const taskCreator = resolveScheduledTaskCreator(task);
+        return normalizeTaskSignatureValue(taskCreator.creatorType) === normalizedCreatorType
+          && normalizeTaskSignatureValue(taskCreator.creatorId) === normalizedCreatorId;
+      }) || null
+    );
+  }
+
+  function ensureScheduledTask(taskId, scope = {}) {
+    const task = findScheduledTask(taskId);
+    if (!task || !matchesScheduledTaskScope(task, scope)) {
+      const error = new Error("Scheduled task not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    return task;
+  }
+
+  function resolveScheduledTask(args = {}) {
+    const directId = String(args.id || "").trim();
+    if (directId) {
+      return ensureScheduledTask(directId, args);
+    }
+
+    const name = normalizeScheduledTaskMatchValue(args.name);
+    if (name) {
+      const byName = getScheduledTasks().find(
+        (task) => matchesScheduledTaskScope(task, args) && normalizeScheduledTaskMatchValue(task.name) === name
+      );
+      if (byName) {
+        return byName;
+      }
+    }
+
+    const error = new Error("Scheduled task not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  async function runScheduledTask(taskId, scope = {}) {
+    const task = ensureScheduledTask(taskId, scope);
+    if (runningScheduledTaskIds.has(task.id)) {
+      return task;
+    }
+
+    runningScheduledTaskIds.add(task.id);
+    task.lastStatus = "running";
+    task.lastError = "";
+    task.updatedAt = Date.now();
+    await saveScheduledTasks();
+
+    try {
+      const result = await callLocalModelForTask(task);
+      task.lastStatus = "success";
+      task.lastResult = result.slice(0, 4000);
+      task.lastRunAt = Date.now();
+      task.updatedAt = task.lastRunAt;
+      task.lastError = "";
+    } catch (error) {
+      task.lastStatus = "error";
+      task.lastResult = "";
+      task.lastError = error.message || "Task execution failed";
+      task.lastRunAt = Date.now();
+      task.updatedAt = task.lastRunAt;
+    } finally {
+      runningScheduledTaskIds.delete(task.id);
+      task.nextRunAt = task.enabled ? computeNextRunAt(task, Date.now()) : null;
+      await saveScheduledTasks();
+    }
+
+    if (typeof afterRunScheduledTask === "function") {
+      try {
+        await afterRunScheduledTask(task);
+      } catch {
+        // Ignore post-run side effects such as QQ notifications.
+      }
+    }
+
+    return task;
+  }
+
+  async function handleScheduledTasksList(res, scope = {}) {
+    sendJson(res, 200, { ok: true, tasks: listScheduledTasks(scope) });
   }
 
   return {

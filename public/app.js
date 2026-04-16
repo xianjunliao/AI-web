@@ -39,6 +39,21 @@ TOOLS.push(
   {
     type: "function",
     function: {
+      name: "web_search",
+      description: "Search the live web for current information and return titles, links, and snippets.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "search_clawhub_skills",
       description: "Search ClawHub skills first. If the user's request is vague, recommend hot non-suspicious skills from ClawHub downloads.",
       parameters: {
@@ -216,7 +231,7 @@ TOOLS.push(
     },
   }
 );
-const READ_ONLY_TOOL_NAMES = new Set(["list_dir", "read_file", "get_weather"]);
+const READ_ONLY_TOOL_NAMES = new Set(["list_dir", "read_file", "get_weather", "web_search"]);
 const WRITE_TOOL_NAMES = new Set(["write_file", "delete_file"]);
 const SKILL_DISCOVERY_TOOL_NAMES = new Set(["search_clawhub_skills"]);
 const SKILL_INSTALL_TOOL_NAMES = new Set(["install_clawhub_skill"]);
@@ -229,6 +244,8 @@ let workspacePersonaPresets = [];
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 
 const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, sending: false, previewMaximized: false, toolActivities: [] };
+const DEFAULT_QQ_PUSH_TARGET_TYPE = "private";
+const DEFAULT_QQ_PUSH_TARGET_ID = "1036986718";
 const $ = (s) => document.querySelector(s);
 const els = {
   chatForm: $("#chat-form"), chatMessages: $("#chat-messages"), userInput: $("#user-input"), sendButton: $("#send-button"),
@@ -444,8 +461,8 @@ function getQqPushSettings() {
     enabled: Boolean(els.qqPushEnabled?.checked ?? persisted.qqPushEnabled),
     bridgeUrl: els.qqBridgeUrl?.value?.trim() || persisted.qqBridgeUrl || "",
     accessToken: els.qqAccessToken?.value?.trim() || persisted.qqAccessToken || "",
-    targetType: els.qqTargetType?.value || persisted.qqTargetType || "private",
-    targetId: els.qqTargetId?.value?.trim() || persisted.qqTargetId || "",
+    targetType: els.qqTargetType?.value || persisted.qqTargetType || DEFAULT_QQ_PUSH_TARGET_TYPE,
+    targetId: els.qqTargetId?.value?.trim() || persisted.qqTargetId || DEFAULT_QQ_PUSH_TARGET_ID,
   };
 }
 
@@ -853,8 +870,8 @@ function save() {
     qqPushEnabled: Boolean(els.qqPushEnabled?.checked),
     qqBridgeUrl: els.qqBridgeUrl?.value.trim() || "",
     qqAccessToken: els.qqAccessToken?.value.trim() || "",
-    qqTargetType: els.qqTargetType?.value || "private",
-    qqTargetId: els.qqTargetId?.value.trim() || "",
+    qqTargetType: els.qqTargetType?.value || DEFAULT_QQ_PUSH_TARGET_TYPE,
+    qqTargetId: els.qqTargetId?.value.trim() || DEFAULT_QQ_PUSH_TARGET_ID,
     qqBotEnabled: Boolean(els.qqBotEnabled?.checked),
     qqBotGroupMentionOnly: Boolean(els.qqBotGroupMentionOnly?.checked),
     qqTaskPushEnabled: Boolean(els.qqTaskPushEnabled?.checked),
@@ -892,8 +909,8 @@ function load() {
   if (els.qqPushEnabled) els.qqPushEnabled.checked = Boolean(s.qqPushEnabled);
   if (els.qqBridgeUrl) els.qqBridgeUrl.value = s.qqBridgeUrl || "";
   if (els.qqAccessToken) els.qqAccessToken.value = s.qqAccessToken || "";
-  if (els.qqTargetType) els.qqTargetType.value = s.qqTargetType || "private";
-  if (els.qqTargetId) els.qqTargetId.value = s.qqTargetId || "";
+  if (els.qqTargetType) els.qqTargetType.value = s.qqTargetType || DEFAULT_QQ_PUSH_TARGET_TYPE;
+  if (els.qqTargetId) els.qqTargetId.value = s.qqTargetId || DEFAULT_QQ_PUSH_TARGET_ID;
   if (els.qqBotEnabled) els.qqBotEnabled.checked = Boolean(s.qqBotEnabled);
   if (els.qqBotGroupMentionOnly) els.qqBotGroupMentionOnly.checked = s.qqBotGroupMentionOnly !== false;
   if (els.qqTaskPushEnabled) els.qqTaskPushEnabled.checked = Boolean(s.qqTaskPushEnabled);
@@ -1175,6 +1192,124 @@ function appendMessage(role, content, cls = role, images = [], timestamp = Date.
   contentEl.innerHTML = rich(content);
   enhanceMessageCodeBlocks(contentEl);
   appendMessageHtmlPreview(bubble, content);
+  return card;
+}
+
+function renderScheduledTaskChatCardContent(contentEl, renderMeta = {}, fallbackContent = "") {
+  if (!contentEl) return;
+
+  const title = String(renderMeta?.title || "").trim();
+  const subtitle = String(renderMeta?.subtitle || "").trim();
+  const footer = String(renderMeta?.footer || "").trim();
+  const chips = Array.isArray(renderMeta?.chips) ? renderMeta.chips : [];
+  const previewItems = Array.isArray(renderMeta?.previewItems) ? renderMeta.previewItems : [];
+  const tone = String(renderMeta?.tone || "").trim();
+
+  if (!title && !subtitle && !chips.length && !previewItems.length && !footer) {
+    contentEl.innerHTML = rich(fallbackContent);
+    enhanceMessageCodeBlocks(contentEl);
+    return;
+  }
+
+  contentEl.replaceChildren();
+
+  const card = document.createElement("div");
+  card.className = `scheduled-task-chat-card${tone ? ` ${tone}` : ""}`;
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "scheduled-task-chat-title";
+  titleEl.textContent = title || "定时任务已处理";
+  card.append(titleEl);
+
+  if (subtitle) {
+    const subtitleEl = document.createElement("div");
+    subtitleEl.className = "scheduled-task-chat-subtitle";
+    subtitleEl.textContent = subtitle;
+    card.append(subtitleEl);
+  }
+
+  if (chips.length) {
+    const chipsWrap = document.createElement("div");
+    chipsWrap.className = "scheduled-task-chat-chips";
+    chips.forEach((chip) => {
+      const label = String(chip?.label || "").trim();
+      const value = String(chip?.value || "").trim();
+      if (!label || !value) return;
+      const chipEl = document.createElement("div");
+      chipEl.className = `scheduled-task-chat-chip${chip?.accent ? ` ${chip.accent}` : ""}`;
+
+      const chipLabel = document.createElement("span");
+      chipLabel.className = "scheduled-task-chat-chip-label";
+      chipLabel.textContent = label;
+
+      const chipValue = document.createElement("span");
+      chipValue.className = "scheduled-task-chat-chip-value";
+      chipValue.textContent = value;
+
+      chipEl.append(chipLabel, chipValue);
+      chipsWrap.append(chipEl);
+    });
+    if (chipsWrap.childElementCount) {
+      card.append(chipsWrap);
+    }
+  }
+
+  if (previewItems.length) {
+    const list = document.createElement("div");
+    list.className = "scheduled-task-chat-list";
+    previewItems.forEach((item) => {
+      const itemTitle = String(item?.title || "").trim();
+      if (!itemTitle) return;
+
+      const itemEl = document.createElement("div");
+      itemEl.className = "scheduled-task-chat-item";
+
+      const itemHead = document.createElement("div");
+      itemHead.className = "scheduled-task-chat-item-head";
+
+      const itemIndex = document.createElement("span");
+      itemIndex.className = "scheduled-task-chat-item-index";
+      itemIndex.textContent = String(item?.indexLabel || "任务");
+
+      const itemTitleEl = document.createElement("strong");
+      itemTitleEl.className = "scheduled-task-chat-item-title";
+      itemTitleEl.textContent = itemTitle;
+
+      itemHead.append(itemIndex, itemTitleEl);
+      itemEl.append(itemHead);
+
+      const itemMetaText = String(item?.meta || "").trim();
+      if (itemMetaText) {
+        const itemMeta = document.createElement("div");
+        itemMeta.className = "scheduled-task-chat-item-meta";
+        itemMeta.textContent = itemMetaText;
+        itemEl.append(itemMeta);
+      }
+
+      list.append(itemEl);
+    });
+    if (list.childElementCount) {
+      card.append(list);
+    }
+  }
+
+  if (footer) {
+    const footerEl = document.createElement("div");
+    footerEl.className = "scheduled-task-chat-footer";
+    footerEl.textContent = footer;
+    card.append(footerEl);
+  }
+
+  contentEl.append(card);
+}
+
+function appendScheduledTaskChatMessage(message = {}) {
+  const timestamp = message.timestamp || Date.now();
+  const content = typeof message.content === "string"
+    ? message.content
+    : normalizeContent(message.content) || JSON.stringify(message.content ?? "");
+  const { card, contentEl } = buildMessageCard("assistant", "assistant scheduled-task-chat", [], timestamp);
+  renderScheduledTaskChatCardContent(contentEl, message.renderMeta || {}, content);
   return card;
 }
 
@@ -2472,6 +2607,24 @@ function renderChatHistoryList() {
   updateChatHistoryMeta();
 }
 
+function appendStoredConversationMessage(message = {}) {
+  if (message?.role === "assistant" && message?.renderType === "scheduled-task-reply") {
+    appendScheduledTaskChatMessage(message);
+    return;
+  }
+
+  const restoredContent = typeof message?.content === "string"
+    ? message.content
+    : normalizeContent(message?.content) || JSON.stringify(message?.content ?? "");
+  appendMessage(
+    message?.role || "assistant",
+    restoredContent,
+    message?.role || "assistant",
+    [],
+    message?.timestamp || Date.now()
+  );
+}
+
 function renderConversationFromMessages(messages) {
   chatHistoryRuntime.suppressAutoSave = true;
   state.messages = Array.isArray(messages) ? JSON.parse(JSON.stringify(messages)) : [];
@@ -2481,13 +2634,7 @@ function renderConversationFromMessages(messages) {
     els.chatMessages?.replaceChildren();
   } else {
     state.messages.forEach((message) => {
-      appendMessage(
-        message.role,
-        typeof message.content === "string" ? message.content : JSON.stringify(message.content),
-        message.role,
-        [],
-        message.timestamp || Date.now()
-      );
+      appendStoredConversationMessage(message);
     });
   }
 
@@ -2866,8 +3013,8 @@ function collectQqSettingsSnapshot() {
     qqPushEnabled: Boolean(els.qqPushEnabled?.checked),
     qqBridgeUrl: els.qqBridgeUrl?.value?.trim() || "",
     qqAccessToken: els.qqAccessToken?.value?.trim() || "",
-    qqTargetType: els.qqTargetType?.value || "private",
-    qqTargetId: els.qqTargetId?.value?.trim() || "",
+    qqTargetType: els.qqTargetType?.value || DEFAULT_QQ_PUSH_TARGET_TYPE,
+    qqTargetId: els.qqTargetId?.value?.trim() || DEFAULT_QQ_PUSH_TARGET_ID,
     qqBotEnabled: Boolean(els.qqBotEnabled?.checked),
     qqBotGroupMentionOnly: Boolean(els.qqBotGroupMentionOnly?.checked),
     qqTaskPushEnabled: Boolean(els.qqTaskPushEnabled?.checked),
@@ -2889,8 +3036,8 @@ function restoreQqSettingsSnapshot(snapshot = {}) {
   if (els.qqPushEnabled) els.qqPushEnabled.checked = Boolean(snapshot.qqPushEnabled);
   if (els.qqBridgeUrl) els.qqBridgeUrl.value = snapshot.qqBridgeUrl || "";
   if (els.qqAccessToken) els.qqAccessToken.value = snapshot.qqAccessToken || "";
-  if (els.qqTargetType) els.qqTargetType.value = snapshot.qqTargetType || "private";
-  if (els.qqTargetId) els.qqTargetId.value = snapshot.qqTargetId || "";
+  if (els.qqTargetType) els.qqTargetType.value = snapshot.qqTargetType || DEFAULT_QQ_PUSH_TARGET_TYPE;
+  if (els.qqTargetId) els.qqTargetId.value = snapshot.qqTargetId || DEFAULT_QQ_PUSH_TARGET_ID;
   if (els.qqBotEnabled) els.qqBotEnabled.checked = Boolean(snapshot.qqBotEnabled);
   if (els.qqBotGroupMentionOnly) els.qqBotGroupMentionOnly.checked = snapshot.qqBotGroupMentionOnly !== false;
   if (els.qqTaskPushEnabled) els.qqTaskPushEnabled.checked = Boolean(snapshot.qqTaskPushEnabled);
@@ -3542,7 +3689,7 @@ async function syncQqBotConfig() {
 
 const systemMessagesBeforeQqRule = systemMessages;
 systemMessages = function systemMessagesWithQqRule() {
-  const list = systemMessagesBeforeQqRule();
+  const list = systemMessagesBeforeQqRule().filter((message) => !String(message?.content || "").includes("当前已配置 QQ 推送通道"));
   const config = getQqPushSettings();
   if (config.enabled && config.bridgeUrl && config.targetId) {
     list.push({
@@ -4863,11 +5010,12 @@ async function loadScheduledTasksUI(options = {}) {
     const tasks = data.tasks || [];
     renderScheduledTasks(tasks);
     syncScheduledTaskDeliveries(tasks, options);
+    return tasks;
   } catch (error) {
     if (error.status === 404) {
       if (meta) meta.textContent = "当前服务暂未启用定时任务接口，重启 node server.js 后可用。";
       if (list) list.innerHTML = '<div class="file-empty">当前运行中的服务版本还不支持定时任务，请重启服务。</div>';
-      return;
+      return [];
     }
     throw error;
   }
@@ -5352,7 +5500,14 @@ submit = async function submitInChatPending(ev) {
   try {
     const reply = await askModel(text);
     pendingMessage?.remove();
-    await appendAssistantMessageWithTyping(reply);
+    const latestMessage = Array.isArray(state.messages) && state.messages.length
+      ? state.messages[state.messages.length - 1]
+      : null;
+    if (latestMessage?.role === "assistant" && latestMessage?.renderType === "scheduled-task-reply") {
+      appendStoredConversationMessage(latestMessage);
+    } else {
+      await appendAssistantMessageWithTyping(reply);
+    }
     clearFiles();
     setStatus("已完成");
   } catch (error) {
@@ -6500,6 +6655,36 @@ function summarizeToolOnlyReply(toolMessage) {
   return "";
 }
 
+function clampLeanWebSearchSystemText(value = "", maxLength = 480) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (!Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
+function buildLeanWebSearchSystemMessages() {
+  const list = [];
+  const baseSystemPrompt = clampLeanWebSearchSystemText(els.systemPrompt?.value || "", 320);
+  const personaPrompt = clampLeanWebSearchSystemText(els.personaPrompt?.value || "", 480);
+  if (baseSystemPrompt) {
+    list.push({ role: "system", content: baseSystemPrompt });
+  }
+  if (personaPrompt) {
+    list.push({
+      role: "system",
+      content: `保持以下回答风格，但优先简洁、准确、基于最新信息：\n${personaPrompt}`,
+    });
+  }
+  list.push(getCurrentTimeCalibrationSystemMessage());
+  list.push({
+    role: "system",
+    content: "This is a live web search task. Focus on current facts, call web_search when needed, and answer concisely in Chinese without mentioning internal tools.",
+  });
+  return list;
+}
+
 const askModelBeforeToolOnlyFallback = askModel;
 askModel = async function askModelWithToolOnlyFallback(userText) {
   if (!selectedModel()) throw new Error("请先选择模型。");
@@ -6527,10 +6712,31 @@ askModel = async function askModelWithToolOnlyFallback(userText) {
     return summary;
   }
   const allowedTools = getAllowedToolsForUserText(userText);
-  let messages = [...systemMessages(), ...state.messages, { role: "user", content: userPayload(userText) }];
+  const directWebSearchReply = await maybeRunDirectWebSearchInApp(userText, allowedTools);
+  if (directWebSearchReply) {
+    const messageTimestamp = Date.now();
+    state.messages.push(
+      { role: "user", content: userText || "请继续处理", timestamp: messageTimestamp },
+      { role: "assistant", content: directWebSearchReply, timestamp: Date.now() }
+    );
+    save();
+    refreshMetrics();
+    return directWebSearchReply;
+  }
+  const leanWebSearchMode = shouldUseLeanWebSearchMode(userText, allowedTools);
+  const baseHistory = leanWebSearchMode ? trimConversationForLeanWebSearch(state.messages) : state.messages;
+  const leanWebSearchTools = leanWebSearchMode
+    ? allowedTools.filter((tool) => tool?.function?.name === "web_search")
+    : allowedTools;
+  const toolRounds = leanWebSearchMode ? 2 : MAX_TOOL_ROUNDS;
+  const baseSystemMessages = leanWebSearchMode ? buildLeanWebSearchSystemMessages() : systemMessages();
+  let messages = [...baseSystemMessages, ...baseHistory, { role: "user", content: userPayload(userText) }];
   let final = "";
 
-  for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
+  for (let i = 0; i < toolRounds; i++) {
+    const requestTools = leanWebSearchMode
+      ? (i === 0 ? leanWebSearchTools : [])
+      : allowedTools;
     const t0 = performance.now();
     const data = await j(chatEndpoint(), {
       method: "POST",
@@ -6538,9 +6744,9 @@ askModel = async function askModelWithToolOnlyFallback(userText) {
       body: JSON.stringify({
         model: selectedModel(),
         messages,
-        temperature: 0.7,
-        tools: allowedTools,
-        tool_choice: allowedTools.length ? "auto" : "none",
+        temperature: leanWebSearchMode ? 0.2 : 0.7,
+        tools: requestTools,
+        tool_choice: requestTools.length ? (leanWebSearchMode && i === 0 ? "required" : "auto") : "none",
         stream: false,
       }),
     });
@@ -6553,6 +6759,9 @@ askModel = async function askModelWithToolOnlyFallback(userText) {
     if (content) final = content;
     messages.push({ role: "assistant", content: msg.content || content, tool_calls: msg.tool_calls });
 
+    if (leanWebSearchMode && i === 0 && !msg.tool_calls?.length) {
+      throw new Error("联网查询没有调用 web_search 工具，已中止这次请求。");
+    }
     if (!msg.tool_calls?.length) break;
     for (const tc of msg.tool_calls) messages.push(await executeTool(tc));
   }
@@ -6720,16 +6929,7 @@ function renderConversationFromMessagesStable(messages) {
     els.chatMessages?.replaceChildren();
   } else {
     state.messages.forEach((message) => {
-      const restoredContent = typeof message.content === "string"
-        ? message.content
-        : normalizeContent(message.content) || JSON.stringify(message.content ?? "");
-      appendMessage(
-        message.role,
-        restoredContent,
-        message.role,
-        [],
-        message.timestamp || Date.now()
-      );
+      appendStoredConversationMessage(message);
     });
   }
 
@@ -7434,6 +7634,7 @@ function collectCurrentQqTargetProfile() {
   const targetId = els.qqTargetId?.value?.trim() || "";
   if (!targetId) return null;
   const key = qqTargetProfileKey(targetType, targetId);
+  const existingProfile = qqTargetProfileRuntime.profiles?.[key] || {};
   return {
     key,
     name: `${targetType === "group" ? "群" : "QQ"} ${targetId}`,
@@ -7441,6 +7642,8 @@ function collectCurrentQqTargetProfile() {
     targetId,
     defaultTargetType: targetType,
     defaultTargetId: targetId,
+    // Preserve hidden authorization flags that are not editable in the current UI.
+    superPermissionEnabled: Boolean(existingProfile.superPermissionEnabled),
     model: els.qqBotModelSelect?.value || "",
     triggerPrefix: els.qqBotTriggerPrefix?.value?.trim() || "",
     allowedUsers: els.qqBotAllowedUsers?.value || "",
@@ -7637,8 +7840,8 @@ async function loadQqTargetProfilesFromServer() {
       enabled: Boolean(config.enabled),
       bridgeUrl: config.bridgeUrl || "",
       accessToken: config.accessToken || "",
-      defaultTargetType: config.defaultTargetType || "private",
-      defaultTargetId: config.defaultTargetId || "",
+      defaultTargetType: config.defaultTargetType || DEFAULT_QQ_PUSH_TARGET_TYPE,
+      defaultTargetId: config.defaultTargetId || DEFAULT_QQ_PUSH_TARGET_ID,
       groupMentionOnly: config.groupMentionOnly !== false,
       taskPushEnabled: Boolean(config.taskPushEnabled),
       triggerPrefix: config.triggerPrefix || "",
@@ -8300,9 +8503,17 @@ systemMessages = function systemMessagesWithCurrentTimeCalibration() {
     ? [...systemMessagesBeforeCurrentTimeCalibration()]
     : [];
   list.push(getCurrentTimeCalibrationSystemMessage());
+  return list;
+};
+
+const systemMessagesBeforeWebSearchReminderFinal = systemMessages;
+systemMessages = function systemMessagesWithWebSearchReminderFinal() {
+  const list = Array.isArray(systemMessagesBeforeWebSearchReminderFinal())
+    ? [...systemMessagesBeforeWebSearchReminderFinal()]
+    : [];
   list.push({
     role: "system",
-    content: "当前系统已提供可直接执行命令的真实工具：run_shell_command 可执行 PowerShell 命令，run_cli_command 可执行本地 CLI 程序及参数，run_workspace_skill 可执行受支持的本地技能脚本。遇到需要 shell、命令行、Node 脚本、curl、PowerShell、npm、git 或其他 CLI 的任务时，不要再声称“无法执行 shell 命令”或“没有命令工具”，应优先直接调用这些真实工具完成任务。",
+    content: "When the user needs current internet information such as news, prices, releases, or webpage findings, call web_search instead of guessing.",
   });
   return list;
 };
@@ -8891,6 +9102,163 @@ getAllowedToolsForUserText = function getAllowedToolsForUserTextWithoutSkills(us
   });
 };
 
+const LIVE_WEB_QUERY_HINT_RE = /(?:\bweb_search\b|联网|上网|网页|网络搜索|联网搜索|搜索工具|联网工具|最新|实时|热搜|新闻|资讯|热点|榜单|要点)/i;
+const LIVE_WEB_QUERY_ACTION_RE = /(?:查|查询|搜索|搜|获取|整理|汇总|总结|播报|看下|看看)/i;
+
+const DIRECT_WEB_SEARCH_BLOCK_RE = /(?:定时任务|cron|创建任务|新建任务|添加任务|修改任务|更新任务|删除任务|暂停任务|启用任务|运行任务|执行任务|QQ|群里|私聊|写入文件|保存到|保存为|read_file|write_file|run_shell_command|run_cli_command|代码|脚本|目录|文件|技能|persona)/i;
+const DIRECT_WEB_SEARCH_ACTION_RE = /(?:查下|查一下|查一查|查询|搜索|搜下|搜一下|搜一搜|获取|看看|看下|找下|找一下)/i;
+const DIRECT_WEB_SEARCH_BRIEF_ACTION_RE = /(?:整理|汇总|总结|播报)/i;
+const DIRECT_WEB_SEARCH_ANALYSIS_RE = /(?:并|同时|对比|分析|点评|原因|为什么|怎么|详细|深入|趋势|解读|结合)/i;
+const LEADING_ASSISTANT_MENTION_RE = /^@\S+\s*/;
+const LEADING_POLITE_PREFIX_RE = /^(?:请|麻烦|帮我|帮忙|请你|请帮我|请帮忙|能否|能不能|可以|可否|想让你|替我)\s*/i;
+const LEADING_SEARCH_TOOL_RE = /^(?:(?:用)?(?:联网搜索工具|联网工具|搜索工具|web_search 工具|web_search工具|web_search|联网搜索|网络搜索|网页搜索|上网搜索|上网))\s*/i;
+const LEADING_SEARCH_ACTION_RE = /^(?:(?:来)?(?:查下|查一下|查一查|查询|搜索|搜下|搜一下|搜一搜|获取|整理|汇总|总结|播报|看看|看下|找下|找一下))\s*/i;
+const TRAILING_DIRECT_WEB_SEARCH_FILLER_RE = /(?:一下|看看|吧|呀|啊|呢|哈|好吗|可以吗|谢谢|谢谢你)[。！!？?]*$/i;
+
+function normalizeDirectWebSearchTextInApp(text = "") {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function detectDirectWebSearchModeInApp(userText = "", tools = []) {
+  const text = normalizeDirectWebSearchTextInApp(userText);
+  if (!text) return "";
+  if (hasExplicitSchedulerIntent(text) || hasExplicitQqIntent(text) || canUseWriteTools(text)) {
+    return "";
+  }
+  if (DIRECT_WEB_SEARCH_BLOCK_RE.test(text)) {
+    return "";
+  }
+  if (DIRECT_WEB_SEARCH_ANALYSIS_RE.test(text)) {
+    return "";
+  }
+  const toolNames = Array.isArray(tools)
+    ? tools.map((tool) => String(tool?.function?.name || "").trim()).filter(Boolean)
+    : [];
+  if (!toolNames.includes("web_search")) {
+    return "";
+  }
+  if (!LIVE_WEB_QUERY_HINT_RE.test(text)) {
+    return "";
+  }
+  if (DIRECT_WEB_SEARCH_ACTION_RE.test(text)) {
+    return "list";
+  }
+  if (DIRECT_WEB_SEARCH_BRIEF_ACTION_RE.test(text)) {
+    return "brief";
+  }
+  return "";
+}
+
+function canHandleDirectWebSearchInApp(userText = "", tools = []) {
+  return Boolean(detectDirectWebSearchModeInApp(userText, tools));
+}
+
+function extractDirectWebSearchQueryInApp(userText = "") {
+  let query = normalizeDirectWebSearchTextInApp(userText);
+  if (!query) return "";
+  for (const pattern of [
+    LEADING_ASSISTANT_MENTION_RE,
+    LEADING_POLITE_PREFIX_RE,
+    LEADING_SEARCH_TOOL_RE,
+    LEADING_SEARCH_ACTION_RE,
+  ]) {
+    query = query.replace(pattern, "").trim();
+  }
+  query = query
+    .replace(/^(?:请|麻烦|帮我|帮忙)\s*/i, "")
+    .replace(TRAILING_DIRECT_WEB_SEARCH_FILLER_RE, "")
+    .replace(/[。！!？?]+$/g, "")
+    .trim();
+  return query || normalizeDirectWebSearchTextInApp(userText);
+}
+
+function formatDirectWebSearchReplyInApp(result = {}, options = {}) {
+  const query = normalizeDirectWebSearchTextInApp(result?.query || "");
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const mode = String(options.mode || "list").trim() || "list";
+  if (!results.length) {
+    return query
+      ? `已完成联网搜索：${query}\n未找到可用结果。`
+      : "已完成联网搜索\n未找到可用结果。";
+  }
+  const maxItems = Math.min(Math.max(Number(options.maxItems) || (mode === "brief" ? 4 : 3), 1), 5);
+  const lines = [query ? `已完成联网搜索：${query}` : "已完成联网搜索"];
+  for (const [index, item] of results.slice(0, maxItems).entries()) {
+    const title = normalizeDirectWebSearchTextInApp(item?.title || `结果 ${index + 1}`);
+    const snippet = normalizeDirectWebSearchTextInApp(item?.snippet || "");
+    const url = normalizeDirectWebSearchTextInApp(item?.url || "");
+    lines.push(`${index + 1}. ${title}`);
+    if (snippet) lines.push(`   ${mode === "brief" ? "要点" : "摘要"}：${snippet}`);
+    if (url) lines.push(`   链接：${url}`);
+  }
+  return lines.join("\n");
+}
+
+async function maybeRunDirectWebSearchInApp(userText = "", tools = []) {
+  const mode = detectDirectWebSearchModeInApp(userText, tools);
+  if (!mode) {
+    return "";
+  }
+  const query = extractDirectWebSearchQueryInApp(userText);
+  if (!query) {
+    return "";
+  }
+  const toolReply = await executeTool({
+    id: nowId(),
+    function: {
+      name: "web_search",
+      arguments: JSON.stringify({ query, limit: mode === "brief" ? 4 : 3 }),
+    },
+  });
+  if (toolReply?.role === "tool" && typeof toolReply.content === "string") {
+    try {
+      const parsed = JSON.parse(toolReply.content);
+      if (parsed?.query && Array.isArray(parsed.results)) {
+        return formatDirectWebSearchReplyInApp(parsed, { mode });
+      }
+    } catch {}
+  }
+  return summarizeToolOnlyReply(toolReply) || buildToolOnlyFallbackReply([toolReply]) || formatDirectWebSearchReplyInApp({ query }, { mode });
+}
+
+const buildToolOnlyFallbackReplyBeforeDirectWebSearch = buildToolOnlyFallbackReply;
+buildToolOnlyFallbackReply = function buildToolOnlyFallbackReplyWithDirectWebSearch(messages = []) {
+  const summary = buildToolOnlyFallbackReplyBeforeDirectWebSearch(messages);
+  if (summary) {
+    return summary;
+  }
+  const lastToolMessage = [...messages].reverse().find((message) => message?.role === "tool" && typeof message.content === "string");
+  if (!lastToolMessage?.content) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(lastToolMessage.content);
+    if (parsed?.query && Array.isArray(parsed.results)) {
+      return formatDirectWebSearchReplyInApp(parsed);
+    }
+  } catch {}
+  return "";
+};
+
+function shouldUseLeanWebSearchMode(userText = "", tools = []) {
+  const text = String(userText || "").trim();
+  if (!text) return false;
+  if (hasExplicitSchedulerIntent(text) || hasExplicitQqIntent(text) || canUseWriteTools(text)) {
+    return false;
+  }
+  const toolNames = Array.isArray(tools)
+    ? tools.map((tool) => String(tool?.function?.name || "").trim()).filter(Boolean)
+    : [];
+  if (!toolNames.includes("web_search")) {
+    return false;
+  }
+  return LIVE_WEB_QUERY_HINT_RE.test(text) && LIVE_WEB_QUERY_ACTION_RE.test(text);
+}
+
+function trimConversationForLeanWebSearch(messages = []) {
+  return Array.isArray(messages) ? messages.slice(-4) : [];
+}
+
 const systemMessagesBeforeSkillRemovalFinal = systemMessages;
 systemMessages = function systemMessagesWithoutSkills() {
   clearRemovedSkillState();
@@ -9400,6 +9768,7 @@ renderQqTargetProfilesSelect();
 renderQqTargetProfileMeta();
 renderQqBotMeta();
 
+const QQ_LOCKED_PUBLIC_BOT_ENABLED = true;
 const QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT = "data/temp";
 
 function normalizeQqTargetTypeValue(value = "") {
@@ -9410,7 +9779,7 @@ function getHiddenQqPublicBaseConfig() {
   const record = saved();
   const base = qqTargetProfileRuntime.baseConfig || {};
   return {
-    enabled: typeof base.enabled === "boolean" ? base.enabled : Boolean(record.qqBotEnabled),
+    enabled: QQ_LOCKED_PUBLIC_BOT_ENABLED,
     groupMentionOnly: base.groupMentionOnly !== false,
     taskPushEnabled: Boolean(base.taskPushEnabled),
     triggerPrefix: normalizeQqConfigEditorValue(base.triggerPrefix ?? record.qqBotTriggerPrefix ?? ""),
@@ -9418,10 +9787,10 @@ function getHiddenQqPublicBaseConfig() {
     allowedGroups: normalizeQqConfigEditorValue(base.allowedGroups ?? record.qqBotAllowedGroups ?? ""),
     persona: String(base.persona ?? record.qqBotPersona ?? ""),
     personaPreset: String(base.personaPreset || record.qqBotPersonaPreset || "none").trim() || "none",
-    bridgeUrl: String(base.bridgeUrl || record.qqBridgeUrl || ""),
-    accessToken: String(base.accessToken || record.qqAccessToken || ""),
-    defaultTargetType: normalizeQqTargetTypeValue(base.defaultTargetType || record.qqDefaultTargetType || "private"),
-    defaultTargetId: String(base.defaultTargetId || record.qqDefaultTargetId || "").trim(),
+    bridgeUrl: String(els.qqBridgeUrl?.value?.trim() || base.bridgeUrl || record.qqBridgeUrl || ""),
+    accessToken: String(els.qqAccessToken?.value?.trim() || base.accessToken || record.qqAccessToken || ""),
+    defaultTargetType: DEFAULT_QQ_PUSH_TARGET_TYPE,
+    defaultTargetId: DEFAULT_QQ_PUSH_TARGET_ID,
     model: String(base.model || selectedModel() || ""),
     fileShareRoots: QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT,
     toolReadEnabled: true,
@@ -9590,8 +9959,8 @@ loadQqTargetProfilesFromServer = async function loadQqTargetProfilesFromServerLo
   await loadQqTargetProfilesFromServerBeforeLockedPublicSummaryFinal();
   qqTargetProfileRuntime.baseConfig = {
     ...(qqTargetProfileRuntime.baseConfig || {}),
-    defaultTargetType: normalizeQqTargetTypeValue(qqTargetProfileRuntime.baseConfig?.defaultTargetType || saved().qqDefaultTargetType || "private"),
-    defaultTargetId: String(qqTargetProfileRuntime.baseConfig?.defaultTargetId || saved().qqDefaultTargetId || "").trim(),
+    defaultTargetType: DEFAULT_QQ_PUSH_TARGET_TYPE,
+    defaultTargetId: DEFAULT_QQ_PUSH_TARGET_ID,
     fileShareRoots: QQ_LOCKED_PUBLIC_FILE_SHARE_ROOT,
     toolReadEnabled: true,
     toolWriteEnabled: false,
@@ -10686,8 +11055,8 @@ function resetScheduledTaskWorkbenchComposer() {
   if (cron) cron.value = "";
   if (prompt) prompt.value = "";
   if (qqPushEnabled) qqPushEnabled.checked = false;
-  if (qqTargetType) qqTargetType.value = "private";
-  if (qqTargetId) qqTargetId.value = "";
+  if (qqTargetType) qqTargetType.value = DEFAULT_QQ_PUSH_TARGET_TYPE;
+  if (qqTargetId) qqTargetId.value = DEFAULT_QQ_PUSH_TARGET_ID;
   syncScheduledTaskWorkbenchComposerUi();
   renderScheduledTaskQqPushFormState();
   renderScheduledTaskComposerSummary();
@@ -11124,21 +11493,166 @@ async function tryHandleScheduledTaskIntentFromNaturalText(text = "") {
   }
 }
 
+function clampScheduledTaskChatText(value = "", maxLength = 48) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (!Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
+function buildScheduledTaskChatStateLabel(task = {}) {
+  if (task?.running) return "运行中";
+  if (task?.enabled === false) return "已暂停";
+  return "已启用";
+}
+
+function buildScheduledTaskChatPreviewItems(tasks = [], limit = 4) {
+  return (Array.isArray(tasks) ? tasks : []).slice(0, Math.max(Number(limit) || 4, 0)).map((task, index) => {
+    const metaParts = [
+      buildScheduledTaskChatStateLabel(task),
+      task?.cronExpression ? `Cron ${String(task.cronExpression || "").trim()}` : "",
+      task?.qqPushEnabled ? buildScheduledTaskQqPushSummary(task).replace(/^QQ 推送：/, "") : "未推送到 QQ",
+    ].filter(Boolean);
+
+    return {
+      indexLabel: `#${index + 1}`,
+      title: clampScheduledTaskChatText(task?.name || "未命名任务", 28),
+      meta: metaParts.join(" · "),
+    };
+  });
+}
+
+function buildScheduledTaskIntentChatPayload(directScheduledTaskResult = {}, refreshedTasks = []) {
+  const intent = directScheduledTaskResult?.intent || {};
+  const result = directScheduledTaskResult?.result || {};
+  const action = String(intent?.action || "").trim();
+  const sourceTasks = Array.isArray(refreshedTasks) && refreshedTasks.length
+    ? refreshedTasks
+    : (Array.isArray(result?.tasks) ? result.tasks : []);
+  const totalCount = sourceTasks.length;
+  const enabledCount = sourceTasks.filter((task) => task?.enabled).length;
+  const task = action === "list"
+    ? null
+    : (result && typeof result === "object" && !Array.isArray(result?.tasks) ? result : (directScheduledTaskResult?.task || intent?.task || {}));
+  const taskName = clampScheduledTaskChatText(task?.name || intent?.task?.name || "未命名任务", 36);
+  const cronExpression = String(task?.cronExpression || intent?.args?.cronExpression || "").trim();
+  const tone = action === "delete" ? "is-neutral" : (task?.lastStatus === "error" ? "is-danger" : "is-success");
+  const chips = [];
+
+  if (cronExpression) {
+    chips.push({ label: "Cron", value: cronExpression });
+  }
+  if (action && action !== "list" && action !== "delete" && (typeof task?.enabled === "boolean" || task?.running)) {
+    chips.push({ label: "状态", value: buildScheduledTaskChatStateLabel(task) });
+  }
+  if (task?.qqPushEnabled) {
+    chips.push({ label: "QQ 推送", value: formatScheduledTaskQqTargetLabel(task.qqTargetType, task.qqTargetId) });
+  }
+  if (task?.creatorId) {
+    chips.push({ label: "创建者", value: buildScheduledTaskCreatorLabel(task) });
+  }
+  if (totalCount) {
+    chips.push({ label: "当前任务", value: `${totalCount} 个` });
+  }
+
+  let title = "定时任务已处理";
+  let subtitle = taskName;
+  let footer = totalCount
+    ? `右侧任务面板已同步刷新。当前共有 ${totalCount} 个任务，其中 ${enabledCount} 个已启用。`
+    : "右侧任务面板已同步刷新。";
+  let previewItems = [];
+  let text = String(directScheduledTaskResult?.message || "").trim();
+
+  switch (action) {
+    case "create":
+      title = "已创建定时任务";
+      text = `已创建定时任务：${taskName}${cronExpression ? `。Cron：${cronExpression}` : ""}。${footer}`;
+      break;
+    case "update":
+      title = "已更新定时任务";
+      text = `已更新定时任务：${taskName}${cronExpression ? `。Cron：${cronExpression}` : ""}。${footer}`;
+      break;
+    case "delete":
+      title = "已删除定时任务";
+      footer = totalCount
+        ? `右侧任务面板已同步刷新。删除后当前还剩 ${totalCount} 个任务。`
+        : "右侧任务面板已同步刷新。";
+      text = `已删除定时任务：${taskName}。${footer}`;
+      break;
+    case "enable":
+      title = "已启用定时任务";
+      text = `已启用定时任务：${taskName}。${footer}`;
+      break;
+    case "disable":
+      title = "已暂停定时任务";
+      text = `已暂停定时任务：${taskName}。${footer}`;
+      break;
+    case "run": {
+      const runStatus = task?.lastStatus === "error"
+        ? `执行失败：${clampScheduledTaskChatText(task?.lastError || "任务执行失败", 64)}`
+        : buildScheduledTaskResultStatusLabel(task);
+      title = "已执行定时任务";
+      chips.push({ label: "结果", value: runStatus, accent: task?.lastStatus === "error" ? "is-danger" : "is-success" });
+      footer = task?.lastStatus === "error"
+        ? clampScheduledTaskChatText(task?.lastError || "任务执行失败", 80)
+        : `右侧任务面板已同步刷新。${totalCount ? `当前共有 ${totalCount} 个任务。` : ""}`;
+      text = `已执行定时任务：${taskName}。${runStatus}。`;
+      break;
+    }
+    case "list":
+      title = totalCount ? `当前共有 ${totalCount} 个定时任务` : "当前还没有定时任务";
+      subtitle = totalCount ? `其中 ${enabledCount} 个已启用` : "可以在右侧面板新建任务";
+      previewItems = buildScheduledTaskChatPreviewItems(sourceTasks, 4);
+      footer = totalCount > previewItems.length
+        ? `聊天里只展示前 ${previewItems.length} 项，完整列表请看右侧任务面板。`
+        : "右侧任务面板已同步刷新。";
+      text = totalCount
+        ? `已刷新定时任务列表。当前共有 ${totalCount} 个任务，其中 ${enabledCount} 个已启用。`
+        : "当前还没有定时任务。";
+      break;
+    default:
+      text = text || "定时任务操作已完成。";
+      break;
+  }
+
+  return {
+    text,
+    renderType: "scheduled-task-reply",
+    renderMeta: {
+      tone,
+      title,
+      subtitle,
+      chips,
+      previewItems,
+      footer,
+    },
+  };
+}
+
 const askModelBeforeServerScheduledTaskIntent = askModel;
 askModel = async function askModelWithServerScheduledTaskIntent(userText) {
   const directScheduledTaskResult = await tryHandleScheduledTaskIntentFromNaturalText(userText);
   if (directScheduledTaskResult?.intent) {
-    const summary = String(directScheduledTaskResult.message || "").trim() || "定时任务操作已完成。";
+    const refreshedTasks = await loadScheduledTasksUI().catch(() => []);
+    const summaryPayload = buildScheduledTaskIntentChatPayload(directScheduledTaskResult, refreshedTasks);
+    const summary = String(summaryPayload.text || "").trim() || "定时任务操作已完成。";
     const messageTimestamp = Date.now();
     state.lastRequestedUserText = userText || "";
     state.messages.push(
       { role: "user", content: userText || "请继续处理", timestamp: messageTimestamp },
-      { role: "assistant", content: summary, timestamp: Date.now() }
+      {
+        role: "assistant",
+        content: summary,
+        renderType: summaryPayload.renderType,
+        renderMeta: summaryPayload.renderMeta,
+        timestamp: Date.now(),
+      }
     );
     save();
     refreshMetrics();
     autoSaveCurrentChat();
-    loadScheduledTasksUI().catch(() => {});
     return summary;
   }
 
@@ -11529,4 +12043,110 @@ renderScheduledTasks = function renderScheduledTasksNoModelDisplayTailFinal(task
 };
 
 renderScheduledTaskComposerSummary();
+loadScheduledTasksUI().catch(() => {});
+
+function buildScheduledTaskTimestampMetaText(task = {}) {
+  return `\u4e0b\u6b21\u6267\u884c\uff1a${formatScheduleTime(task.nextRunAt)} \u00b7 \u4e0a\u6b21\u6267\u884c\uff1a${formatScheduleTime(task.lastRunAt)}`;
+}
+
+function buildScheduledTaskTimestampDetailText(task = {}) {
+  return [
+    `\u4e0b\u6b21\u6267\u884c\uff1a${formatScheduleTime(task.nextRunAt)}`,
+    `\u4e0a\u6b21\u6267\u884c\uff1a${formatScheduleTime(task.lastRunAt)}`,
+  ].join("\n");
+}
+
+function buildScheduledTaskCreatorLabel(task = {}) {
+  const creatorType = String(task?.creatorType || "").trim().toLowerCase() === "group" ? "群" : "QQ";
+  const creatorId = String(task?.creatorId || "").trim() || "1036986718";
+  return `${creatorType} ${creatorId}`;
+}
+
+function getScheduledTaskCreatorFilterScope() {
+  const elements = typeof getScheduledTaskWorkbenchElements === "function"
+    ? getScheduledTaskWorkbenchElements()
+    : schedulerElements();
+  const creatorType = normalizeScheduledTaskQqTargetType(elements?.qqTargetType?.value || "private");
+  const creatorId = String(elements?.qqTargetId?.value || "").trim();
+  const includeAll = !creatorId || creatorId === "1036986718";
+  return {
+    creatorType,
+    creatorId,
+    includeAll,
+  };
+}
+
+const loadScheduledTasksUIBeforeCreatorFilterFinal = loadScheduledTasksUI;
+loadScheduledTasksUI = async function loadScheduledTasksUICreatorFilterFinal(options = {}) {
+  const { meta, list } = schedulerElements();
+  try {
+    const scope = getScheduledTaskCreatorFilterScope();
+    const query = (!scope.includeAll && scope.creatorId)
+      ? `?creatorType=${encodeURIComponent(scope.creatorType)}&creatorId=${encodeURIComponent(scope.creatorId)}`
+      : "";
+    const data = await schedulerRequest(`/scheduler/tasks${query}`);
+    const tasks = data.tasks || [];
+    renderScheduledTasks(tasks);
+    syncScheduledTaskDeliveries(tasks, options);
+    return tasks;
+  } catch (error) {
+    if (error.status === 404) {
+      if (meta) meta.textContent = "当前服务暂未启用定时任务接口，重启 node server.js 后可用。";
+      if (list) list.innerHTML = '<div class="file-empty">当前运行中的服务版本还不支持定时任务，请重启服务。</div>';
+      return [];
+    }
+    throw error;
+  }
+};
+
+const renderScheduledTasksBeforeCreatorFinal = renderScheduledTasks;
+renderScheduledTasks = function renderScheduledTasksWithCreatorFinal(tasks) {
+  renderScheduledTasksBeforeCreatorFinal(tasks);
+
+  const { list, meta } = typeof getScheduledTaskWorkbenchElements === "function"
+    ? getScheduledTaskWorkbenchElements()
+    : schedulerElements();
+  if (!list || !meta || !Array.isArray(tasks)) return;
+
+  const scope = getScheduledTaskCreatorFilterScope();
+  const scopeText = scope.includeAll ? "全部任务" : `${scope.creatorType === "group" ? "群" : "QQ"} ${scope.creatorId}`;
+  if (tasks.length) {
+    const enabledCount = tasks.filter((task) => task.enabled).length;
+    const qqPushCount = tasks.filter((task) => task.qqPushEnabled).length;
+    meta.textContent = `当前范围：${scopeText} · 共 ${tasks.length} 个任务，其中 ${enabledCount} 个已启用，${qqPushCount} 个开启 QQ 推送。`;
+  } else {
+    meta.textContent = `当前范围：${scopeText} · 当前还没有定时任务。`;
+  }
+
+  const items = Array.from(list.querySelectorAll(".schedule-task-item"));
+  items.forEach((item, index) => {
+    const task = tasks[index];
+    if (!task) return;
+
+    const summaryGrid = item.querySelector(".schedule-task-summary-grid");
+    if (summaryGrid && !summaryGrid.querySelector('[data-schedule-stat="creator"]')) {
+      const creatorCard = createScheduledTaskStatCard("创建者", buildScheduledTaskCreatorLabel(task));
+      creatorCard.dataset.scheduleStat = "creator";
+      summaryGrid.append(creatorCard);
+    }
+
+    const metaLine = item.querySelector(".schedule-task-meta-line");
+    if (metaLine && !String(metaLine.textContent || "").includes("创建者")) {
+      metaLine.textContent = `${String(metaLine.textContent || "").trim()} · 创建者：${buildScheduledTaskCreatorLabel(task)}`;
+    }
+  });
+};
+
+[
+  schedulerElements().qqTargetType,
+  schedulerElements().qqTargetId,
+].forEach((el) => {
+  el?.addEventListener("change", () => {
+    loadScheduledTasksUI().catch(() => {});
+  });
+  el?.addEventListener("input", () => {
+    loadScheduledTasksUI().catch(() => {});
+  });
+});
+
 loadScheduledTasksUI().catch(() => {});

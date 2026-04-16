@@ -363,7 +363,7 @@
               <summary class="sub-config-summary">
                 <div class="sub-config-head">
                   <strong>公共配置摘要</strong>
-                  <p>公共默认配置已隐藏，不再在界面中直接编辑；这里只展示当前公共状态和固定默认值。</p>
+                  <p>公共默认配置大部分仍保持隐藏；这里只额外保留 QQ 桥接地址和 Access Token 的可编辑入口，方便排查回复链路。</p>
                 </div>
               </summary>
 
@@ -374,6 +374,22 @@
                     <input id="qq-push-enabled" type="checkbox">
                   </label>
                 </div>
+                <label>
+                  <span>QQ 桥接地址</span>
+                  <input id="qq-bridge-url" type="text" placeholder="例如 http://127.0.0.1:3000/">
+                </label>
+                <label>
+                  <span>QQ Access Token</span>
+                  <input id="qq-access-token" type="password" placeholder="填写 NapCat / OneBot 的 token">
+                </label>
+                <label>
+                  <span>QQ Webhook 地址</span>
+                  <input id="qq-webhook-endpoint" type="text" readonly>
+                </label>
+                <div class="button-row left wrap-row">
+                  <button id="copy-qq-webhook-endpoint" class="ghost-button mini-action-button" type="button">复制 Webhook</button>
+                </div>
+                <div class="inline-meta-card">NapCat WebUI 已在本机运行：http://127.0.0.1:6099/webui 。如果 QQ API 提示 token 校验失败，请到这里查看或修改 token。</div>
                 <div id="qq-public-summary-text" class="qq-summary-text">QQ 公共配置摘要加载中...</div>
               </div>
             </details>

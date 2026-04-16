@@ -1,0 +1,71 @@
+<svg width="820" height="1100" viewBox="0 0 820 1100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="126" y1="72" x2="690" y2="1010" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF7FB"/>
+      <stop offset="0.48" stop-color="#F7F0FF"/>
+      <stop offset="1" stop-color="#EEF0FF"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(408 338) rotate(90) scale(356 276)">
+      <stop stop-color="#FFDDEA"/>
+      <stop offset="1" stop-color="#FFDDEA" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hair" x1="248" y1="146" x2="566" y2="638" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B2337"/>
+      <stop offset="0.45" stop-color="#6F4268"/>
+      <stop offset="1" stop-color="#BA79A3"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="362" y1="244" x2="468" y2="708" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF4F7"/>
+      <stop offset="0.58" stop-color="#FFE1EA"/>
+      <stop offset="1" stop-color="#FFD5E2"/>
+    </linearGradient>
+    <linearGradient id="dress" x1="230" y1="620" x2="552" y2="1008" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD6E9"/>
+      <stop offset="0.52" stop-color="#D7B5FA"/>
+      <stop offset="1" stop-color="#8A8EEB"/>
+    </linearGradient>
+    <linearGradient id="lip" x1="366" y1="598" x2="456" y2="610" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E882A7"/>
+      <stop offset="1" stop-color="#C96F8F"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="820" height="1100" rx="50" fill="url(#bg)"/>
+  <ellipse cx="408" cy="338" rx="286" ry="216" fill="url(#halo)"/>
+  <ellipse cx="410" cy="1000" rx="208" ry="42" fill="#D7D8F7" fill-opacity="0.42"/>
+
+  <path d="M258 316C258 196 328 130 410 130C492 130 562 196 562 316V542C562 684 500 776 410 776C320 776 258 684 258 542V316Z" fill="url(#hair)"/>
+  <path d="M282 354C282 262 334 214 410 214C486 214 538 262 538 354V526C538 637 484 718 410 718C336 718 282 637 282 526V354Z" fill="url(#skin)"/>
+  <path d="M300 332C308 247 362 204 410 204C459 204 508 244 518 334C472 310 442 302 408 302C373 302 342 312 300 332Z" fill="url(#hair)"/>
+  <path d="M314 332C318 258 364 226 410 226C458 226 500 262 506 332C470 317 441 311 410 311C379 311 350 317 314 332Z" fill="#4C2F47" fill-opacity="0.4"/>
+
+  <path d="M332 446C346 438 361 434 377 434C393 434 407 438 420 446" stroke="#6A4D67" stroke-width="6" stroke-linecap="round"/>
+  <path d="M401 446C414 438 428 434 444 434C460 434 475 438 488 446" stroke="#6A4D67" stroke-width="6" stroke-linecap="round"/>
+
+  <ellipse cx="374" cy="470" rx="18" ry="10" fill="#5A3B58"/>
+  <ellipse cx="447" cy="470" rx="18" ry="10" fill="#5A3B58"/>
+  <ellipse cx="369" cy="466" rx="4" ry="3" fill="#FFF3FA"/>
+  <ellipse cx="442" cy="466" rx="4" ry="3" fill="#FFF3FA"/>
+
+  <path d="M407 486L392 562C399 566 407 568 416 568C425 568 434 566 441 562L427 486" fill="#F5C5D7" fill-opacity="0.34"/>
+  <path d="M370 598C392 616 430 616 451 598" stroke="url(#lip)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M386 613C401 621 419 621 436 613" stroke="#F4A8C4" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+
+  <ellipse cx="323" cy="536" rx="24" ry="14" fill="#F8BFD5" fill-opacity="0.56"/>
+  <ellipse cx="497" cy="536" rx="24" ry="14" fill="#F8BFD5" fill-opacity="0.56"/>
+
+  <path d="M247 984C256 774 320 630 410 630C500 630 564 774 573 984H247Z" fill="url(#dress)"/>
+  <path d="M324 650C346 690 373 710 410 710C447 710 474 690 496 650" stroke="#FFF7FC" stroke-opacity="0.72" stroke-width="12" stroke-linecap="round"/>
+  <path d="M308 694C334 714 370 726 410 726C450 726 486 714 512 694" stroke="#F4E5FF" stroke-width="7" stroke-linecap="round" opacity="0.72"/>
+
+  <path d="M252 700C206 736 179 794 164 902" stroke="#FFDDEA" stroke-width="42" stroke-linecap="round"/>
+  <path d="M568 700C614 736 641 794 656 902" stroke="#FFDDEA" stroke-width="42" stroke-linecap="round"/>
+
+  <path d="M284 250C298 212 330 172 368 154" stroke="#B56A98" stroke-width="18" stroke-linecap="round" opacity="0.24"/>
+  <path d="M536 250C522 212 490 172 452 154" stroke="#B56A98" stroke-width="18" stroke-linecap="round" opacity="0.24"/>
+
+  <circle cx="162" cy="178" r="10" fill="#FFD9EC"/>
+  <circle cx="654" cy="146" r="12" fill="#E6D9FF"/>
+  <circle cx="690" cy="264" r="7" fill="#FFD9EC"/>
+  <circle cx="134" cy="298" r="8" fill="#E6D9FF"/>
+</svg>
