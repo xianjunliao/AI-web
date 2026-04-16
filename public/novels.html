@@ -1,0 +1,110 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小说项目工坊</title>
+  <link rel="stylesheet" href="novels.css">
+</head>
+<body>
+  <div class="novel-app">
+    <aside class="novel-sidebar">
+      <div class="sidebar-head">
+        <div>
+          <p class="eyebrow">NOVEL PROJECTS</p>
+          <h1>小说项目</h1>
+        </div>
+        <button id="create-project" class="primary-button" type="button">新建项目</button>
+      </div>
+      <div id="project-list" class="project-list"></div>
+    </aside>
+
+    <main class="novel-main">
+      <header class="main-head">
+        <div>
+          <p class="eyebrow">AUTOMATION</p>
+          <h2 id="project-title">未选择项目</h2>
+          <p id="project-meta" class="muted">选择左侧项目后查看详情与写作进度。</p>
+        </div>
+        <div class="button-row wrap">
+          <button id="open-chat" class="ghost-button" type="button">返回聊天页</button>
+          <button id="generate-settings" class="ghost-button" type="button">重新生成设定</button>
+          <button id="batch-generate" class="ghost-button" type="button">连续写作</button>
+          <button id="generate-chapter" class="primary-button" type="button">生成下一章</button>
+        </div>
+      </header>
+
+      <section class="panel-grid">
+        <section class="card">
+          <div class="card-head"><h3>项目信息</h3><div class="button-row"><button id="save-project" class="ghost-button" type="button">保存</button><button id="delete-project" class="danger-button" type="button">删除</button></div></div>
+          <div class="form-grid">
+            <label><span>名称</span><input id="project-name" type="text"></label>
+            <label><span>题材</span><input id="project-genre" type="text"></label>
+            <label><span>主题</span><input id="project-theme" type="text"></label>
+            <label><span>目标章节数</span><input id="project-target" type="number" min="0"></label>
+            <label><span>风格偏好</span><input id="project-style" type="text"></label>
+            <label><span>目标读者</span><input id="project-audience" type="text"></label>
+            <label class="full"><span>主角信息</span><textarea id="project-protagonist" rows="3"></textarea></label>
+            <label class="full"><span>核心梗概</span><textarea id="project-premise" rows="3"></textarea></label>
+            <label class="full"><span>关键词</span><input id="project-keywords" type="text" placeholder="用逗号分隔"></label>
+            <label class="full"><span>补充说明</span><textarea id="project-notes" rows="4"></textarea></label>
+            <label><span>QQ检阅</span><select id="project-qq-enabled"><option value="false">关闭</option><option value="true">开启</option></select></label>
+            <label><span>QQ目标类型</span><select id="project-qq-type"><option value="private">私聊</option><option value="group">群聊</option></select></label>
+            <label><span>QQ目标ID</span><input id="project-qq-id" type="text"></label>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h3>进度与审阅</h3></div>
+          <div id="project-progress" class="stack-list"></div>
+          <div class="review-box">
+            <textarea id="review-feedback" rows="4" placeholder="退回或重写时填写意见"></textarea>
+            <div class="button-row wrap">
+              <button id="approve-chapter" class="ghost-button" type="button">通过待审章</button>
+              <button id="rewrite-chapter" class="ghost-button" type="button">按意见重写</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h3>设定文件</h3>
+          <div class="button-row wrap">
+            <select id="setting-select"></select>
+            <button id="save-setting" class="ghost-button" type="button">保存当前设定</button>
+          </div>
+        </div>
+        <textarea id="setting-editor" class="editor" rows="16"></textarea>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h3>章节与草稿</h3></div>
+        <div class="chapter-layout">
+          <div id="chapter-list" class="chapter-list"></div>
+          <textarea id="chapter-viewer" class="editor" rows="18" readonly></textarea>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="project-dialog">
+    <form method="dialog" class="dialog-form">
+      <h3>新建小说项目</h3>
+      <label><span>名称</span><input id="new-name" type="text" required></label>
+      <label><span>题材</span><input id="new-genre" type="text"></label>
+      <label><span>主题</span><input id="new-theme" type="text"></label>
+      <label><span>核心梗概</span><textarea id="new-premise" rows="3"></textarea></label>
+      <label><span>主角信息</span><textarea id="new-protagonist" rows="3"></textarea></label>
+      <label><span>风格偏好</span><input id="new-style" type="text"></label>
+      <label><span>目标读者</span><input id="new-audience" type="text"></label>
+      <label><span>目标章节数</span><input id="new-target" type="number" min="0"></label>
+      <label><span>关键词</span><input id="new-keywords" type="text"></label>
+      <label><span>QQ目标ID</span><input id="new-qq-id" type="text"></label>
+      <menu class="button-row end"><button value="cancel" class="ghost-button">取消</button><button id="confirm-create" value="default" class="primary-button">创建并生成设定</button></menu>
+    </form>
+  </dialog>
+
+  <script src="novels.js"></script>
+</body>
+</html>

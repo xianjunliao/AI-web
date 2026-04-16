@@ -95,6 +95,17 @@ async function readJsonFile(filePath, fallbackValue) {
   }
 }
 
+async function readTextFile(filePath, fallbackValue = "") {
+  try {
+    return await fs.promises.readFile(filePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return fallbackValue;
+    }
+    throw error;
+  }
+}
+
 function isRetryableAtomicRenameError(error) {
   return ["EACCES", "EBUSY", "ENOTEMPTY", "EPERM"].includes(error?.code);
 }
@@ -104,6 +115,10 @@ function wait(ms) {
 }
 
 async function writeJsonFileAtomic(filePath, value) {
+  await writeFileAtomic(filePath, JSON.stringify(value, null, 2));
+}
+
+async function writeFileAtomic(filePath, content) {
   const dirPath = path.dirname(filePath);
   const tempPath = path.join(
     dirPath,
@@ -112,7 +127,7 @@ async function writeJsonFileAtomic(filePath, value) {
 
   await fs.promises.mkdir(dirPath, { recursive: true });
   try {
-    await fs.promises.writeFile(tempPath, JSON.stringify(value, null, 2), "utf8");
+    await fs.promises.writeFile(tempPath, String(content ?? ""), "utf8");
     for (let attempt = 0; ; attempt += 1) {
       try {
         await fs.promises.rename(tempPath, filePath);
@@ -196,7 +211,9 @@ module.exports = {
   createStaticPathGuard,
   migrateLegacyDataFile,
   readJsonFile,
+  readTextFile,
   readRequestBody,
   resolveWorkspacePath,
+  writeFileAtomic,
   writeJsonFileAtomic,
 };

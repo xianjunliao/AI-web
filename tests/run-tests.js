@@ -7,8 +7,11 @@ const { Readable } = require("node:stream");
 const {
   createStaticPathGuard,
   migrateLegacyDataFile,
+  readJsonFile,
+  readTextFile,
   readRequestBody,
   resolveWorkspacePath,
+  writeFileAtomic,
   writeJsonFileAtomic,
 } = require("../server/server-utils");
 const { createExecuteToolCall } = require("../server/server-tool-dispatcher");
@@ -17,6 +20,7 @@ const { createQqModule } = require("../server/server-qq");
 const { createServerBootstrap } = require("../server/server-bootstrap");
 const { createTaskModelInvoker } = require("../server/server-task-model");
 const { maybeRunDirectWebSearch } = require("../server/server-live-web-search");
+const { createNovelModule } = require("../server/server-novel-projects");
 const {
   inferScheduledTaskIntentFromText,
   formatScheduledTaskActionReply,
@@ -136,6 +140,35 @@ function createWebhookRequest(event) {
   req.headers = {};
   req.method = "POST";
   return req;
+}
+
+function createNovelModuleHarness(overrides = {}) {
+  const root = createTempDir();
+  const novelsDir = path.join(root, "novels");
+  const sentMessages = [];
+  const novelModule = createNovelModule({
+    novelsDir,
+    readJsonFile,
+    readTextFile,
+    writeJsonFileAtomic,
+    writeFileAtomic,
+    readRequestBody,
+    sendJson: (res, statusCode, payload) => {
+      res.statusCode = statusCode;
+      res.payload = payload;
+    },
+    generateText: overrides.generateText || (async ({ purpose }) => `# ${purpose}\n\nmock content`),
+    sendQqMessage: async (args = {}) => {
+      sentMessages.push(args);
+      return { ok: true };
+    },
+    getQqBotConfig: () => ({
+      defaultTargetType: "private",
+      defaultTargetId: "123456",
+    }),
+    logDebug: () => {},
+  });
+  return { novelModule, novelsDir, sentMessages };
 }
 
 async function runTest(name, fn) {
@@ -1834,6 +1867,126 @@ async function main() {
     assert.equal(sentMessages[0].message.includes("创建者"), true);
     assert.equal(sentMessages[0].message.includes("创建时间"), false);
     assert.equal(sentMessages[0].message.includes("最后修改"), false);
+  });
+
+  await runTest("novel module creates project structure and generated settings", async () => {
+    const calls = [];
+    const { novelModule, novelsDir } = createNovelModuleHarness({
+      generateText: async ({ purpose }) => {
+        calls.push(purpose);
+        return `# ${purpose}\n\n内容`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "星海余烬",
+      genre: "玄幻",
+      theme: "成长",
+      autoGenerateSettings: true,
+    });
+
+    assert.equal(detail.project.name, "星海余烬");
+    assert.equal(calls.includes("novel_setting_world"), true);
+    const baseInfo = await readTextFile(path.join(novelsDir, detail.project.id, "settings", "base-info.md"), "");
+    assert.equal(baseInfo.includes("星海余烬"), true);
+  });
+
+  await runTest("novel module generates draft chapter and supports approval", async () => {
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose }) => {
+        if (purpose === "novel_chapter") {
+          return "# 第1章 星火初燃\n\n这是正文。";
+        }
+        if (purpose === "novel_summary") {
+          return "# 摘要\n\n主角踏上旅程。";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# 状态快照\n\n主角：出发。";
+        }
+        return `# ${purpose}\n\n内容`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "长夜航灯",
+      genre: "科幻",
+      autoGenerateSettings: false,
+    });
+
+    await novelModule.generateChapter(detail.project.id);
+    const projectAfterDraft = await novelModule.getProjectDetail(detail.project.id);
+    assert.equal(projectAfterDraft.state.pendingDraftChapter, 1);
+
+    await novelModule.approveChapter(detail.project.id, 1);
+    const chapter = await novelModule.getChapterContent(detail.project.id, 1);
+    const projectAfterApprove = await novelModule.getProjectDetail(detail.project.id);
+    assert.equal(chapter.status, "approved");
+    assert.equal(projectAfterApprove.state.lastApprovedChapter, 1);
+  });
+
+  await runTest("novel module supports batch generation with auto approval", async () => {
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        if (purpose === "novel_chapter") {
+          const match = String(userPrompt || "").match(/第\s+(\d+)\s+章/);
+          const chapterNo = match?.[1] || "1";
+          return `# 第${chapterNo}章 批量生成\n\n正文 ${chapterNo}`;
+        }
+        if (purpose === "novel_summary") {
+          return "# 摘要\n\n摘要";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# 快照\n\n快照";
+        }
+        return `# ${purpose}\n\n内容`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "群星回响",
+      genre: "奇幻",
+      autoGenerateSettings: false,
+    });
+
+    const result = await novelModule.batchGenerateChapters(detail.project.id, {
+      count: 2,
+      autoApprove: true,
+      stopOnReview: false,
+    });
+    const finalDetail = await novelModule.getProjectDetail(detail.project.id);
+
+    assert.equal(result.generated.length, 2);
+    assert.equal(finalDetail.state.lastApprovedChapter, 2);
+    assert.equal(finalDetail.state.pendingDraftChapter, null);
+  });
+
+  await runTest("qq external handler can process novel review commands", async () => {
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose }) => {
+        if (purpose === "novel_chapter") {
+          return "# 第1章 初章\n\n正文";
+        }
+        if (purpose === "novel_summary") {
+          return "# 摘要\n\n摘要";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# 快照\n\n快照";
+        }
+        return `# ${purpose}\n\n内容`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "霜河纪",
+      autoGenerateSettings: false,
+    });
+    await novelModule.generateChapter(detail.project.id);
+
+    const reply = await novelModule.handleQqCommand({
+      text: "通过 霜河纪 第1章",
+    });
+
+    assert.equal(reply.includes("已通过"), true);
   });
 
   if (process.exitCode) {

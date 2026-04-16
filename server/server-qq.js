@@ -26,6 +26,7 @@ function createQqModule(deps) {
     getSharedConnectionConfig,
     saveSharedConnectionConfig,
     logDebug,
+    handleExternalCommand,
   } = deps;
   const DEFAULT_QQ_PUSH_TARGET_TYPE = "private";
   const DEFAULT_QQ_PUSH_TARGET_ID = "1036986718";
@@ -2320,6 +2321,28 @@ function createQqModule(deps) {
         debug(`webhook ignored reason=missing_prefix target=${targetType}:${targetId}`);
         sendJson(res, 200, { ok: true, ignored: "missing_prefix" });
         return;
+      }
+
+      if (typeof handleExternalCommand === "function") {
+        const externalReply = await handleExternalCommand({
+          text: normalizedIncomingText,
+          event,
+          targetType,
+          targetId,
+          resolvedConfig,
+          actorUserId: String(event.user_id || "").trim(),
+        });
+        if (externalReply) {
+          await sendQqMessageFinal({
+            bridgeUrl: resolvedConfig.bridgeUrl,
+            accessToken: resolvedConfig.accessToken,
+            targetType,
+            targetId,
+            message: String(externalReply || ""),
+          });
+          sendJson(res, 200, { ok: true, replied: true, external: true });
+          return;
+        }
       }
 
       const reply = await generateQqBotReply(event);

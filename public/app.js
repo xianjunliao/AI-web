@@ -267,7 +267,7 @@ const els = {
   loadSkills: $("#load-skills"), uploadSkillZip: $("#upload-skill-zip"), downloadSkillZip: $("#download-skill-zip"), skillZipInput: $("#skill-zip-input"), applySkill: $("#apply-skill"), clearSkillSelection: $("#clear-skill-selection"), disableSkill: $("#disable-skill"), skillsList: $("#skills-list"), skillPreview: $("#skill-preview"),
   toolActivityTrigger: $("#tool-activity-trigger"), toolActivitySummary: $("#tool-activity-summary"), toolActivityList: $("#tool-activity-list"), toolActivityStatus: $("#tool-activity-status"),
   toolActivityModal: $("#tool-activity-modal"), toolActivityBackdrop: $("#tool-activity-backdrop"), toolActivityClose: $("#tool-activity-close"),
-  settingsTrigger: $("#settings-trigger"), settingsModal: $("#settings-modal"), settingsBackdrop: $("#settings-backdrop"), settingsClose: $("#settings-close"),
+  settingsTrigger: $("#settings-trigger"), novelStudioTrigger: $("#novel-studio-trigger"), settingsModal: $("#settings-modal"), settingsBackdrop: $("#settings-backdrop"), settingsClose: $("#settings-close"),
   inlinePromptModal: $("#inline-prompt-modal"), inlinePromptBackdrop: $("#inline-prompt-backdrop"), inlinePromptEyebrow: $("#inline-prompt-eyebrow"), inlinePromptTitle: $("#inline-prompt-title"), inlinePromptDescription: $("#inline-prompt-description"), inlinePromptInput: $("#inline-prompt-input"), inlinePromptCancel: $("#inline-prompt-cancel"), inlinePromptConfirm: $("#inline-prompt-confirm"),
   workspaceBody: $(".workspace-body"), previewPanel: $("#preview-panel"), previewResizer: $("#preview-resizer"), previewFrame: $("#preview-frame"), previewEmpty: $("#preview-empty"),
   togglePreviewSize: $("#toggle-preview-size"), closePreview: $("#close-preview"),
@@ -1852,6 +1852,9 @@ function bind() {
   els.userInput?.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); els.chatForm?.requestSubmit(); } });
   els.userInput?.addEventListener("input", () => refreshMetrics());
   els.settingsTrigger?.addEventListener("click", () => setSettingsModal(true));
+  els.novelStudioTrigger?.addEventListener("click", () => {
+    window.location.href = "/novels.html";
+  });
   els.settingsClose?.addEventListener("click", () => setSettingsModal(false));
   els.settingsBackdrop?.addEventListener("click", () => setSettingsModal(false));
   els.toolActivityTrigger?.addEventListener("click", () => setToolActivityModal(true));

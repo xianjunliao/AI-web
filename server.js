@@ -8,8 +8,10 @@ const {
   createStaticPathGuard,
   migrateLegacyDataFile,
   readJsonFile,
+  readTextFile,
   readRequestBody,
   resolveWorkspacePath,
+  writeFileAtomic,
   writeJsonFileAtomic,
 } = require("./server/server-utils");
 const { createExecuteToolCall } = require("./server/server-tool-dispatcher");
@@ -21,6 +23,7 @@ const { createStartupCleanup } = require("./server/server-cleanup");
 const { createDataInitializer, createServerBootstrap } = require("./server/server-bootstrap");
 const { createSharedConnectionConfigModule } = require("./server/server-connection-config");
 const { createStaticServer, createApiProxy } = require("./server/server-http");
+const { createNovelModule } = require("./server/server-novel-projects");
 const {
   inferScheduledTaskArgsFromText,
   inferScheduledTaskIntentFromText,
@@ -35,6 +38,7 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
 const LOGS_DIR = path.join(ROOT, "logs");
+const NOVELS_DIR = path.join(DATA_DIR, "novels");
 const LEGACY_PERSONA_PRESETS_DIR = path.join(ROOT, "人设");
 const LEGACY_SCHEDULED_TASKS_FILE = path.join(ROOT, "scheduled-tasks.json");
 const LEGACY_QQ_BOT_CONFIG_FILE = path.join(ROOT, "qq-bot-config.json");
@@ -164,6 +168,7 @@ let handleQqBotConfigPost;
 let handleQqWebhook;
 let pushScheduledTaskResultToQq;
 let getQqBotConfig;
+let novelModule;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -2229,6 +2234,35 @@ async function callLocalModelWithTools({
   return finalText;
 }
 
+async function generateNovelText({
+  systemPrompt,
+  userPrompt,
+  temperature = 0.7,
+} = {}) {
+  const model = String(getSharedConnectionConfig()?.model || "").trim();
+  if (!model) {
+    const error = new Error("Base connection model is not configured");
+    error.statusCode = 400;
+    throw error;
+  }
+  return await callLocalModelWithTools({
+    model,
+    messages: [
+      {
+        role: "system",
+        content: String(systemPrompt || "").trim() || "你是中文小说创作助手。",
+      },
+      {
+        role: "user",
+        content: String(userPrompt || "").trim(),
+      },
+    ],
+    tools: [],
+    temperature,
+    maxRounds: 1,
+  });
+}
+
 async function legacyCallLocalModelForTaskV3(task) {
   const taskTools = [
     {
@@ -2398,6 +2432,7 @@ const qqModule = createQqModule({
   getSharedConnectionConfig,
   saveSharedConnectionConfig,
   logDebug: appendServerDebugLog,
+  handleExternalCommand: (...args) => (novelModule ? novelModule.handleQqCommand(...args) : null),
 });
 
 ({
@@ -2410,6 +2445,20 @@ const qqModule = createQqModule({
   pushScheduledTaskResultToQq,
   getQqBotConfig,
 } = qqModule);
+
+novelModule = createNovelModule({
+  novelsDir: NOVELS_DIR,
+  readJsonFile,
+  readTextFile,
+  writeJsonFileAtomic,
+  writeFileAtomic,
+  readRequestBody,
+  sendJson,
+  generateText: (...args) => generateNovelText(...args),
+  sendQqMessage: (...args) => sendQqMessage(...args),
+  getQqBotConfig: () => (typeof getQqBotConfig === "function" ? getQqBotConfig() : {}),
+  logDebug: appendServerDebugLog,
+});
 
 // Canonical scheduled-task model invocation flow.
 const callLocalModelForTask = createTaskModelInvoker({
@@ -2581,6 +2630,21 @@ const server = http.createServer((req, res) => {
       handleScheduledTaskRun(res, taskId);
       return;
     }
+  }
+
+  if (pathname.startsWith("/novels/")) {
+    Promise.resolve(novelModule.handleRequest(req, res, pathname))
+      .then((handled) => {
+        if (!handled) {
+          sendJson(res, 404, { error: "Not found" });
+        }
+      })
+      .catch((error) => {
+        sendJson(res, error.statusCode || 500, {
+          error: error.message || "Novel request failed",
+        });
+      });
+    return;
   }
 
   if (pathname.startsWith("/api/")) {
@@ -2967,7 +3031,10 @@ async function handleSkillsDownloadRequest(req, res) {
 executeToolCall = qqModule.wrapToolExecutor(executeToolCall);
 
 const bootstrapServer = createServerBootstrap({
-  initializeDataFiles,
+  initializeDataFiles: async () => {
+    await initializeDataFiles();
+    await novelModule.ensureNovelsDir();
+  },
   runStartupCleanup,
   loadScheduledTasks,
   loadSharedConnectionConfig,
