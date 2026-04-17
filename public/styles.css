@@ -60,6 +60,16 @@ body {
     linear-gradient(180deg, #fbfdff 0%, #f5f8fd 52%, #edf3fa 100%);
 }
 
+body.has-custom-background {
+  background:
+    linear-gradient(180deg, rgba(248, 251, 255, 0.84), rgba(240, 245, 252, 0.72)),
+    var(--custom-bg-image, none);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
 body::before,
 body::after {
   content: "";
@@ -837,6 +847,17 @@ label span,
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 249, 255, 0.88));
 }
 
+.background-config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(104, 136, 173, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 249, 255, 0.88));
+}
+
 .avatar-config-head {
   display: flex;
   align-items: flex-start;
@@ -873,6 +894,44 @@ label span,
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.workspace-background-preview {
+  position: relative;
+  min-height: 140px;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(119, 158, 210, 0.16);
+  background:
+    linear-gradient(180deg, rgba(250, 252, 255, 0.9), rgba(240, 246, 255, 0.82)),
+    radial-gradient(circle at top left, rgba(112, 174, 255, 0.18), transparent 24%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #33588f;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.workspace-background-preview.has-image {
+  background-size: cover;
+  background-position: center;
+}
+
+.workspace-background-preview.has-image::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(16, 30, 48, 0.08), rgba(16, 30, 48, 0.24));
+}
+
+.workspace-background-preview > span {
+  position: relative;
+  z-index: 1;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(6px);
 }
 
 .sub-config-block {

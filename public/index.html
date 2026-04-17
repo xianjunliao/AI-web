@@ -256,6 +256,21 @@
               </div>
             </div>
 
+            <div class="background-config-card">
+              <div class="avatar-config-head">
+                <span>网页背景图</span>
+                <div class="button-row left wrap-row avatar-config-actions">
+                  <button id="upload-workspace-background" class="ghost-button mini-action-button" type="button">上传背景</button>
+                  <button id="clear-workspace-background" class="ghost-button mini-action-button" type="button">恢复默认</button>
+                </div>
+              </div>
+              <div id="workspace-background-preview" class="workspace-background-preview" aria-label="网页背景图预览">
+                <span>当前使用默认背景</span>
+              </div>
+              <div id="workspace-background-meta" class="inline-meta-card">支持上传图片作为聊天页背景，保存在当前浏览器本地设置中。</div>
+              <input id="workspace-background-input" type="file" accept="image/*" hidden>
+            </div>
+
             <label>
               <span>系统提示词</span>
               <textarea id="system-prompt" name="systemPrompt" rows="4" placeholder="例如：你是一个有帮助的本地 AI 助手，请优先使用简洁清晰的中文回复。"></textarea>

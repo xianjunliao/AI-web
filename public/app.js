@@ -9,6 +9,7 @@ const MAX_FILE_CONTENT = 12000;
 const MAX_TOOL_ROUNDS = 6;
 const MODEL_HISTORY_LIMIT = 8;
 const MAX_AVATAR_SIZE = 2 * 1024 * 1024;
+const MAX_BACKGROUND_SIZE = 8 * 1024 * 1024;
 const PERSONA_PRESETS = [
   ["none", "不使用预设", "保留当前手写的人设内容，不自动覆盖。", ""],
   ["precise-assistant", "精准助手", "偏冷静、结构化，适合问答和分析。", "你是一名严谨、可靠、表达清晰的 AI 助手。\n优先保证事实准确，先给结论，再给关键依据。"],
@@ -260,6 +261,9 @@ const els = {
   uploadAssistantAvatar: $("#upload-assistant-avatar"), uploadUserAvatar: $("#upload-user-avatar"),
   clearAssistantAvatar: $("#clear-assistant-avatar"), clearUserAvatar: $("#clear-user-avatar"),
   assistantAvatarPreview: $("#assistant-avatar-preview"), userAvatarPreview: $("#user-avatar-preview"),
+  workspaceBackgroundInput: $("#workspace-background-input"), uploadWorkspaceBackground: $("#upload-workspace-background"),
+  clearWorkspaceBackground: $("#clear-workspace-background"), workspaceBackgroundPreview: $("#workspace-background-preview"),
+  workspaceBackgroundMeta: $("#workspace-background-meta"),
   metricContextChars: $("#metric-context-chars-chip"), metricEstimatedPrompt: $("#metric-est-prompt-chip"), metricTotal: $("#metric-total-chip"), metricSpeed: $("#metric-speed-chip"),
   metricContextUsage: $("#metric-context-usage-chip"), usageBarFill: $("#usage-bar-fill"), modelSelectionMeta: $("#model-selection-meta"),
   conversationMiniheadText: document.querySelector(".section-minihead-text"),
@@ -700,6 +704,10 @@ function getAvatarSettings() {
     userAvatar: s.userAvatar || "",
   };
 }
+function getWorkspaceBackgroundSetting() {
+  const s = saved();
+  return String(s.workspaceBackgroundImage || "");
+}
 function initialsForRole(role) {
   const raw = role === "assistant" ? (els.assistantName?.value || "AI") : (els.userName?.value || "我");
   return String(raw).trim().slice(0, 2) || (role === "assistant" ? "AI" : "我");
@@ -723,6 +731,29 @@ function renderAvatarPreview(role) {
 function renderAllAvatarPreviews() {
   renderAvatarPreview("assistant");
   renderAvatarPreview("user");
+}
+function applyWorkspaceBackground() {
+  const dataUrl = getWorkspaceBackgroundSetting();
+  document.body.classList.toggle("has-custom-background", Boolean(dataUrl));
+  if (dataUrl) {
+    document.body.style.setProperty("--custom-bg-image", `url("${dataUrl}")`);
+  } else {
+    document.body.style.removeProperty("--custom-bg-image");
+  }
+}
+function renderWorkspaceBackgroundPreview() {
+  const dataUrl = getWorkspaceBackgroundSetting();
+  if (els.workspaceBackgroundPreview) {
+    els.workspaceBackgroundPreview.classList.toggle("has-image", Boolean(dataUrl));
+    els.workspaceBackgroundPreview.style.backgroundImage = dataUrl ? `url("${dataUrl}")` : "";
+    els.workspaceBackgroundPreview.innerHTML = `<span>${dataUrl ? "当前背景图已启用" : "当前使用默认背景"}</span>`;
+  }
+  if (els.workspaceBackgroundMeta) {
+    els.workspaceBackgroundMeta.textContent = dataUrl
+      ? "当前已启用自定义背景图，仅保存在当前浏览器本地。"
+      : "支持上传图片作为聊天页背景，保存在当前浏览器本地设置中。";
+  }
+  applyWorkspaceBackground();
 }
 function cloneSkillForStorage(skill) {
   if (!skill || typeof skill !== "object") return null;
@@ -906,13 +937,14 @@ function save() {
     qqToolFileSendEnabled: Boolean(els.qqToolsFileSendEnabled?.checked),
     assistantAvatar: old.assistantAvatar || "",
     userAvatar: old.userAvatar || "",
+    workspaceBackgroundImage: old.workspaceBackgroundImage || "",
     configGroupState,
     skillsCache: state.skills.map((skill) => cloneSkillForStorage(skill)).filter(Boolean),
     selectedSkill: cloneSkillForStorage(state.selectedSkill),
     activeSkill: cloneSkillForStorage(state.activeSkill),
     ...getResizableTextareaState(),
   }));
-  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderQqPushMeta();
+  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderWorkspaceBackgroundPreview(); renderQqPushMeta();
 }
 function load() {
   const s = saved();
@@ -954,6 +986,7 @@ function load() {
   renderSkills();
   renderSkillPreview();
   renderAllAvatarPreviews();
+  renderWorkspaceBackgroundPreview();
   renderQqPushMeta();
 }
 
@@ -1921,6 +1954,7 @@ function bind() {
   els.attachFilesInline?.addEventListener("click", () => { spark(els.attachFilesInline); els.fileInput?.click(); });
   els.uploadAssistantAvatar?.addEventListener("click", () => { spark(els.uploadAssistantAvatar); els.assistantAvatarInput?.click(); });
   els.uploadUserAvatar?.addEventListener("click", () => { spark(els.uploadUserAvatar); els.userAvatarInput?.click(); });
+  els.uploadWorkspaceBackground?.addEventListener("click", () => { spark(els.uploadWorkspaceBackground); els.workspaceBackgroundInput?.click(); });
   els.clearAssistantAvatar?.addEventListener("click", () => {
     const next = { ...saved(), assistantAvatar: "" };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
@@ -1932,6 +1966,13 @@ function bind() {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
     renderAllAvatarPreviews();
     save();
+  });
+  els.clearWorkspaceBackground?.addEventListener("click", () => {
+    const next = { ...saved(), workspaceBackgroundImage: "" };
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    renderWorkspaceBackgroundPreview();
+    save();
+    setStatus("已恢复默认网页背景");
   });
   els.assistantAvatarInput?.addEventListener("change", async (e) => {
     try {
@@ -1959,6 +2000,22 @@ function bind() {
       save();
     } catch (error) {
       appendMessage("system", `用户头像上传失败：${error.message}`, "error");
+    } finally {
+      e.target.value = "";
+    }
+  });
+  els.workspaceBackgroundInput?.addEventListener("change", async (e) => {
+    try {
+      const [file] = Array.from(e.target.files || []);
+      if (!file) return;
+      if (file.size > MAX_BACKGROUND_SIZE) throw new Error("背景图片不能超过 8MB");
+      const next = { ...saved(), workspaceBackgroundImage: await readFileAsDataUrl(file) };
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      renderWorkspaceBackgroundPreview();
+      save();
+      setStatus(`已更新网页背景：${file.name}`);
+    } catch (error) {
+      appendMessage("system", `网页背景上传失败：${error.message}`, "error");
     } finally {
       e.target.value = "";
     }
