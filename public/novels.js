@@ -1,11 +1,19 @@
 const $ = (selector) => document.querySelector(selector);
 const SETTINGS_KEY = "local-ai-chat-settings";
 const SHARED_CONNECTION_CONFIG_ENDPOINT = "/connection-config";
+const MAX_BACKGROUND_SIZE = 8 * 1024 * 1024;
 
 const els = {
   list: $("#project-list"),
   listMeta: $("#project-list-meta"),
   modelMeta: $("#current-model-meta"),
+  novelBackgroundInput: $("#novel-background-input"),
+  uploadNovelBackground: $("#upload-novel-background"),
+  clearNovelBackground: $("#clear-novel-background"),
+  novelBackgroundPreview: $("#novel-background-preview"),
+  novelBackgroundMeta: $("#novel-background-meta"),
+  novelBackgroundBlur: $("#novel-background-blur"),
+  novelBackgroundShellOpacity: $("#novel-background-shell-opacity"),
   title: $("#project-title"),
   meta: $("#project-meta"),
   statusBar: $("#status-bar"),
@@ -132,15 +140,48 @@ function readSavedNovelSettings() {
   }
 }
 
-function getSavedBackgroundForNovelPage() {
+function getLegacyPageBackgroundRecord(target = "novel") {
   const saved = readSavedNovelSettings();
   const backgrounds = saved?.pageBackgrounds && typeof saved.pageBackgrounds === "object" ? saved.pageBackgrounds : {};
-  const record = backgrounds.novel && typeof backgrounds.novel === "object" ? backgrounds.novel : {};
+  const record = backgrounds[target] && typeof backgrounds[target] === "object" ? backgrounds[target] : {};
   return {
     image: String(record.image || ""),
     blur: Math.max(0, Number(record.blur) || 0),
     shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
   };
+}
+
+function getSavedBackgroundForNovelPage() {
+  const saved = readSavedNovelSettings();
+  const record = saved?.novelPageBackground && typeof saved.novelPageBackground === "object"
+    ? saved.novelPageBackground
+    : getLegacyPageBackgroundRecord("novel");
+  return {
+    image: String(record.image || ""),
+    blur: Math.max(0, Number(record.blur) || 0),
+    shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
+  };
+}
+
+function updateNovelPageBackgroundSetting(patch = {}) {
+  const current = readSavedNovelSettings();
+  const previous = getSavedBackgroundForNovelPage();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    novelPageBackground: {
+      image: String(patch.image ?? previous.image ?? ""),
+      blur: Math.max(0, Number(patch.blur ?? previous.blur ?? 0) || 0),
+      shellOpacity: Math.min(100, Math.max(30, Number(patch.shellOpacity ?? previous.shellOpacity ?? 70) || 70)),
+    },
+  }));
+}
+let novelBackgroundPersistTimer = null;
+function scheduleNovelPageBackgroundSettingSave(patch = {}) {
+  window.clearTimeout(novelBackgroundPersistTimer);
+  novelBackgroundPersistTimer = window.setTimeout(() => {
+    updateNovelPageBackgroundSetting(patch);
+    novelBackgroundPersistTimer = null;
+  }, 180);
 }
 
 function getSavedModelForNovelPage() {
@@ -183,7 +224,7 @@ function applyNovelPageBackground() {
   if (!body) return;
   const background = getSavedBackgroundForNovelPage();
   const shellOpacityFactor = background.shellOpacity / 100;
-  const surfaceOpacityFactor = Math.min(1, 0.82 + shellOpacityFactor * 0.18);
+  const surfaceOpacityFactor = Math.min(1, 0.1 + shellOpacityFactor * 0.45);
   toggleClassName(body, "has-custom-background", Boolean(background.image));
   if (background.image) {
     setStyleProperty(body, "--custom-bg-image", `url("${background.image}")`);
@@ -200,6 +241,65 @@ function applyNovelPageBackground() {
     removeStyleProperty(body, "--app-shell-opacity-factor");
     removeStyleProperty(body, "--surface-opacity-factor");
   }
+}
+
+function renderNovelBackgroundControls(override = null) {
+  const savedBackground = getSavedBackgroundForNovelPage();
+  const background = override && typeof override === "object"
+    ? {
+      ...savedBackground,
+      ...override,
+      image: String(override.image ?? savedBackground.image ?? ""),
+      blur: Math.max(0, Number(override.blur ?? savedBackground.blur ?? 0) || 0),
+      shellOpacity: Math.min(100, Math.max(30, Number(override.shellOpacity ?? savedBackground.shellOpacity ?? 70) || 70)),
+    }
+    : savedBackground;
+  const dataUrl = background.image;
+  if (els.novelBackgroundBlur) {
+    els.novelBackgroundBlur.value = String(background.blur);
+  }
+  if (els.novelBackgroundShellOpacity) {
+    els.novelBackgroundShellOpacity.value = String(background.shellOpacity);
+  }
+  if (els.novelBackgroundPreview) {
+    toggleClassName(els.novelBackgroundPreview, "has-image", Boolean(dataUrl));
+    els.novelBackgroundPreview.style.backgroundImage = dataUrl ? `url("${dataUrl}")` : "";
+    els.novelBackgroundPreview.innerHTML = `<span>${dataUrl ? "当前背景图已启用" : "当前使用默认背景"}</span>`;
+  }
+  if (els.novelBackgroundMeta) {
+    els.novelBackgroundMeta.textContent = dataUrl
+      ? `当前已为小说页启用自定义背景；柔化 ${background.blur}px，界面透明度 ${background.shellOpacity}%。`
+      : "支持为小说页上传独立背景，并调整柔化与界面透明度。";
+  }
+  const body = document?.body;
+  if (!body) return;
+  const shellOpacityFactor = background.shellOpacity / 100;
+  const surfaceOpacityFactor = Math.min(1, 0.1 + shellOpacityFactor * 0.45);
+  toggleClassName(body, "has-custom-background", Boolean(background.image));
+  if (background.image) {
+    setStyleProperty(body, "--custom-bg-image", `url("${background.image}")`);
+    setStyleProperty(body, "--custom-bg-blur", `${background.blur}px`);
+    setStyleProperty(body, "--custom-bg-image-opacity", "1");
+    setStyleProperty(body, "--custom-bg-image-scale", "1");
+    setStyleProperty(body, "--app-shell-opacity-factor", `${shellOpacityFactor}`);
+    setStyleProperty(body, "--surface-opacity-factor", `${surfaceOpacityFactor}`);
+  } else {
+    removeStyleProperty(body, "--custom-bg-image");
+    removeStyleProperty(body, "--custom-bg-blur");
+    removeStyleProperty(body, "--custom-bg-image-opacity");
+    removeStyleProperty(body, "--custom-bg-image-scale");
+    removeStyleProperty(body, "--app-shell-opacity-factor");
+    removeStyleProperty(body, "--surface-opacity-factor");
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
 }
 
 async function syncCurrentModel(options = {}) {
@@ -1586,6 +1686,43 @@ els.openChat.onclick = () => {
   if (isOperationBusy()) return;
   window.location.href = "/";
 };
+els.uploadNovelBackground?.addEventListener("click", () => {
+  if (isOperationBusy()) return;
+  els.novelBackgroundInput?.click();
+});
+els.clearNovelBackground?.addEventListener("click", () => {
+  updateNovelPageBackgroundSetting({ image: "" });
+  renderNovelBackgroundControls();
+  setStatusBar("已恢复小说页默认背景");
+});
+els.novelBackgroundInput?.addEventListener("change", async (event) => {
+  try {
+    const [file] = Array.from(event?.target?.files || []);
+    if (!file) return;
+    if (file.size > MAX_BACKGROUND_SIZE) {
+      throw new Error("背景图片不能超过 8MB");
+    }
+    updateNovelPageBackgroundSetting({ image: await readFileAsDataUrl(file) });
+    renderNovelBackgroundControls();
+    setStatusBar(`已更新小说页背景：${file.name}`);
+  } catch (error) {
+    setStatusBar(error?.message || "小说页背景上传失败。", "error");
+  } finally {
+    if (event?.target) {
+      event.target.value = "";
+    }
+  }
+});
+els.novelBackgroundBlur?.addEventListener("input", () => {
+  const blur = Number(els.novelBackgroundBlur.value || 0);
+  renderNovelBackgroundControls({ blur });
+  scheduleNovelPageBackgroundSettingSave({ blur });
+});
+els.novelBackgroundShellOpacity?.addEventListener("input", () => {
+  const shellOpacity = Number(els.novelBackgroundShellOpacity.value || 70);
+  renderNovelBackgroundControls({ shellOpacity });
+  scheduleNovelPageBackgroundSettingSave({ shellOpacity });
+});
 bindAsyncAction(els.saveProject, () => saveProject());
 bindAsyncAction(els.deleteProject, () => deleteProject());
 bindAsyncAction(els.saveSetting, () => saveSetting());
@@ -1606,7 +1743,7 @@ hideOperationFeedback("workspace");
 hideOperationFeedback("dialog");
 hideOperationFeedback("reader");
 renderCurrentModelMeta();
-applyNovelPageBackground();
+renderNovelBackgroundControls();
 syncCurrentModel({ quiet: true }).catch(() => {});
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -1615,7 +1752,7 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   });
   window.addEventListener("storage", (event) => {
     if (event?.key && event.key !== SETTINGS_KEY) return;
-    applyNovelPageBackground();
+    renderNovelBackgroundControls();
     const fallbackModel = getSavedModelForNovelPage();
     if (fallbackModel && fallbackModel !== state.currentModel) {
       state.currentModel = fallbackModel;

@@ -82,7 +82,7 @@
                 </span>
               </div>
             </div>
-            <textarea id="user-input" rows="5" aria-label="输入你的问题" placeholder="输入内容"></textarea>
+            <textarea id="user-input" rows="2" aria-label="输入你的问题" placeholder="输入内容"></textarea>
             <input id="file-input" type="file" multiple accept=".txt,.md,.js,.ts,.tsx,.jsx,.json,.html,.css,.java,.py,.go,.rs,.yml,.yaml,.xml,.csv,.sql,.sh,.bat,.ps1,.log,image/*" hidden>
             <div id="composer-files" class="composer-files is-hidden">
               <div class="composer-file-actions">
@@ -269,13 +269,6 @@
                   <button id="clear-workspace-background" class="ghost-button mini-action-button" type="button">恢复默认</button>
                 </div>
               </div>
-              <label>
-                <span>应用页面</span>
-                <select id="background-target-page">
-                  <option value="chat">聊天页</option>
-                  <option value="novel">小说页</option>
-                </select>
-              </label>
               <div id="workspace-background-preview" class="workspace-background-preview" aria-label="网页背景图预览">
                 <span>当前使用默认背景</span>
               </div>
@@ -289,7 +282,7 @@
                   <input id="background-shell-opacity" type="range" min="30" max="100" step="5" value="70">
                 </label>
               </div>
-              <div id="workspace-background-meta" class="inline-meta-card">支持上传图片作为聊天页背景，保存在当前浏览器本地设置中。</div>
+              <div id="workspace-background-meta" class="inline-meta-card">仅作用于聊天页，保存在当前浏览器本地设置中。</div>
               <input id="workspace-background-input" type="file" accept="image/*" hidden>
             </div>
 

@@ -24,6 +24,30 @@
 
         <div id="project-list-meta" class="inline-meta-card">当前还没有小说项目。</div>
         <div id="current-model-meta" class="inline-meta-card novel-model-meta">当前模型：读取中...</div>
+        <section class="background-config-card novel-background-card">
+          <div class="avatar-config-head">
+            <span>小说页背景图</span>
+            <div class="button-row left wrap-row avatar-config-actions">
+              <button id="upload-novel-background" class="ghost-button mini-action-button" type="button">上传背景</button>
+              <button id="clear-novel-background" class="ghost-button mini-action-button" type="button">恢复默认</button>
+            </div>
+          </div>
+          <div id="novel-background-preview" class="workspace-background-preview" aria-label="小说页背景图预览">
+            <span>当前使用默认背景</span>
+          </div>
+          <div class="background-control-grid">
+            <label>
+              <span>背景柔化</span>
+              <input id="novel-background-blur" type="range" min="0" max="24" step="1" value="0">
+            </label>
+            <label>
+              <span>界面透明度</span>
+              <input id="novel-background-shell-opacity" type="range" min="30" max="100" step="5" value="70">
+            </label>
+          </div>
+          <div id="novel-background-meta" class="inline-meta-card">仅作用于小说页，保存在当前浏览器本地设置中。</div>
+          <input id="novel-background-input" type="file" accept="image/*" hidden>
+        </section>
         <div id="project-list" class="project-list sidebar-history-list">
           <div class="file-empty">还没有小说项目。</div>
         </div>
