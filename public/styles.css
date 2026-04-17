@@ -27,10 +27,9 @@
   --scrollbar-thumb-hover: linear-gradient(180deg, rgba(79, 140, 255, 0.42), rgba(125, 197, 255, 0.34));
   --custom-bg-image: none;
   --custom-bg-blur: 0px;
-  --custom-bg-brightness: 1;
-  --custom-bg-overlay-opacity: 0.2;
-  --custom-bg-image-opacity: 0.72;
+  --custom-bg-image-opacity: 1;
   --custom-bg-image-scale: 1;
+  --surface-opacity-factor: 1;
 }
 
 * {
@@ -68,6 +67,11 @@ body {
 
 body.has-custom-background {
   background: transparent;
+  --text: #0f1b2d;
+  --muted: #465b79;
+  --panel: rgba(255, 255, 255, calc(0.42 + 0.44 * var(--surface-opacity-factor)));
+  --panel-strong: rgba(255, 255, 255, calc(0.58 + 0.36 * var(--surface-opacity-factor)));
+  --panel-alt: rgba(245, 249, 255, calc(0.56 + 0.38 * var(--surface-opacity-factor)));
 }
 
 body::before,
@@ -93,7 +97,7 @@ body.has-custom-background::before {
   background-position: center;
   background-repeat: no-repeat;
   background-attachment: fixed;
-  filter: blur(var(--custom-bg-blur)) brightness(var(--custom-bg-brightness));
+  filter: blur(var(--custom-bg-blur));
   transform: scale(var(--custom-bg-image-scale));
   opacity: var(--custom-bg-image-opacity);
   mask-image: none;
@@ -109,11 +113,14 @@ body::after {
 
 body.has-custom-background::after {
   opacity: 1;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, calc(var(--custom-bg-overlay-opacity) + 0.08)),
-    rgba(245, 249, 255, calc(var(--custom-bg-overlay-opacity) + 0.02))
-  );
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.14),
+      rgba(247, 250, 255, 0.06) 34%,
+      rgba(242, 247, 255, 0.1)
+    ),
+    repeating-linear-gradient(180deg, rgba(108, 148, 189, 0.01) 0 1px, transparent 1px 5px);
 }
 
 .app-shell {
@@ -192,7 +199,11 @@ body.has-custom-background::after {
   border-radius: 28px;
   background:
     radial-gradient(circle at top left, rgba(112, 174, 255, 0.06), transparent 22%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(246, 250, 255, 0.92));
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, calc(0.46 + 0.42 * var(--surface-opacity-factor))),
+      rgba(246, 250, 255, calc(0.54 + 0.38 * var(--surface-opacity-factor)))
+    );
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 12px 30px rgba(107, 128, 156, 0.08);
 }
 
@@ -203,7 +214,11 @@ body.has-custom-background::after {
   border-radius: 22px;
   border: 1px solid rgba(115, 148, 187, 0.08);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.24)),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, calc(0.34 + 0.42 * var(--surface-opacity-factor))),
+      rgba(255, 255, 255, calc(0.12 + 0.12 * var(--surface-opacity-factor)))
+    ),
     repeating-linear-gradient(180deg, rgba(97, 134, 176, 0.018) 0 1px, transparent 1px 32px);
   pointer-events: none;
 }
@@ -327,7 +342,7 @@ body.has-custom-background::after {
   padding: 18px;
   border: 1px solid rgba(79, 140, 255, 0.22);
   box-shadow: 0 28px 90px rgba(74, 98, 133, 0.22), 0 0 40px rgba(79, 140, 255, 0.08);
-  background: rgba(255, 255, 255, 0.98);
+  background: rgba(255, 255, 255, calc(0.66 + 0.32 * var(--surface-opacity-factor)));
 }
 
 .inline-prompt-panel {
@@ -354,7 +369,7 @@ body.has-custom-background::after {
   padding: 0 14px;
   border-radius: 14px;
   border: 1px solid rgba(104, 136, 173, 0.16);
-  background: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, calc(0.62 + 0.34 * var(--surface-opacity-factor)));
   color: var(--text);
   font: inherit;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
@@ -443,7 +458,11 @@ body.has-custom-background::after {
   padding: 14px;
   border: 1px solid rgba(104, 136, 173, 0.12);
   border-radius: 22px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(246, 250, 255, 0.9));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, calc(0.48 + 0.47 * var(--surface-opacity-factor))),
+    rgba(246, 250, 255, calc(0.44 + 0.46 * var(--surface-opacity-factor)))
+  );
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88), 0 10px 26px rgba(107, 128, 156, 0.08);
 }
 
@@ -472,7 +491,7 @@ body.has-custom-background::after {
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.45;
-  color: #73849b;
+  color: var(--muted);
 }
 
 .sidebar-history-toolbar {
@@ -534,7 +553,7 @@ body.has-custom-background::after {
   line-height: 1.7;
   padding: 18px;
   border-radius: 16px;
-  background: rgba(243, 247, 253, 0.92);
+  background: rgba(243, 247, 253, calc(0.56 + 0.36 * var(--surface-opacity-factor)));
   border: 1px dashed rgba(79, 140, 255, 0.14);
 }
 
@@ -580,7 +599,6 @@ body.preview-maximized::before {
 .section-head p,
 .status-bar,
 .hint,
-.message-content,
 label span,
 .file-meta,
 .file-empty {
@@ -599,7 +617,11 @@ label span,
   border-radius: 22px;
   background:
     radial-gradient(circle at 16% 18%, rgba(138, 187, 255, 0.16), transparent 28%),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(242, 247, 255, 0.92));
+    linear-gradient(
+      160deg,
+      rgba(255, 255, 255, calc(0.48 + 0.48 * var(--surface-opacity-factor))),
+      rgba(242, 247, 255, calc(0.44 + 0.48 * var(--surface-opacity-factor)))
+    );
   border: 1px solid rgba(104, 136, 173, 0.14);
   overflow: hidden;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 18px 36px rgba(107, 128, 156, 0.12);
@@ -630,7 +652,11 @@ label span,
   padding: 16px;
   border: 1px solid rgba(104, 136, 173, 0.12);
   border-radius: 22px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 250, 255, 0.9));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, calc(0.46 + 0.46 * var(--surface-opacity-factor))),
+    rgba(246, 250, 255, calc(0.44 + 0.46 * var(--surface-opacity-factor)))
+  );
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88), 0 10px 26px rgba(107, 128, 156, 0.1);
 }
 
@@ -678,8 +704,16 @@ label span,
   border: 1px solid rgba(104, 136, 173, 0.12);
   border-radius: 18px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 252, 255, 0.72)),
-    linear-gradient(135deg, rgba(239, 245, 255, 0.78), rgba(247, 250, 255, 0.7));
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, calc(0.44 + 0.48 * var(--surface-opacity-factor))),
+      rgba(250, 252, 255, calc(0.22 + 0.5 * var(--surface-opacity-factor)))
+    ),
+    linear-gradient(
+      135deg,
+      rgba(239, 245, 255, calc(0.24 + 0.54 * var(--surface-opacity-factor))),
+      rgba(247, 250, 255, calc(0.2 + 0.5 * var(--surface-opacity-factor)))
+    );
   overflow: visible;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 12px 22px rgba(107, 128, 156, 0.08);
 }
@@ -752,7 +786,11 @@ label span,
   color: var(--text);
   background:
     linear-gradient(90deg, rgba(79, 140, 255, 0.08), rgba(79, 140, 255, 0.02) 42%, transparent 72%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 255, 0.92));
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, calc(0.54 + 0.42 * var(--surface-opacity-factor))),
+      rgba(247, 250, 255, calc(0.42 + 0.5 * var(--surface-opacity-factor)))
+    );
   backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(104, 136, 173, 0.08);
   box-shadow: 0 10px 18px rgba(132, 152, 179, 0.08);
@@ -848,7 +886,11 @@ label span,
   gap: 12px;
   padding: 10px 16px 16px;
   border-top: 1px solid rgba(104, 136, 173, 0.1);
-  background: linear-gradient(180deg, rgba(236, 243, 252, 0.72), rgba(255, 255, 255, 0) 42%);
+  background: linear-gradient(
+    180deg,
+    rgba(236, 243, 252, calc(0.18 + 0.54 * var(--surface-opacity-factor))),
+    rgba(255, 255, 255, 0) 42%
+  );
   border-radius: 0 0 18px 18px;
 }
 
@@ -865,7 +907,11 @@ label span,
   padding: 12px;
   border-radius: 16px;
   border: 1px solid rgba(104, 136, 173, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 249, 255, 0.88));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, calc(0.48 + 0.46 * var(--surface-opacity-factor))),
+    rgba(245, 249, 255, calc(0.42 + 0.46 * var(--surface-opacity-factor)))
+  );
 }
 
 .background-config-card {
@@ -876,12 +922,16 @@ label span,
   padding: 12px;
   border-radius: 16px;
   border: 1px solid rgba(104, 136, 173, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 249, 255, 0.88));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, calc(0.48 + 0.46 * var(--surface-opacity-factor))),
+    rgba(245, 249, 255, calc(0.42 + 0.46 * var(--surface-opacity-factor)))
+  );
 }
 
 .background-control-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -2938,6 +2988,7 @@ button:disabled {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.58;
+  color: var(--text);
 }
 
 .message-content > :first-child {

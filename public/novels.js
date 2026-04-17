@@ -139,8 +139,7 @@ function getSavedBackgroundForNovelPage() {
   return {
     image: String(record.image || ""),
     blur: Math.max(0, Number(record.blur) || 0),
-    brightness: Math.min(140, Math.max(60, Number(record.brightness) || 100)),
-    overlay: Math.min(80, Math.max(0, Number(record.overlay) || 20)),
+    shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
   };
 }
 
@@ -179,36 +178,23 @@ function removeStyleProperty(element, name) {
   delete element.style[name];
 }
 
-function getNovelBackgroundWatermarkStyle(background = {}) {
-  const blur = Math.max(0, Number(background.blur) || 0);
-  const overlay = Math.min(80, Math.max(0, Number(background.overlay) || 20));
-  const overlayRatio = overlay / 100;
-  return {
-    opacity: Math.max(0.24, Math.min(0.62, 0.54 - overlayRatio * 0.34)),
-    scale: blur > 0 ? Math.min(1.03, 1 + blur * 0.0012) : 1,
-  };
-}
-
 function applyNovelPageBackground() {
   const body = document?.body;
   if (!body) return;
   const background = getSavedBackgroundForNovelPage();
-  const watermarkStyle = getNovelBackgroundWatermarkStyle(background);
   toggleClassName(body, "has-custom-background", Boolean(background.image));
   if (background.image) {
     setStyleProperty(body, "--custom-bg-image", `url("${background.image}")`);
     setStyleProperty(body, "--custom-bg-blur", `${background.blur}px`);
-    setStyleProperty(body, "--custom-bg-brightness", `${background.brightness / 100}`);
-    setStyleProperty(body, "--custom-bg-overlay-opacity", `${background.overlay / 100}`);
-    setStyleProperty(body, "--novel-bg-watermark-opacity", String(watermarkStyle.opacity));
-    setStyleProperty(body, "--novel-bg-watermark-scale", String(watermarkStyle.scale));
+    setStyleProperty(body, "--custom-bg-image-opacity", "1");
+    setStyleProperty(body, "--custom-bg-image-scale", "1");
+    setStyleProperty(body, "--surface-opacity-factor", `${background.shellOpacity / 100}`);
   } else {
     removeStyleProperty(body, "--custom-bg-image");
     removeStyleProperty(body, "--custom-bg-blur");
-    removeStyleProperty(body, "--custom-bg-brightness");
-    removeStyleProperty(body, "--custom-bg-overlay-opacity");
-    removeStyleProperty(body, "--novel-bg-watermark-opacity");
-    removeStyleProperty(body, "--novel-bg-watermark-scale");
+    removeStyleProperty(body, "--custom-bg-image-opacity");
+    removeStyleProperty(body, "--custom-bg-image-scale");
+    removeStyleProperty(body, "--surface-opacity-factor");
   }
 }
 

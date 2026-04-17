@@ -266,7 +266,7 @@ const els = {
   workspaceBackgroundInput: $("#workspace-background-input"), uploadWorkspaceBackground: $("#upload-workspace-background"),
   clearWorkspaceBackground: $("#clear-workspace-background"), workspaceBackgroundPreview: $("#workspace-background-preview"),
   workspaceBackgroundMeta: $("#workspace-background-meta"), backgroundTargetPage: $("#background-target-page"),
-  backgroundBlur: $("#background-blur"), backgroundBrightness: $("#background-brightness"), backgroundOverlay: $("#background-overlay"),
+  backgroundBlur: $("#background-blur"), backgroundShellOpacity: $("#background-shell-opacity"),
   metricContextChars: $("#metric-context-chars-chip"), metricEstimatedPrompt: $("#metric-est-prompt-chip"), metricTotal: $("#metric-total-chip"), metricSpeed: $("#metric-speed-chip"),
   metricContextUsage: $("#metric-context-usage-chip"), usageBarFill: $("#usage-bar-fill"), modelSelectionMeta: $("#model-selection-meta"),
   conversationMiniheadText: document.querySelector(".section-minihead-text"),
@@ -730,25 +730,14 @@ function getWorkspaceBackgroundSetting(targetOverride = "") {
   const fallback = {
     image: String(fallbackImage || ""),
     blur: 0,
-    brightness: 100,
-    overlay: 20,
+    shellOpacity: 70,
   };
   const record = backgrounds[target] && typeof backgrounds[target] === "object" ? backgrounds[target] : fallback;
   return {
     target,
     image: String(record.image || fallback.image || ""),
     blur: Math.max(0, Number(record.blur) || 0),
-    brightness: Math.min(140, Math.max(60, Number(record.brightness) || 100)),
-    overlay: Math.min(80, Math.max(0, Number(record.overlay) || 20)),
-  };
-}
-function getWorkspaceBackgroundVisualStyle(background = {}) {
-  const blur = Math.max(0, Number(background.blur) || 0);
-  const overlay = Math.min(80, Math.max(0, Number(background.overlay) || 20));
-  const overlayRatio = overlay / 100;
-  return {
-    opacity: Math.max(0.24, Math.min(0.62, 0.54 - overlayRatio * 0.34)),
-    scale: blur > 0 ? Math.min(1.03, 1 + blur * 0.0012) : 1,
+    shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
   };
 }
 function updateWorkspaceBackgroundSetting(patch = {}, { target = String(els.backgroundTargetPage?.value || "chat") } = {}) {
@@ -758,8 +747,7 @@ function updateWorkspaceBackgroundSetting(patch = {}, { target = String(els.back
   backgrounds[target] = {
     image: String(patch.image ?? previous.image ?? ""),
     blur: Math.max(0, Number(patch.blur ?? previous.blur ?? 0) || 0),
-    brightness: Math.min(140, Math.max(60, Number(patch.brightness ?? previous.brightness ?? 100) || 100)),
-    overlay: Math.min(80, Math.max(0, Number(patch.overlay ?? previous.overlay ?? 20) || 20)),
+    shellOpacity: Math.min(100, Math.max(30, Number(patch.shellOpacity ?? previous.shellOpacity ?? 70) || 70)),
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({
     ...current,
@@ -793,30 +781,26 @@ function renderAllAvatarPreviews() {
 }
 function applyWorkspaceBackground() {
   const background = getWorkspaceBackgroundSetting("chat");
-  const visualStyle = getWorkspaceBackgroundVisualStyle(background);
   document.body.classList.toggle("has-custom-background", Boolean(background.image));
   if (background.image) {
     document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
     document.body.style.setProperty("--custom-bg-blur", `${background.blur}px`);
-    document.body.style.setProperty("--custom-bg-brightness", `${background.brightness / 100}`);
-    document.body.style.setProperty("--custom-bg-overlay-opacity", `${background.overlay / 100}`);
-    document.body.style.setProperty("--custom-bg-image-opacity", String(visualStyle.opacity));
-    document.body.style.setProperty("--custom-bg-image-scale", String(visualStyle.scale));
+    document.body.style.setProperty("--custom-bg-image-opacity", "1");
+    document.body.style.setProperty("--custom-bg-image-scale", "1");
+    document.body.style.setProperty("--surface-opacity-factor", `${background.shellOpacity / 100}`);
   } else {
     document.body.style.removeProperty("--custom-bg-image");
     document.body.style.removeProperty("--custom-bg-blur");
-    document.body.style.removeProperty("--custom-bg-brightness");
-    document.body.style.removeProperty("--custom-bg-overlay-opacity");
     document.body.style.removeProperty("--custom-bg-image-opacity");
     document.body.style.removeProperty("--custom-bg-image-scale");
+    document.body.style.removeProperty("--surface-opacity-factor");
   }
 }
 function renderWorkspaceBackgroundPreview() {
   const background = getWorkspaceBackgroundSetting();
   const dataUrl = background.image;
   if (els.backgroundBlur) els.backgroundBlur.value = String(background.blur);
-  if (els.backgroundBrightness) els.backgroundBrightness.value = String(background.brightness);
-  if (els.backgroundOverlay) els.backgroundOverlay.value = String(background.overlay);
+  if (els.backgroundShellOpacity) els.backgroundShellOpacity.value = String(background.shellOpacity);
   if (els.workspaceBackgroundPreview) {
     els.workspaceBackgroundPreview.classList.toggle("has-image", Boolean(dataUrl));
     els.workspaceBackgroundPreview.style.backgroundImage = dataUrl ? `url("${dataUrl}")` : "";
@@ -824,8 +808,8 @@ function renderWorkspaceBackgroundPreview() {
   }
   if (els.workspaceBackgroundMeta) {
     els.workspaceBackgroundMeta.textContent = dataUrl
-      ? `当前已为${background.target === "chat" ? "聊天页" : "小说页"}启用自定义背景；模糊 ${background.blur}px，亮度 ${background.brightness}% ，覆盖 ${background.overlay}%。`
-      : `支持为${background.target === "chat" ? "聊天页" : "小说页"}上传专属背景，保存在当前浏览器本地设置中。`;
+      ? `当前已为${background.target === "chat" ? "聊天页" : "小说页"}启用自定义背景；柔化 ${background.blur}px，界面透明度 ${background.shellOpacity}%。`
+      : `支持为${background.target === "chat" ? "聊天页" : "小说页"}上传专属背景，并调整柔化与界面透明度。`;
   }
   applyWorkspaceBackground();
 }
@@ -2108,12 +2092,8 @@ function bind() {
     updateWorkspaceBackgroundSetting({ blur: Number(els.backgroundBlur.value || 0) });
     renderWorkspaceBackgroundPreview();
   });
-  els.backgroundBrightness?.addEventListener("input", () => {
-    updateWorkspaceBackgroundSetting({ brightness: Number(els.backgroundBrightness.value || 100) });
-    renderWorkspaceBackgroundPreview();
-  });
-  els.backgroundOverlay?.addEventListener("input", () => {
-    updateWorkspaceBackgroundSetting({ overlay: Number(els.backgroundOverlay.value || 20) });
+  els.backgroundShellOpacity?.addEventListener("input", () => {
+    updateWorkspaceBackgroundSetting({ shellOpacity: Number(els.backgroundShellOpacity.value || 70) });
     renderWorkspaceBackgroundPreview();
   });
   els.fileInput?.addEventListener("change", async (e) => { await consumeFiles(e.target.files); e.target.value = ""; });
