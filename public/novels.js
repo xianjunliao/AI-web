@@ -1,4 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
+const SETTINGS_KEY = "local-ai-chat-settings";
 
 const els = {
   list: $("#project-list"),
@@ -119,6 +120,38 @@ const state = {
   activeChapterCharacterCount: 0,
   readerChapterNo: 0,
 };
+
+function getSavedBackgroundForNovelPage() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    const backgrounds = saved?.pageBackgrounds && typeof saved.pageBackgrounds === "object" ? saved.pageBackgrounds : {};
+    const record = backgrounds.novel && typeof backgrounds.novel === "object" ? backgrounds.novel : {};
+    return {
+      image: String(record.image || ""),
+      blur: Math.max(0, Number(record.blur) || 0),
+      brightness: Math.min(140, Math.max(60, Number(record.brightness) || 100)),
+      overlay: Math.min(80, Math.max(0, Number(record.overlay) || 20)),
+    };
+  } catch {
+    return { image: "", blur: 0, brightness: 100, overlay: 20 };
+  }
+}
+
+function applyNovelPageBackground() {
+  const background = getSavedBackgroundForNovelPage();
+  document.body.classList.toggle("has-custom-background", Boolean(background.image));
+  if (background.image) {
+    document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
+    document.body.style.setProperty("--custom-bg-blur", `${background.blur}px`);
+    document.body.style.setProperty("--custom-bg-brightness", `${background.brightness / 100}`);
+    document.body.style.setProperty("--custom-bg-overlay-opacity", `${background.overlay / 100}`);
+  } else {
+    document.body.style.removeProperty("--custom-bg-image");
+    document.body.style.removeProperty("--custom-bg-blur");
+    document.body.style.removeProperty("--custom-bg-brightness");
+    document.body.style.removeProperty("--custom-bg-overlay-opacity");
+  }
+}
 
 const WORKSPACE_STATES = {
   empty: {
@@ -1414,6 +1447,7 @@ setReaderReviewExpanded(false);
 hideOperationFeedback("workspace");
 hideOperationFeedback("dialog");
 hideOperationFeedback("reader");
+applyNovelPageBackground();
 
 refreshProjects({ autoSelect: false }).catch((error) => {
   setStatusBar(error.message, "error");

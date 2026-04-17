@@ -264,8 +264,29 @@
                   <button id="clear-workspace-background" class="ghost-button mini-action-button" type="button">恢复默认</button>
                 </div>
               </div>
+              <label>
+                <span>应用页面</span>
+                <select id="background-target-page">
+                  <option value="chat">聊天页</option>
+                  <option value="novel">小说页</option>
+                </select>
+              </label>
               <div id="workspace-background-preview" class="workspace-background-preview" aria-label="网页背景图预览">
                 <span>当前使用默认背景</span>
+              </div>
+              <div class="background-control-grid">
+                <label>
+                  <span>背景柔化</span>
+                  <input id="background-blur" type="range" min="0" max="24" step="1" value="0">
+                </label>
+                <label>
+                  <span>背景亮度</span>
+                  <input id="background-brightness" type="range" min="60" max="140" step="5" value="100">
+                </label>
+                <label>
+                  <span>覆盖透明度</span>
+                  <input id="background-overlay" type="range" min="0" max="80" step="5" value="20">
+                </label>
               </div>
               <div id="workspace-background-meta" class="inline-meta-card">支持上传图片作为聊天页背景，保存在当前浏览器本地设置中。</div>
               <input id="workspace-background-input" type="file" accept="image/*" hidden>

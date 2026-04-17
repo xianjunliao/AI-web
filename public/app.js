@@ -263,7 +263,8 @@ const els = {
   assistantAvatarPreview: $("#assistant-avatar-preview"), userAvatarPreview: $("#user-avatar-preview"),
   workspaceBackgroundInput: $("#workspace-background-input"), uploadWorkspaceBackground: $("#upload-workspace-background"),
   clearWorkspaceBackground: $("#clear-workspace-background"), workspaceBackgroundPreview: $("#workspace-background-preview"),
-  workspaceBackgroundMeta: $("#workspace-background-meta"),
+  workspaceBackgroundMeta: $("#workspace-background-meta"), backgroundTargetPage: $("#background-target-page"),
+  backgroundBlur: $("#background-blur"), backgroundBrightness: $("#background-brightness"), backgroundOverlay: $("#background-overlay"),
   metricContextChars: $("#metric-context-chars-chip"), metricEstimatedPrompt: $("#metric-est-prompt-chip"), metricTotal: $("#metric-total-chip"), metricSpeed: $("#metric-speed-chip"),
   metricContextUsage: $("#metric-context-usage-chip"), usageBarFill: $("#usage-bar-fill"), modelSelectionMeta: $("#model-selection-meta"),
   conversationMiniheadText: document.querySelector(".section-minihead-text"),
@@ -704,9 +705,41 @@ function getAvatarSettings() {
     userAvatar: s.userAvatar || "",
   };
 }
-function getWorkspaceBackgroundSetting() {
+function getWorkspaceBackgroundSetting(targetOverride = "") {
   const s = saved();
-  return String(s.workspaceBackgroundImage || "");
+  const target = String(targetOverride || els.backgroundTargetPage?.value || "chat");
+  const backgrounds = s.pageBackgrounds && typeof s.pageBackgrounds === "object" ? s.pageBackgrounds : {};
+  const fallbackImage = target === "chat" ? s.workspaceBackgroundImage || "" : "";
+  const fallback = {
+    image: String(fallbackImage || ""),
+    blur: 0,
+    brightness: 100,
+    overlay: 20,
+  };
+  const record = backgrounds[target] && typeof backgrounds[target] === "object" ? backgrounds[target] : fallback;
+  return {
+    target,
+    image: String(record.image || fallback.image || ""),
+    blur: Math.max(0, Number(record.blur) || 0),
+    brightness: Math.min(140, Math.max(60, Number(record.brightness) || 100)),
+    overlay: Math.min(80, Math.max(0, Number(record.overlay) || 20)),
+  };
+}
+function updateWorkspaceBackgroundSetting(patch = {}, { target = String(els.backgroundTargetPage?.value || "chat") } = {}) {
+  const current = saved();
+  const backgrounds = current.pageBackgrounds && typeof current.pageBackgrounds === "object" ? { ...current.pageBackgrounds } : {};
+  const previous = backgrounds[target] && typeof backgrounds[target] === "object" ? backgrounds[target] : {};
+  backgrounds[target] = {
+    image: String(patch.image ?? previous.image ?? ""),
+    blur: Math.max(0, Number(patch.blur ?? previous.blur ?? 0) || 0),
+    brightness: Math.min(140, Math.max(60, Number(patch.brightness ?? previous.brightness ?? 100) || 100)),
+    overlay: Math.min(80, Math.max(0, Number(patch.overlay ?? previous.overlay ?? 20) || 20)),
+  };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    workspaceBackgroundImage: target === "chat" ? backgrounds[target].image : (current.workspaceBackgroundImage || ""),
+    pageBackgrounds: backgrounds,
+  }));
 }
 function initialsForRole(role) {
   const raw = role === "assistant" ? (els.assistantName?.value || "AI") : (els.userName?.value || "我");
@@ -733,16 +766,26 @@ function renderAllAvatarPreviews() {
   renderAvatarPreview("user");
 }
 function applyWorkspaceBackground() {
-  const dataUrl = getWorkspaceBackgroundSetting();
-  document.body.classList.toggle("has-custom-background", Boolean(dataUrl));
-  if (dataUrl) {
-    document.body.style.setProperty("--custom-bg-image", `url("${dataUrl}")`);
+  const background = getWorkspaceBackgroundSetting("chat");
+  document.body.classList.toggle("has-custom-background", Boolean(background.image));
+  if (background.image) {
+    document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
+    document.body.style.setProperty("--custom-bg-blur", `${background.blur}px`);
+    document.body.style.setProperty("--custom-bg-brightness", `${background.brightness / 100}`);
+    document.body.style.setProperty("--custom-bg-overlay-opacity", `${background.overlay / 100}`);
   } else {
     document.body.style.removeProperty("--custom-bg-image");
+    document.body.style.removeProperty("--custom-bg-blur");
+    document.body.style.removeProperty("--custom-bg-brightness");
+    document.body.style.removeProperty("--custom-bg-overlay-opacity");
   }
 }
 function renderWorkspaceBackgroundPreview() {
-  const dataUrl = getWorkspaceBackgroundSetting();
+  const background = getWorkspaceBackgroundSetting();
+  const dataUrl = background.image;
+  if (els.backgroundBlur) els.backgroundBlur.value = String(background.blur);
+  if (els.backgroundBrightness) els.backgroundBrightness.value = String(background.brightness);
+  if (els.backgroundOverlay) els.backgroundOverlay.value = String(background.overlay);
   if (els.workspaceBackgroundPreview) {
     els.workspaceBackgroundPreview.classList.toggle("has-image", Boolean(dataUrl));
     els.workspaceBackgroundPreview.style.backgroundImage = dataUrl ? `url("${dataUrl}")` : "";
@@ -750,8 +793,8 @@ function renderWorkspaceBackgroundPreview() {
   }
   if (els.workspaceBackgroundMeta) {
     els.workspaceBackgroundMeta.textContent = dataUrl
-      ? "当前已启用自定义背景图，仅保存在当前浏览器本地。"
-      : "支持上传图片作为聊天页背景，保存在当前浏览器本地设置中。";
+      ? `当前已为${background.target === "chat" ? "聊天页" : "小说页"}启用自定义背景；模糊 ${background.blur}px，亮度 ${background.brightness}% ，覆盖 ${background.overlay}%。`
+      : `支持为${background.target === "chat" ? "聊天页" : "小说页"}上传专属背景，保存在当前浏览器本地设置中。`;
   }
   applyWorkspaceBackground();
 }
@@ -1968,8 +2011,7 @@ function bind() {
     save();
   });
   els.clearWorkspaceBackground?.addEventListener("click", () => {
-    const next = { ...saved(), workspaceBackgroundImage: "" };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    updateWorkspaceBackgroundSetting({ image: "" });
     renderWorkspaceBackgroundPreview();
     save();
     setStatus("已恢复默认网页背景");
@@ -2009,8 +2051,7 @@ function bind() {
       const [file] = Array.from(e.target.files || []);
       if (!file) return;
       if (file.size > MAX_BACKGROUND_SIZE) throw new Error("背景图片不能超过 8MB");
-      const next = { ...saved(), workspaceBackgroundImage: await readFileAsDataUrl(file) };
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      updateWorkspaceBackgroundSetting({ image: await readFileAsDataUrl(file) });
       renderWorkspaceBackgroundPreview();
       save();
       setStatus(`已更新网页背景：${file.name}`);
@@ -2019,6 +2060,22 @@ function bind() {
     } finally {
       e.target.value = "";
     }
+  });
+  els.backgroundTargetPage?.addEventListener("change", () => {
+    renderWorkspaceBackgroundPreview();
+    setStatus(`已切换到${els.backgroundTargetPage.value === "chat" ? "聊天页" : "小说页"}背景设置`);
+  });
+  els.backgroundBlur?.addEventListener("input", () => {
+    updateWorkspaceBackgroundSetting({ blur: Number(els.backgroundBlur.value || 0) });
+    renderWorkspaceBackgroundPreview();
+  });
+  els.backgroundBrightness?.addEventListener("input", () => {
+    updateWorkspaceBackgroundSetting({ brightness: Number(els.backgroundBrightness.value || 100) });
+    renderWorkspaceBackgroundPreview();
+  });
+  els.backgroundOverlay?.addEventListener("input", () => {
+    updateWorkspaceBackgroundSetting({ overlay: Number(els.backgroundOverlay.value || 20) });
+    renderWorkspaceBackgroundPreview();
   });
   els.fileInput?.addEventListener("change", async (e) => { await consumeFiles(e.target.files); e.target.value = ""; });
   els.clearFiles?.addEventListener("click", () => { spark(els.clearFiles); clearFiles(); });

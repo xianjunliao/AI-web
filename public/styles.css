@@ -25,6 +25,10 @@
   --scrollbar-track: rgba(120, 140, 170, 0.08);
   --scrollbar-thumb: linear-gradient(180deg, rgba(79, 140, 255, 0.32), rgba(125, 197, 255, 0.26));
   --scrollbar-thumb-hover: linear-gradient(180deg, rgba(79, 140, 255, 0.42), rgba(125, 197, 255, 0.34));
+  --custom-bg-image: none;
+  --custom-bg-blur: 0px;
+  --custom-bg-brightness: 1;
+  --custom-bg-overlay-opacity: 0.2;
 }
 
 * {
@@ -61,13 +65,7 @@ body {
 }
 
 body.has-custom-background {
-  background:
-    linear-gradient(180deg, rgba(248, 251, 255, 0.84), rgba(240, 245, 252, 0.72)),
-    var(--custom-bg-image, none);
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
+  background: transparent;
 }
 
 body::before,
@@ -79,12 +77,24 @@ body::after {
 }
 
 body::before {
-  opacity: 0.38;
   background-image:
     linear-gradient(rgba(108, 148, 189, 0.045) 1px, transparent 1px),
     linear-gradient(90deg, rgba(108, 148, 189, 0.045) 1px, transparent 1px);
   background-size: 64px 64px;
   mask-image: radial-gradient(circle at center, black 62%, transparent 98%);
+  opacity: 0.38;
+}
+
+body.has-custom-background::before {
+  background-image: var(--custom-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  filter: blur(var(--custom-bg-blur)) brightness(var(--custom-bg-brightness));
+  transform: scale(1.04);
+  opacity: 1;
+  mask-image: none;
 }
 
 body::after {
@@ -93,6 +103,17 @@ body::after {
     repeating-linear-gradient(180deg, rgba(108, 148, 189, 0.012) 0 1px, transparent 1px 5px);
   mix-blend-mode: normal;
   opacity: 0.3;
+}
+
+body.has-custom-background::after {
+  opacity: 0.38;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, calc(var(--custom-bg-overlay-opacity) + 0.12)),
+      rgba(245, 249, 255, var(--custom-bg-overlay-opacity))
+    );
+  backdrop-filter: blur(calc(var(--custom-bg-blur) * 0.35));
 }
 
 .app-shell {
@@ -858,6 +879,12 @@ label span,
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 249, 255, 0.88));
 }
 
+.background-control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .avatar-config-head {
   display: flex;
   align-items: flex-start;
@@ -932,6 +959,12 @@ label span,
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(6px);
+}
+
+@media (max-width: 860px) {
+  .background-control-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .sub-config-block {
