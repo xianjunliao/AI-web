@@ -252,6 +252,7 @@ const els = {
   statusBar: $("#status-bar"), baseUrl: $("#base-url"), apiPath: $("#api-path"), modelSelect: $("#model-select"),
   remoteApiEnabled: $("#remote-api-enabled"), remoteBaseUrl: $("#remote-base-url"), remoteApiPath: $("#remote-api-path"),
   remoteModelsPath: $("#remote-models-path"), remoteApiKey: $("#remote-api-key"), remoteConnectionMeta: $("#remote-connection-meta"),
+  remoteConfigFields: $("#remote-config-fields"), connectionModeMeta: $("#connection-mode-meta"),
   assistantName: $("#assistant-name"), userName: $("#user-name"), systemPrompt: $("#system-prompt"), contextLimit: $("#context-limit"),
   qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqWebhookEndpoint: $("#qq-webhook-endpoint"), copyQqWebhookEndpoint: $("#copy-qq-webhook-endpoint"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqTargetProfileSelect: $("#qq-target-profile-select"), qqTargetProfileMeta: $("#qq-target-profile-meta"), saveQqTargetProfile: $("#save-qq-target-profile"), deleteQqTargetProfile: $("#delete-qq-target-profile"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
   qqBotEnabled: $("#qq-bot-enabled"), qqBotGroupMentionOnly: $("#qq-bot-group-mention-only"), qqTaskPushEnabled: $("#qq-task-push-enabled"), qqBotTriggerPrefix: $("#qq-bot-trigger-prefix"), qqBotAllowedUsers: $("#qq-bot-allowed-users"), qqBotAllowedGroups: $("#qq-bot-allowed-groups"), qqBotPersona: $("#qq-bot-persona"), qqBotPersonaPreset: $("#qq-bot-persona-preset"), qqBotPersonaPresetDescription: $("#qq-bot-persona-preset-description"), qqBotPersonaFileInput: $("#qq-bot-persona-file-input"), importQqBotPersona: $("#import-qq-bot-persona"), exportQqBotPersona: $("#export-qq-bot-persona"), clearQqBotPersona: $("#clear-qq-bot-persona"), qqBotMeta: $("#qq-bot-meta"), qqBotModelSelect: $("#qq-bot-model-select"), qqToolsReadEnabled: $("#qq-tools-read-enabled"), qqToolsWriteEnabled: $("#qq-tools-write-enabled"), qqToolsCommandEnabled: $("#qq-tools-command-enabled"), qqToolsSkillEnabled: $("#qq-tools-skill-enabled"), qqToolsFileSendEnabled: $("#qq-tools-file-send-enabled"), qqFileShareRoots: $("#qq-file-share-roots"), qqToolPermissionMeta: $("#qq-tool-permission-meta"), qqProfileToolsReadEnabled: $("#qq-profile-tools-read-enabled"), qqProfileToolsWriteEnabled: $("#qq-profile-tools-write-enabled"), qqProfileToolsCommandEnabled: $("#qq-profile-tools-command-enabled"), qqProfileToolsSkillEnabled: $("#qq-profile-tools-skill-enabled"), qqProfileToolsFileSendEnabled: $("#qq-profile-tools-file-send-enabled"), qqProfileFileShareRoots: $("#qq-profile-file-share-roots"), qqProfileToolPermissionMeta: $("#qq-profile-tool-permission-meta"), qqLoadSkills: $("#qq-load-skills"), qqApplySkill: $("#qq-apply-skill"), qqClearSkillSelection: $("#qq-clear-skill-selection"), qqDisableSkill: $("#qq-disable-skill"), qqSkillsList: $("#qq-skills-list"), qqSkillMeta: $("#qq-skill-meta"), qqSkillPreview: $("#qq-skill-preview"),
@@ -11391,15 +11392,27 @@ function getRemoteApiEnabled() {
 }
 
 function renderRemoteConnectionMeta() {
+  const remoteEnabled = getRemoteApiEnabled();
+  if (els.remoteConfigFields) {
+    els.remoteConfigFields.classList.toggle("is-hidden", !remoteEnabled);
+  }
+  if (els.connectionModeMeta) {
+    if (remoteEnabled) {
+      const remoteBaseUrl = els.remoteBaseUrl?.value?.trim() || "(未填写远程地址)";
+      els.connectionModeMeta.textContent = `当前模式：远程代理模式（默认主链路仍建议本地优先）｜ ${remoteBaseUrl}`;
+    } else {
+      els.connectionModeMeta.textContent = "当前模式：本地模型优先";
+    }
+  }
   if (!els.remoteConnectionMeta) return;
-  if (!getRemoteApiEnabled()) {
-    els.remoteConnectionMeta.textContent = "默认使用本地模型服务；仅在启用远程 API 后切换到远程代理。";
+  if (!remoteEnabled) {
+    els.remoteConnectionMeta.textContent = "远程配置区已收起；当前所有聊天、QQ、定时任务与小说功能默认继续走本地模型。";
     return;
   }
   const remoteBaseUrl = els.remoteBaseUrl?.value?.trim() || "(未填写)";
   const remoteApiPath = els.remoteApiPath?.value?.trim() || "/v1/chat/completions";
   const remoteModelsPath = els.remoteModelsPath?.value?.trim() || "/v1/models";
-  els.remoteConnectionMeta.textContent = `当前已启用远程 API：${remoteBaseUrl} ｜ chat=${remoteApiPath} ｜ models=${remoteModelsPath}`;
+  els.remoteConnectionMeta.textContent = `当前已启用远程 API：${remoteBaseUrl} ｜ chat=${remoteApiPath} ｜ models=${remoteModelsPath} ｜ 关闭后会立即回到本地模式。`;
 }
 
 function buildSharedConnectionConfigPayload({ includeModel = true } = {}) {

@@ -164,27 +164,31 @@
               </select>
             </label>
 
-            <label>
-              <span>远程接口地址</span>
-              <input id="remote-base-url" name="remoteBaseUrl" type="text" value="" placeholder="例如 https://api.deepseek.com">
-            </label>
-
-            <label>
-              <span>远程聊天路径</span>
-              <input id="remote-api-path" name="remoteApiPath" type="text" value="/v1/chat/completions" placeholder="/v1/chat/completions">
-            </label>
-
-            <label>
-              <span>远程模型列表路径</span>
-              <input id="remote-models-path" name="remoteModelsPath" type="text" value="/v1/models" placeholder="/v1/models">
-            </label>
-
-            <label>
-              <span>远程 API Key</span>
-              <input id="remote-api-key" name="remoteApiKey" type="password" value="" placeholder="仅保存在本机 data/connection-config.json">
-            </label>
+            <div id="connection-mode-meta" class="inline-meta-card">当前模式：本地模型优先</div>
 
             <div id="remote-connection-meta" class="inline-meta-card">默认使用本地模型服务；仅在启用远程 API 后切换到远程代理。</div>
+
+            <div id="remote-config-fields" class="remote-config-fields is-hidden">
+              <label>
+                <span>远程接口地址</span>
+                <input id="remote-base-url" name="remoteBaseUrl" type="text" value="" placeholder="例如 https://api.deepseek.com">
+              </label>
+
+              <label>
+                <span>远程聊天路径</span>
+                <input id="remote-api-path" name="remoteApiPath" type="text" value="/v1/chat/completions" placeholder="/v1/chat/completions">
+              </label>
+
+              <label>
+                <span>远程模型列表路径</span>
+                <input id="remote-models-path" name="remoteModelsPath" type="text" value="/v1/models" placeholder="/v1/models">
+              </label>
+
+              <label>
+                <span>远程 API Key</span>
+                <input id="remote-api-key" name="remoteApiKey" type="password" value="" placeholder="仅保存在本机 data/connection-config.json">
+              </label>
+            </div>
 
             <div class="button-row left">
               <button id="test-connection" class="ghost-button" type="button">测试连接</button>

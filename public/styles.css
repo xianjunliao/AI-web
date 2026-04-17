@@ -1161,6 +1161,19 @@ label span,
   line-height: 1.45;
 }
 
+.is-hidden {
+  display: none !important;
+}
+
+.remote-config-fields {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px dashed rgba(104, 136, 173, 0.18);
+  background: rgba(246, 249, 255, 0.78);
+}
+
 .name-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
