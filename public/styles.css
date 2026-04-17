@@ -29,6 +29,7 @@
   --custom-bg-blur: 0px;
   --custom-bg-image-opacity: 1;
   --custom-bg-image-scale: 1;
+  --app-shell-opacity-factor: 1;
   --surface-opacity-factor: 1;
 }
 
@@ -124,12 +125,39 @@ body.has-custom-background::after {
 }
 
 .app-shell {
+  position: relative;
+  isolation: isolate;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 18px;
   height: 100vh;
   padding: 18px;
   overflow: hidden;
+}
+
+body.has-custom-background .app-shell::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  z-index: 0;
+  border-radius: 34px;
+  border: 1px solid rgba(255, 255, 255, calc(0.04 + 0.22 * var(--app-shell-opacity-factor)));
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, calc(0.08 + 0.52 * var(--app-shell-opacity-factor))),
+      rgba(244, 248, 255, calc(0.06 + 0.42 * var(--app-shell-opacity-factor)))
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, calc(0.12 + 0.2 * var(--app-shell-opacity-factor))),
+    0 28px 60px rgba(71, 95, 129, 0.12);
+  backdrop-filter: blur(calc(12px + 10px * var(--app-shell-opacity-factor))) saturate(1.04);
+  pointer-events: none;
+}
+
+.app-shell > * {
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar,

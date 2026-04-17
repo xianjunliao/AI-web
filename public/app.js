@@ -781,18 +781,22 @@ function renderAllAvatarPreviews() {
 }
 function applyWorkspaceBackground() {
   const background = getWorkspaceBackgroundSetting("chat");
+  const shellOpacityFactor = background.shellOpacity / 100;
+  const surfaceOpacityFactor = Math.min(1, 0.82 + shellOpacityFactor * 0.18);
   document.body.classList.toggle("has-custom-background", Boolean(background.image));
   if (background.image) {
     document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
     document.body.style.setProperty("--custom-bg-blur", `${background.blur}px`);
     document.body.style.setProperty("--custom-bg-image-opacity", "1");
     document.body.style.setProperty("--custom-bg-image-scale", "1");
-    document.body.style.setProperty("--surface-opacity-factor", `${background.shellOpacity / 100}`);
+    document.body.style.setProperty("--app-shell-opacity-factor", `${shellOpacityFactor}`);
+    document.body.style.setProperty("--surface-opacity-factor", `${surfaceOpacityFactor}`);
   } else {
     document.body.style.removeProperty("--custom-bg-image");
     document.body.style.removeProperty("--custom-bg-blur");
     document.body.style.removeProperty("--custom-bg-image-opacity");
     document.body.style.removeProperty("--custom-bg-image-scale");
+    document.body.style.removeProperty("--app-shell-opacity-factor");
     document.body.style.removeProperty("--surface-opacity-factor");
   }
 }
@@ -808,8 +812,8 @@ function renderWorkspaceBackgroundPreview() {
   }
   if (els.workspaceBackgroundMeta) {
     els.workspaceBackgroundMeta.textContent = dataUrl
-      ? `当前已为${background.target === "chat" ? "聊天页" : "小说页"}启用自定义背景；柔化 ${background.blur}px，界面透明度 ${background.shellOpacity}%。`
-      : `支持为${background.target === "chat" ? "聊天页" : "小说页"}上传专属背景，并调整柔化与界面透明度。`;
+      ? `当前已为${background.target === "chat" ? "聊天页" : "小说页"}启用自定义背景；柔化 ${background.blur}px，外壳透明度 ${background.shellOpacity}%。`
+      : `支持为${background.target === "chat" ? "聊天页" : "小说页"}上传专属背景，并调整柔化与外壳透明度。`;
   }
   applyWorkspaceBackground();
 }

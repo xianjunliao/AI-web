@@ -182,18 +182,22 @@ function applyNovelPageBackground() {
   const body = document?.body;
   if (!body) return;
   const background = getSavedBackgroundForNovelPage();
+  const shellOpacityFactor = background.shellOpacity / 100;
+  const surfaceOpacityFactor = Math.min(1, 0.82 + shellOpacityFactor * 0.18);
   toggleClassName(body, "has-custom-background", Boolean(background.image));
   if (background.image) {
     setStyleProperty(body, "--custom-bg-image", `url("${background.image}")`);
     setStyleProperty(body, "--custom-bg-blur", `${background.blur}px`);
     setStyleProperty(body, "--custom-bg-image-opacity", "1");
     setStyleProperty(body, "--custom-bg-image-scale", "1");
-    setStyleProperty(body, "--surface-opacity-factor", `${background.shellOpacity / 100}`);
+    setStyleProperty(body, "--app-shell-opacity-factor", `${shellOpacityFactor}`);
+    setStyleProperty(body, "--surface-opacity-factor", `${surfaceOpacityFactor}`);
   } else {
     removeStyleProperty(body, "--custom-bg-image");
     removeStyleProperty(body, "--custom-bg-blur");
     removeStyleProperty(body, "--custom-bg-image-opacity");
     removeStyleProperty(body, "--custom-bg-image-scale");
+    removeStyleProperty(body, "--app-shell-opacity-factor");
     removeStyleProperty(body, "--surface-opacity-factor");
   }
 }
