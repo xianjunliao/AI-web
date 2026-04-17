@@ -7,6 +7,11 @@ function createSharedConnectionConfigModule({
 } = {}) {
   const DEFAULT_CONNECTION_CONFIG = {
     model: "",
+    remoteApiEnabled: false,
+    remoteBaseUrl: "",
+    remoteApiPath: "/v1/chat/completions",
+    remoteModelsPath: "/v1/models",
+    remoteApiKey: "",
   };
 
   let sharedConnectionConfigState = { ...DEFAULT_CONNECTION_CONFIG };
@@ -14,6 +19,11 @@ function createSharedConnectionConfigModule({
   function sanitizeSharedConnectionConfig(input = {}) {
     return {
       model: String(input?.model || "").trim(),
+      remoteApiEnabled: input?.remoteApiEnabled === true,
+      remoteBaseUrl: String(input?.remoteBaseUrl || "").trim(),
+      remoteApiPath: String(input?.remoteApiPath || "/v1/chat/completions").trim() || "/v1/chat/completions",
+      remoteModelsPath: String(input?.remoteModelsPath || "/v1/models").trim() || "/v1/models",
+      remoteApiKey: String(input?.remoteApiKey || "").trim(),
     };
   }
 

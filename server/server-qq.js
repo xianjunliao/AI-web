@@ -20,6 +20,7 @@ function createQqModule(deps) {
     sendJson,
     requestJson,
     targetOrigin,
+    getModelServiceConfig,
     executeToolCall,
     callLocalModelWithTools,
     getScheduledTasks,
@@ -554,6 +555,18 @@ function createQqModule(deps) {
     };
   }
 
+  function getResolvedModelServiceConfig() {
+    const sharedConfig = typeof getModelServiceConfig === "function" ? (getModelServiceConfig() || {}) : {};
+    return {
+      targetOrigin: String(sharedConfig?.targetOrigin || targetOrigin || "").trim(),
+      chatPath: String(sharedConfig?.chatPath || "/v1/chat/completions").trim() || "/v1/chat/completions",
+      modelsPath: String(sharedConfig?.modelsPath || "/v1/models").trim() || "/v1/models",
+      authHeaders: sharedConfig?.authHeaders && typeof sharedConfig.authHeaders === "object"
+        ? sharedConfig.authHeaders
+        : {},
+    };
+  }
+
   function sanitizeTargetProfilesMap(input = {}) {
     const output = {};
     if (!input || typeof input !== "object") return output;
@@ -785,8 +798,14 @@ function createQqModule(deps) {
   }
 
   async function fetchAvailableModelIds() {
-    const modelsUrl = new URL("/v1/models", targetOrigin);
-    const data = await requestJson(modelsUrl, { method: "GET" });
+    const modelService = getResolvedModelServiceConfig();
+    const modelsUrl = new URL(modelService.modelsPath, modelService.targetOrigin);
+    const data = await requestJson(modelsUrl, {
+      method: "GET",
+      headers: {
+        ...modelService.authHeaders,
+      },
+    });
     return Array.from(new Set(
       (Array.isArray(data?.data) ? data.data : [])
         .map((item) => String(item?.id || "").trim())
@@ -2009,10 +2028,11 @@ function createQqModule(deps) {
       { role: "user", content: userText },
     ];
 
-    const chatUrl = new URL("/v1/chat/completions", targetOrigin);
+    const modelService = getResolvedModelServiceConfig();
+    const chatUrl = new URL(modelService.chatPath, modelService.targetOrigin);
     let data;
     try {
-      data = await postJson(chatUrl, {}, {
+      data = await postJson(chatUrl, modelService.authHeaders, {
         model,
         messages,
         temperature: 0.7,
@@ -2191,14 +2211,15 @@ function createQqModule(deps) {
       currentQqToolContext = null;
     }
 
-    const chatUrl = new URL("/v1/chat/completions", targetOrigin);
+    const modelService = getResolvedModelServiceConfig();
+    const chatUrl = new URL(modelService.chatPath, modelService.targetOrigin);
     let reply = "";
 
     for (let i = 0; i < 6; i += 1) {
       let data;
       try {
         debug(`chat request target=${targetType}:${targetId} round=${i + 1} model=${model} messages=${workingMessages.length} tools=${tools.map((tool) => tool?.function?.name).filter(Boolean).join(",") || "none"}`);
-        data = await postJson(chatUrl, {}, {
+        data = await postJson(chatUrl, modelService.authHeaders, {
           model,
           messages: workingMessages,
           temperature: 0.7,

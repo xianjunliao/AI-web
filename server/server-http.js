@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const https = require("https");
 
 function createStaticServer({
   publicDir,
@@ -43,20 +44,32 @@ function createStaticServer({
 
 function createApiProxy({
   targetOrigin,
+  getProxyConfig,
   sendJson,
 } = {}) {
   return function proxyRequest(req, res, pathname) {
+    const proxyConfig = typeof getProxyConfig === "function" ? (getProxyConfig() || {}) : {};
+    const resolvedOrigin = String(proxyConfig.targetOrigin || targetOrigin || "").trim();
+    if (!resolvedOrigin) {
+      sendJson(res, 500, { error: "Proxy target is not configured" });
+      return;
+    }
     const targetUrl = new URL(
       pathname.replace(/^\/api/, "") + (req.url.includes("?") ? `?${req.url.split("?")[1]}` : ""),
-      targetOrigin
+      resolvedOrigin
     );
+    const transport = targetUrl.protocol === "https:" ? https : http;
+    const extraHeaders = proxyConfig.extraHeaders && typeof proxyConfig.extraHeaders === "object"
+      ? proxyConfig.extraHeaders
+      : {};
 
-    const proxyReq = http.request(
+    const proxyReq = transport.request(
       targetUrl,
       {
         method: req.method,
         headers: {
           ...req.headers,
+          ...extraHeaders,
           host: targetUrl.host,
         },
       },

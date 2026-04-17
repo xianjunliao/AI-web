@@ -34,6 +34,8 @@ const {
 const HOST = "127.0.0.1";
 const PORT = 8000;
 const TARGET_ORIGIN = "http://127.0.0.1:1234";
+const DEFAULT_CHAT_API_PATH = "/v1/chat/completions";
+const DEFAULT_MODELS_API_PATH = "/v1/models";
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
@@ -191,8 +193,40 @@ serveStatic = createStaticServer({
 });
 proxyRequest = createApiProxy({
   targetOrigin: TARGET_ORIGIN,
+  getProxyConfig: () => {
+    const resolved = getResolvedModelServiceConfig();
+    return {
+      targetOrigin: resolved.targetOrigin,
+      extraHeaders: resolved.authHeaders,
+    };
+  },
   sendJson,
 });
+
+function getResolvedModelServiceConfig() {
+  const sharedConfig = typeof getSharedConnectionConfig === "function"
+    ? (getSharedConnectionConfig() || {})
+    : {};
+  const remoteEnabled = sharedConfig?.remoteApiEnabled === true;
+  const remoteBaseUrl = String(sharedConfig?.remoteBaseUrl || "").trim();
+  const remoteApiKey = String(sharedConfig?.remoteApiKey || "").trim();
+  const remoteApiPath = String(sharedConfig?.remoteApiPath || DEFAULT_CHAT_API_PATH).trim() || DEFAULT_CHAT_API_PATH;
+  const remoteModelsPath = String(sharedConfig?.remoteModelsPath || DEFAULT_MODELS_API_PATH).trim() || DEFAULT_MODELS_API_PATH;
+  const useRemote = remoteEnabled && remoteBaseUrl;
+  return {
+    mode: useRemote ? "remote" : "local",
+    targetOrigin: useRemote ? remoteBaseUrl : TARGET_ORIGIN,
+    chatPath: useRemote ? remoteApiPath : DEFAULT_CHAT_API_PATH,
+    modelsPath: useRemote ? remoteModelsPath : DEFAULT_MODELS_API_PATH,
+    authHeaders: useRemote && remoteApiKey ? { Authorization: `Bearer ${remoteApiKey}` } : {},
+  };
+}
+
+function buildModelServiceUrl(kind = "chat") {
+  const resolved = getResolvedModelServiceConfig();
+  const apiPath = kind === "models" ? resolved.modelsPath : resolved.chatPath;
+  return new URL(apiPath, resolved.targetOrigin);
+}
 
 function clampTextForModel(value, maxLength) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -2124,7 +2158,8 @@ async function callLocalModelWithTools({
   temperature = 0.7,
   maxRounds = 6,
 }) {
-  const targetUrl = new URL("/v1/chat/completions", TARGET_ORIGIN);
+  const targetUrl = buildModelServiceUrl("chat");
+  const { authHeaders } = getResolvedModelServiceConfig();
   let workingMessages = [...messages];
   let finalText = "";
   const normalizedRequiredToolName = String(requiredToolName || "").trim();
@@ -2168,6 +2203,7 @@ async function callLocalModelWithTools({
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(requestBody),
+        ...authHeaders,
       },
       body: requestBody,
     });
@@ -2426,6 +2462,7 @@ const qqModule = createQqModule({
   sendJson,
   requestJson,
   targetOrigin: TARGET_ORIGIN,
+  getModelServiceConfig: () => getResolvedModelServiceConfig(),
   executeToolCall: (...args) => executeToolCall(...args),
   callLocalModelWithTools: (...args) => callLocalModelWithTools(...args),
   getScheduledTasks: () => listScheduledTasks(),

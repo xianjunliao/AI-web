@@ -250,6 +250,8 @@ const $ = (s) => document.querySelector(s);
 const els = {
   chatForm: $("#chat-form"), chatMessages: $("#chat-messages"), userInput: $("#user-input"), sendButton: $("#send-button"),
   statusBar: $("#status-bar"), baseUrl: $("#base-url"), apiPath: $("#api-path"), modelSelect: $("#model-select"),
+  remoteApiEnabled: $("#remote-api-enabled"), remoteBaseUrl: $("#remote-base-url"), remoteApiPath: $("#remote-api-path"),
+  remoteModelsPath: $("#remote-models-path"), remoteApiKey: $("#remote-api-key"), remoteConnectionMeta: $("#remote-connection-meta"),
   assistantName: $("#assistant-name"), userName: $("#user-name"), systemPrompt: $("#system-prompt"), contextLimit: $("#context-limit"),
   qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqWebhookEndpoint: $("#qq-webhook-endpoint"), copyQqWebhookEndpoint: $("#copy-qq-webhook-endpoint"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqTargetProfileSelect: $("#qq-target-profile-select"), qqTargetProfileMeta: $("#qq-target-profile-meta"), saveQqTargetProfile: $("#save-qq-target-profile"), deleteQqTargetProfile: $("#delete-qq-target-profile"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
   qqBotEnabled: $("#qq-bot-enabled"), qqBotGroupMentionOnly: $("#qq-bot-group-mention-only"), qqTaskPushEnabled: $("#qq-task-push-enabled"), qqBotTriggerPrefix: $("#qq-bot-trigger-prefix"), qqBotAllowedUsers: $("#qq-bot-allowed-users"), qqBotAllowedGroups: $("#qq-bot-allowed-groups"), qqBotPersona: $("#qq-bot-persona"), qqBotPersonaPreset: $("#qq-bot-persona-preset"), qqBotPersonaPresetDescription: $("#qq-bot-persona-preset-description"), qqBotPersonaFileInput: $("#qq-bot-persona-file-input"), importQqBotPersona: $("#import-qq-bot-persona"), exportQqBotPersona: $("#export-qq-bot-persona"), clearQqBotPersona: $("#clear-qq-bot-persona"), qqBotMeta: $("#qq-bot-meta"), qqBotModelSelect: $("#qq-bot-model-select"), qqToolsReadEnabled: $("#qq-tools-read-enabled"), qqToolsWriteEnabled: $("#qq-tools-write-enabled"), qqToolsCommandEnabled: $("#qq-tools-command-enabled"), qqToolsSkillEnabled: $("#qq-tools-skill-enabled"), qqToolsFileSendEnabled: $("#qq-tools-file-send-enabled"), qqFileShareRoots: $("#qq-file-share-roots"), qqToolPermissionMeta: $("#qq-tool-permission-meta"), qqProfileToolsReadEnabled: $("#qq-profile-tools-read-enabled"), qqProfileToolsWriteEnabled: $("#qq-profile-tools-write-enabled"), qqProfileToolsCommandEnabled: $("#qq-profile-tools-command-enabled"), qqProfileToolsSkillEnabled: $("#qq-profile-tools-skill-enabled"), qqProfileToolsFileSendEnabled: $("#qq-profile-tools-file-send-enabled"), qqProfileFileShareRoots: $("#qq-profile-file-share-roots"), qqProfileToolPermissionMeta: $("#qq-profile-tool-permission-meta"), qqLoadSkills: $("#qq-load-skills"), qqApplySkill: $("#qq-apply-skill"), qqClearSkillSelection: $("#qq-clear-skill-selection"), qqDisableSkill: $("#qq-disable-skill"), qqSkillsList: $("#qq-skills-list"), qqSkillMeta: $("#qq-skill-meta"), qqSkillPreview: $("#qq-skill-preview"),
@@ -276,8 +278,22 @@ const els = {
 const esc = (s) => String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 const nowId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const endpoint = (path, base = (els.baseUrl?.value.trim() || location.origin)) => new URL(path, `${base}/`).toString();
-const chatEndpoint = () => endpoint(els.apiPath?.value.trim() || "/api/v1/chat/completions");
-const modelsEndpoint = () => endpoint("/api/v1/models");
+const normalizeProxyPath = (value, fallback) => {
+  const normalized = String(value || fallback || "").trim() || fallback || "";
+  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+};
+const chatEndpoint = () => {
+  if (!(els.baseUrl?.value.trim()) && getRemoteApiEnabled()) {
+    return endpoint(`/api${normalizeProxyPath(els.remoteApiPath?.value, "/v1/chat/completions")}`, location.origin);
+  }
+  return endpoint(els.apiPath?.value.trim() || "/api/v1/chat/completions");
+};
+const modelsEndpoint = () => {
+  if (!(els.baseUrl?.value.trim()) && getRemoteApiEnabled()) {
+    return endpoint(`/api${normalizeProxyPath(els.remoteModelsPath?.value, "/v1/models")}`, location.origin);
+  }
+  return endpoint("/api/v1/models");
+};
 const selectedModel = () => els.modelSelect?.value?.trim() || "";
 function formatBeijingDateTime(value = Date.now(), options = {}) {
   const date = value instanceof Date ? value : new Date(value);
@@ -11368,6 +11384,37 @@ const sharedConnectionModelRuntime = {
   applyingRemoteModel: false,
   lastKnownModel: "",
 };
+let sharedConnectionConfigSaveTimer = null;
+
+function getRemoteApiEnabled() {
+  return String(els.remoteApiEnabled?.value || "false") === "true";
+}
+
+function renderRemoteConnectionMeta() {
+  if (!els.remoteConnectionMeta) return;
+  if (!getRemoteApiEnabled()) {
+    els.remoteConnectionMeta.textContent = "默认使用本地模型服务；仅在启用远程 API 后切换到远程代理。";
+    return;
+  }
+  const remoteBaseUrl = els.remoteBaseUrl?.value?.trim() || "(未填写)";
+  const remoteApiPath = els.remoteApiPath?.value?.trim() || "/v1/chat/completions";
+  const remoteModelsPath = els.remoteModelsPath?.value?.trim() || "/v1/models";
+  els.remoteConnectionMeta.textContent = `当前已启用远程 API：${remoteBaseUrl} ｜ chat=${remoteApiPath} ｜ models=${remoteModelsPath}`;
+}
+
+function buildSharedConnectionConfigPayload({ includeModel = true } = {}) {
+  const payload = {
+    remoteApiEnabled: getRemoteApiEnabled(),
+    remoteBaseUrl: els.remoteBaseUrl?.value?.trim() || "",
+    remoteApiPath: els.remoteApiPath?.value?.trim() || "/v1/chat/completions",
+    remoteModelsPath: els.remoteModelsPath?.value?.trim() || "/v1/models",
+    remoteApiKey: els.remoteApiKey?.value?.trim() || "",
+  };
+  if (includeModel) {
+    payload.model = selectedModel();
+  }
+  return payload;
+}
 
 function ensureSharedConnectionModelOption(modelName = "") {
   const normalized = String(modelName || "").trim();
@@ -11409,15 +11456,23 @@ function applySharedConnectionModelToUi(modelName = "", { persistLocal = true } 
 
 async function persistSharedConnectionModelToServer(modelName = selectedModel(), { quiet = false } = {}) {
   const normalized = String(modelName || "").trim();
-  if (!normalized) return "";
   try {
     const response = await j(SHARED_CONNECTION_CONFIG_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: normalized }),
+      body: JSON.stringify({
+        ...buildSharedConnectionConfigPayload({ includeModel: false }),
+        model: normalized,
+      }),
     });
     const savedModel = String(response?.config?.model || normalized).trim() || normalized;
     sharedConnectionModelRuntime.lastKnownModel = savedModel;
+    if (els.remoteApiEnabled) els.remoteApiEnabled.value = response?.config?.remoteApiEnabled ? "true" : "false";
+    if (els.remoteBaseUrl) els.remoteBaseUrl.value = String(response?.config?.remoteBaseUrl || "");
+    if (els.remoteApiPath) els.remoteApiPath.value = String(response?.config?.remoteApiPath || "/v1/chat/completions");
+    if (els.remoteModelsPath) els.remoteModelsPath.value = String(response?.config?.remoteModelsPath || "/v1/models");
+    if (els.remoteApiKey) els.remoteApiKey.value = String(response?.config?.remoteApiKey || "");
+    renderRemoteConnectionMeta();
     return savedModel;
   } catch (error) {
     if (!quiet) {
@@ -11427,9 +11482,24 @@ async function persistSharedConnectionModelToServer(modelName = selectedModel(),
   }
 }
 
+function queueSharedConnectionConfigSave() {
+  if (sharedConnectionConfigSaveTimer) {
+    clearTimeout(sharedConnectionConfigSaveTimer);
+  }
+  sharedConnectionConfigSaveTimer = setTimeout(() => {
+    persistSharedConnectionModelToServer(selectedModel(), { quiet: false }).catch(() => {});
+  }, 300);
+}
+
 async function syncSharedConnectionModelFromServer({ quiet = true } = {}) {
   try {
     const response = await j(SHARED_CONNECTION_CONFIG_ENDPOINT);
+    if (els.remoteApiEnabled) els.remoteApiEnabled.value = response?.config?.remoteApiEnabled ? "true" : "false";
+    if (els.remoteBaseUrl) els.remoteBaseUrl.value = String(response?.config?.remoteBaseUrl || "");
+    if (els.remoteApiPath) els.remoteApiPath.value = String(response?.config?.remoteApiPath || "/v1/chat/completions");
+    if (els.remoteModelsPath) els.remoteModelsPath.value = String(response?.config?.remoteModelsPath || "/v1/models");
+    if (els.remoteApiKey) els.remoteApiKey.value = String(response?.config?.remoteApiKey || "");
+    renderRemoteConnectionMeta();
     const sharedModel = String(response?.config?.model || "").trim();
     if (sharedModel) {
       applySharedConnectionModelToUi(sharedModel, { persistLocal: true });
@@ -11455,6 +11525,17 @@ els.modelSelect?.addEventListener("change", () => {
   persistSharedConnectionModelToServer(selectedModel(), { quiet: false }).catch(() => {});
 });
 
+[els.remoteApiEnabled, els.remoteBaseUrl, els.remoteApiPath, els.remoteModelsPath, els.remoteApiKey].forEach((el) => {
+  el?.addEventListener("change", () => {
+    renderRemoteConnectionMeta();
+    queueSharedConnectionConfigSave();
+  });
+  el?.addEventListener("blur", () => {
+    renderRemoteConnectionMeta();
+    queueSharedConnectionConfigSave();
+  });
+});
+
 window.addEventListener("focus", () => {
   syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
 });
@@ -11465,6 +11546,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
+renderRemoteConnectionMeta();
 
 function seemsNaturalScheduledTaskIntentText(text = "") {
   const source = String(text || "").trim();
