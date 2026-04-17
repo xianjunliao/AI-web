@@ -1290,10 +1290,10 @@ function createNovelModule(deps = {}) {
       payload.title ? `标题：${payload.title}` : "",
       payload.summary ? `摘要：${truncateText(payload.summary, 300)}` : "",
       "可用指令：",
-      `- 查看 ${project.name} 第${payload.chapterNo}章摘要`,
-      `- 查看 ${project.name} 第${payload.chapterNo}章正文`,
-      `- 通过 ${project.name} 第${payload.chapterNo}章`,
-      `- 退回 ${project.name} 第${payload.chapterNo}章：意见`,
+      `- -n 查看 ${project.name} 第${payload.chapterNo}章摘要`,
+      `- -n 查看 ${project.name} 第${payload.chapterNo}章正文`,
+      `- -n 通过 ${project.name} 第${payload.chapterNo}章`,
+      `- -n 退回 ${project.name} 第${payload.chapterNo}章：意见`,
     ].filter(Boolean).join("\n");
 
     try {
@@ -1311,7 +1311,15 @@ function createNovelModule(deps = {}) {
     if (!text) {
       return null;
     }
-    if (text === "小说列表") {
+    const matchPrefix = text.match(/^-n(?:\s+(.*))?$/i);
+    if (!matchPrefix) {
+      return null;
+    }
+    const commandText = String(matchPrefix[1] || "").trim();
+    if (!commandText) {
+      return "小说项目指令请使用：-n 小说列表";
+    }
+    if (commandText === "小说列表") {
       const projects = await listProjects();
       if (!projects.length) {
         return "当前还没有小说项目。";
@@ -1322,7 +1330,7 @@ function createNovelModule(deps = {}) {
       ].join("\n");
     }
 
-    let match = text.match(/^查看小说\s+(.+)$/);
+    let match = commandText.match(/^查看小说\s+(.+)$/);
     if (match) {
       const projectId = await resolveProjectId(match[1]);
       const detail = await getProjectDetail(projectId);
@@ -1335,7 +1343,7 @@ function createNovelModule(deps = {}) {
       ].join("\n");
     }
 
-    match = text.match(/^生成\s+(.+?)\s+下一章$/);
+    match = commandText.match(/^生成\s+(.+?)\s+下一章$/);
     if (match) {
       const projectId = await resolveProjectId(match[1]);
       const result = await generateChapter(projectId);
@@ -1346,7 +1354,7 @@ function createNovelModule(deps = {}) {
       ].join("\n");
     }
 
-    match = text.match(/^查看\s+(.+?)\s+第\s*(\d+)\s*章摘要$/);
+    match = commandText.match(/^查看\s+(.+?)\s+第\s*(\d+)\s*章摘要$/);
     if (match) {
       const projectId = await resolveProjectId(match[1]);
       const chapterNo = parseChapterNo(match[2]);
@@ -1357,21 +1365,21 @@ function createNovelModule(deps = {}) {
       return summary;
     }
 
-    match = text.match(/^查看\s+(.+?)\s+第\s*(\d+)\s*章正文$/);
+    match = commandText.match(/^查看\s+(.+?)\s+第\s*(\d+)\s*章正文$/);
     if (match) {
       const projectId = await resolveProjectId(match[1]);
       const chapter = await getChapterContent(projectId, match[2], { preferDraft: true });
       return truncateText(chapter.content, 1500);
     }
 
-    match = text.match(/^通过\s+(.+?)\s+第\s*(\d+)\s*章$/);
+    match = commandText.match(/^通过\s+(.+?)\s+第\s*(\d+)\s*章$/);
     if (match) {
       const projectId = await resolveProjectId(match[1]);
       await approveChapter(projectId, match[2]);
       return `《${match[1]}》第 ${match[2]} 章已通过。`;
     }
 
-    match = text.match(/^退回\s+(.+?)\s+第\s*(\d+)\s*章[:：]\s*(.+)$/);
+    match = commandText.match(/^退回\s+(.+?)\s+第\s*(\d+)\s*章[:：]\s*(.+)$/);
     if (match) {
       const projectId = await resolveProjectId(match[1]);
       await rejectChapter(projectId, match[2], match[3]);

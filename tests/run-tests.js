@@ -3807,7 +3807,7 @@ async function main() {
     await novelModule.generateChapter(detail.project.id);
 
     const reply = await novelModule.handleQqCommand({
-      text: "閫氳繃 闇滄渤绾?绗?绔",
+      text: "-n 閫氳繃 闇滄渤绾?绗?绔",
     });
 
     assert.equal(reply.includes("宸查€氳繃"), true);
