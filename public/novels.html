@@ -1,108 +1,249 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>小说项目工坊</title>
+  <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="novels.css">
 </head>
 <body>
-  <div class="novel-app">
-    <aside class="novel-sidebar">
-      <div class="sidebar-head">
-        <div>
-          <p class="eyebrow">NOVEL PROJECTS</p>
-          <h1>小说项目</h1>
+  <div class="app-shell novel-shell">
+    <aside class="sidebar novel-sidebar">
+      <section class="sidebar-panel novel-sidebar-panel">
+        <div class="section-head section-head-compact">
+          <div class="section-head-copy">
+            <p class="eyebrow">NOVEL STUDIO</p>
+            <h2>小说项目</h2>
+            <p>先创建项目，再从左侧选中它开始编辑设定与章节。</p>
+          </div>
+          <div class="sidebar-history-toolbar">
+            <button id="create-project" class="primary-button icon-button" type="button" title="新建项目" aria-label="新建项目">＋</button>
+          </div>
         </div>
-        <button id="create-project" class="primary-button" type="button">新建项目</button>
-      </div>
-      <div id="project-list" class="project-list"></div>
+
+        <div id="project-list-meta" class="inline-meta-card">当前还没有小说项目。</div>
+        <div id="project-list" class="project-list sidebar-history-list">
+          <div class="file-empty">还没有小说项目。</div>
+        </div>
+      </section>
     </aside>
 
-    <main class="novel-main">
-      <header class="main-head">
-        <div>
-          <p class="eyebrow">AUTOMATION</p>
-          <h2 id="project-title">未选择项目</h2>
-          <p id="project-meta" class="muted">选择左侧项目后查看详情与写作进度。</p>
+    <main class="workspace novel-workspace">
+      <header class="workspace-header">
+        <div class="workspace-header-main">
+          <p class="eyebrow">NOVEL WORKSPACE</p>
+          <h2 id="project-title">小说项目工坊</h2>
+          <div id="project-meta" class="current-chat-title">请先新建项目，创建后点击左侧项目查看详情。</div>
         </div>
-        <div class="button-row wrap">
-          <button id="open-chat" class="ghost-button" type="button">返回聊天页</button>
-          <button id="generate-settings" class="ghost-button" type="button">重新生成设定</button>
-          <button id="batch-generate" class="ghost-button" type="button">连续写作</button>
-          <button id="generate-chapter" class="primary-button" type="button">生成下一章</button>
+        <div class="button-row wrap-row workspace-chat-actions novel-workspace-actions">
+          <button id="open-chat" class="ghost-button settings-trigger" type="button">返回聊天页</button>
+          <div id="project-actions" class="button-row wrap-row novel-project-actions is-hidden">
+            <button id="generate-settings" class="ghost-button" type="button">重新生成设定</button>
+            <button id="reconcile-settings" class="ghost-button" type="button">按正文整理设定</button>
+            <button id="batch-generate" class="ghost-button" type="button">连续写作</button>
+            <button id="generate-chapter" class="primary-button" type="button">生成下一章</button>
+          </div>
         </div>
       </header>
 
-      <section class="panel-grid">
-        <section class="card">
-          <div class="card-head"><h3>项目信息</h3><div class="button-row"><button id="save-project" class="ghost-button" type="button">保存</button><button id="delete-project" class="danger-button" type="button">删除</button></div></div>
-          <div class="form-grid">
-            <label><span>名称</span><input id="project-name" type="text"></label>
-            <label><span>题材</span><input id="project-genre" type="text"></label>
-            <label><span>主题</span><input id="project-theme" type="text"></label>
-            <label><span>目标章节数</span><input id="project-target" type="number" min="0"></label>
-            <label><span>风格偏好</span><input id="project-style" type="text"></label>
-            <label><span>目标读者</span><input id="project-audience" type="text"></label>
-            <label class="full"><span>主角信息</span><textarea id="project-protagonist" rows="3"></textarea></label>
-            <label class="full"><span>核心梗概</span><textarea id="project-premise" rows="3"></textarea></label>
-            <label class="full"><span>关键词</span><input id="project-keywords" type="text" placeholder="用逗号分隔"></label>
-            <label class="full"><span>补充说明</span><textarea id="project-notes" rows="4"></textarea></label>
-            <label><span>QQ检阅</span><select id="project-qq-enabled"><option value="false">关闭</option><option value="true">开启</option></select></label>
-            <label><span>QQ目标类型</span><select id="project-qq-type"><option value="private">私聊</option><option value="group">群聊</option></select></label>
-            <label><span>QQ目标ID</span><input id="project-qq-id" type="text"></label>
+      <section class="workspace-overview workspace-overview-compact">
+        <section id="status-bar" class="status-bar">请先新建项目。创建完成后，从左侧点击项目开始编辑。</section>
+        <section id="operation-feedback" class="novel-operation-card is-hidden" aria-live="polite">
+          <div class="novel-operation-head">
+            <strong id="operation-title">正在处理</strong>
+            <span id="operation-percent">0%</span>
           </div>
+          <div class="novel-operation-track" aria-hidden="true">
+            <div id="operation-progress-fill" class="novel-operation-fill"></div>
+          </div>
+          <p id="operation-hint" class="novel-operation-hint">请稍候，处理中。</p>
         </section>
+      </section>
 
-        <section class="card">
-          <div class="card-head"><h3>进度与审阅</h3></div>
-          <div id="project-progress" class="stack-list"></div>
-          <div class="review-box">
-            <textarea id="review-feedback" rows="4" placeholder="退回或重写时填写意见"></textarea>
-            <div class="button-row wrap">
-              <button id="approve-chapter" class="ghost-button" type="button">通过待审章</button>
-              <button id="rewrite-chapter" class="ghost-button" type="button">按意见重写</button>
+      <section class="workspace-body novel-body">
+        <section id="empty-state" class="panel-block novel-empty-state">
+          <div class="novel-empty-hero">
+            <p class="eyebrow">START HERE</p>
+            <h3 id="empty-state-title">请新建项目</h3>
+            <p id="empty-state-body">当前还没有小说项目。先点击左侧“新建项目”，创建完成后再从左侧选择项目，右侧才会显示项目信息、设定文件和章节内容。</p>
+            <div class="button-row left wrap-row">
+              <button id="empty-create-project" class="primary-button" type="button">新建项目</button>
             </div>
           </div>
         </section>
-      </section>
 
-      <section class="card">
-        <div class="card-head">
-          <h3>设定文件</h3>
-          <div class="button-row wrap">
-            <select id="setting-select"></select>
-            <button id="save-setting" class="ghost-button" type="button">保存当前设定</button>
+        <section id="project-content" class="novel-project-content is-hidden">
+          <div class="novel-primary-column">
+            <section id="project-info-panel" class="panel-block novel-collapsible-panel">
+              <div class="novel-card-head novel-collapsible-head">
+                <div class="section-head">
+                  <h3>项目信息</h3>
+                  <p>编辑基础定位、角色信息与额外说明。</p>
+                </div>
+                <div class="button-row wrap-row">
+                  <button id="toggle-project-info" class="ghost-button novel-collapse-button" type="button" aria-controls="project-info-body" aria-expanded="true">折叠</button>
+                  <button id="save-project" class="ghost-button" type="button">保存</button>
+                  <button id="delete-project" class="ghost-button novel-danger-button" type="button">删除</button>
+                </div>
+              </div>
+              <div id="project-info-body" class="novel-collapsible-body">
+                <div class="form-grid novel-form-grid">
+                  <label><span>名称</span><input id="project-name" type="text"></label>
+                  <label><span>题材</span><input id="project-genre" type="text"></label>
+                  <label><span>主题</span><input id="project-theme" type="text"></label>
+                  <label><span>目标章节数</span><input id="project-target" type="number" min="0"></label>
+                  <label><span>每章字数要求（汉字）</span><input id="project-chapter-word-target" type="number" min="0" step="100"></label>
+                  <label><span>风格偏好</span><input id="project-style" type="text"></label>
+                  <label><span>目标读者</span><input id="project-audience" type="text"></label>
+                  <label class="full"><span>主角信息</span><textarea id="project-protagonist" rows="4"></textarea></label>
+                  <label class="full"><span>核心梗概</span><textarea id="project-premise" rows="4"></textarea></label>
+                  <label class="full"><span>关键词</span><input id="project-keywords" type="text" placeholder="用逗号分隔"></label>
+                  <label class="full"><span>补充说明</span><textarea id="project-notes" rows="5"></textarea></label>
+                  <label><span>QQ检阅</span><select id="project-qq-enabled"><option value="false">关闭</option><option value="true">开启</option></select></label>
+                  <label><span>QQ目标类型</span><select id="project-qq-type"><option value="private">私聊</option><option value="group">群聊</option></select></label>
+                  <label><span>QQ目标ID</span><input id="project-qq-id" type="text"></label>
+                </div>
+              </div>
+            </section>
+
+            <section id="settings-panel" class="panel-block novel-collapsible-panel">
+              <div class="novel-card-head novel-collapsible-head">
+                <div class="section-head">
+                  <h3>设定文件</h3>
+                  <p>管理基础设定、世界观、人物与章节规划。</p>
+                </div>
+                <div class="button-row wrap-row">
+                  <button id="toggle-settings" class="ghost-button novel-collapse-button" type="button" aria-controls="settings-body" aria-expanded="true">折叠</button>
+                  <select id="setting-select"></select>
+                  <button id="save-setting" class="ghost-button" type="button">保存当前设定</button>
+                </div>
+              </div>
+              <div id="settings-body" class="novel-collapsible-body">
+                <textarea id="setting-editor" class="editor novel-editor" rows="16"></textarea>
+              </div>
+            </section>
           </div>
-        </div>
-        <textarea id="setting-editor" class="editor" rows="16"></textarea>
-      </section>
 
-      <section class="card">
-        <div class="card-head"><h3>章节与草稿</h3></div>
-        <div class="chapter-layout">
-          <div id="chapter-list" class="chapter-list"></div>
-          <textarea id="chapter-viewer" class="editor" rows="18" readonly></textarea>
-        </div>
+          <div class="novel-secondary-column">
+            <section class="panel-block novel-progress-panel">
+              <div class="section-head">
+                <h3>进度与审阅</h3>
+                <p>跟踪当前章节进度，处理待审草稿。</p>
+              </div>
+              <div id="project-progress" class="stack-list"></div>
+              <div class="review-box">
+                <textarea id="review-feedback" rows="4" placeholder="退回或重写时填写意见"></textarea>
+                <div class="button-row wrap-row">
+                  <button id="approve-chapter" class="ghost-button" type="button">通过待审章</button>
+                  <button id="rewrite-chapter" class="ghost-button" type="button">按意见重写</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel-block novel-chapter-panel">
+              <div class="novel-card-head">
+                <div class="section-head">
+                  <h3>章节与草稿</h3>
+                  <p>点击左侧章节卡片查看当前正文或草稿内容，双击右侧正文可进入阅读器。</p>
+                </div>
+                <div class="button-row wrap-row">
+                  <button id="delete-chapter" class="ghost-button novel-danger-button" type="button">删除当前章及后续</button>
+                </div>
+              </div>
+              <div class="chapter-layout novel-chapter-layout">
+                <div id="chapter-list" class="chapter-list"></div>
+                <textarea id="chapter-viewer" class="editor novel-editor" rows="18" readonly title="双击打开阅读器"></textarea>
+              </div>
+            </section>
+          </div>
+        </section>
       </section>
     </main>
   </div>
 
-  <dialog id="project-dialog">
-    <form method="dialog" class="dialog-form">
-      <h3>新建小说项目</h3>
+  <dialog id="project-dialog" class="novel-dialog">
+    <form method="dialog" class="dialog-form novel-dialog-form">
+      <div class="section-head novel-dialog-head">
+        <div class="section-head-copy">
+          <h3>新建小说项目</h3>
+          <p>创建后请从左侧点击项目卡片，再继续编辑详情。</p>
+        </div>
+        <button id="close-create-dialog" class="ghost-button icon-button novel-dialog-close" type="button" aria-label="关闭新建项目窗口" title="关闭">&times;</button>
+      </div>
       <label><span>名称</span><input id="new-name" type="text" required></label>
       <label><span>题材</span><input id="new-genre" type="text"></label>
       <label><span>主题</span><input id="new-theme" type="text"></label>
-      <label><span>核心梗概</span><textarea id="new-premise" rows="3"></textarea></label>
-      <label><span>主角信息</span><textarea id="new-protagonist" rows="3"></textarea></label>
+      <label><span>目标章节数</span><input id="new-target" type="number" min="0"></label>
+      <label><span>每章字数要求（汉字）</span><input id="new-chapter-word-target" type="number" min="0" step="100"></label>
       <label><span>风格偏好</span><input id="new-style" type="text"></label>
       <label><span>目标读者</span><input id="new-audience" type="text"></label>
-      <label><span>目标章节数</span><input id="new-target" type="number" min="0"></label>
+      <label><span>主角信息</span><textarea id="new-protagonist" rows="3"></textarea></label>
+      <label><span>核心梗概</span><textarea id="new-premise" rows="3"></textarea></label>
       <label><span>关键词</span><input id="new-keywords" type="text"></label>
+      <label><span>补充说明</span><textarea id="new-notes" rows="4"></textarea></label>
+      <label><span>QQ检阅</span><select id="new-qq-enabled"><option value="false">关闭</option><option value="true">开启</option></select></label>
+      <label><span>QQ目标类型</span><select id="new-qq-type"><option value="private">私聊</option><option value="group">群聊</option></select></label>
       <label><span>QQ目标ID</span><input id="new-qq-id" type="text"></label>
-      <menu class="button-row end"><button value="cancel" class="ghost-button">取消</button><button id="confirm-create" value="default" class="primary-button">创建并生成设定</button></menu>
+      <section id="create-operation-feedback" class="novel-operation-card novel-dialog-operation is-hidden" aria-live="polite">
+        <div class="novel-operation-head">
+          <strong id="create-operation-title">正在处理</strong>
+          <span id="create-operation-percent">0%</span>
+        </div>
+        <div class="novel-operation-track" aria-hidden="true">
+          <div id="create-operation-progress-fill" class="novel-operation-fill"></div>
+        </div>
+        <p id="create-operation-hint" class="novel-operation-hint">请稍候，处理中。</p>
+      </section>
+      <menu class="button-row end novel-dialog-actions">
+        <button id="cancel-create" class="ghost-button" type="button">取消</button>
+        <button id="confirm-create" value="default" class="primary-button" type="submit">创建并生成设定</button>
+      </menu>
     </form>
+  </dialog>
+
+  <dialog id="chapter-reader-dialog" class="novel-reader-dialog">
+    <section class="novel-reader-shell">
+      <header class="novel-reader-head">
+        <div class="section-head">
+          <p class="eyebrow">READER MODE</p>
+          <h3 id="reader-title">章节阅读</h3>
+          <p id="reader-meta">请选择章节后双击正文进入阅读器。</p>
+        </div>
+        <div class="button-row wrap-row">
+          <button id="reader-prev" class="ghost-button" type="button">上一章</button>
+          <button id="reader-next" class="ghost-button" type="button">下一章</button>
+          <button id="reader-generate-next" class="ghost-button" type="button">继续生成下一章</button>
+          <button id="reader-regenerate-current" class="ghost-button" type="button">重新生成当前章</button>
+          <button id="reader-delete-chapter" class="ghost-button novel-danger-button" type="button">删除当前章及后续</button>
+          <button id="close-reader" class="primary-button" type="button">关闭阅读器</button>
+        </div>
+      </header>
+      <section id="reader-operation-feedback" class="novel-operation-card novel-reader-operation is-hidden" aria-live="polite">
+        <div class="novel-operation-head">
+          <strong id="reader-operation-title">正在处理</strong>
+          <span id="reader-operation-percent">0%</span>
+        </div>
+        <div class="novel-operation-track" aria-hidden="true">
+          <div id="reader-operation-progress-fill" class="novel-operation-fill"></div>
+        </div>
+        <p id="reader-operation-hint" class="novel-operation-hint">请稍候，处理中。</p>
+      </section>
+      <section id="reader-review-box" class="novel-reader-review">
+        <div class="novel-reader-review-head">
+          <p id="reader-review-hint" class="muted">当前章节不是待审草稿，阅读器中暂不可审阅。</p>
+          <button id="toggle-reader-review" class="ghost-button novel-collapse-button" type="button" aria-controls="reader-review-body" aria-expanded="false">展开审阅</button>
+        </div>
+        <div id="reader-review-body" class="novel-reader-review-body is-hidden">
+          <textarea id="reader-review-feedback" class="editor novel-reader-feedback" rows="4" placeholder="在阅读器里直接填写审阅意见"></textarea>
+          <div class="button-row wrap-row">
+            <button id="reader-approve" class="ghost-button" type="button">通过本章</button>
+            <button id="reader-rewrite" class="ghost-button" type="button">按意见重写</button>
+          </div>
+        </div>
+      </section>
+      <article id="reader-content" class="novel-reader-content"></article>
+    </section>
   </dialog>
 
   <script src="novels.js"></script>

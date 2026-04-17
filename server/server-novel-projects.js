@@ -38,6 +38,41 @@ function sanitizeProjectName(value = "") {
     .slice(0, 60);
 }
 
+function normalizeKeywords(value, fallbackValue = []) {
+  if (value == null) {
+    return Array.isArray(fallbackValue) ? fallbackValue : [];
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  return String(value || "")
+    .split(/[，,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeChapterWordTarget(value, fallbackValue = 0) {
+  const normalized = Number(value ?? fallbackValue);
+  return Number.isFinite(normalized) && normalized > 0 ? Math.round(normalized) : 0;
+}
+
+function formatChapterWordTarget(value) {
+  const normalized = normalizeChapterWordTarget(value);
+  return normalized > 0 ? `约 ${normalized} 个中文汉字` : "未填写";
+}
+
+function createChapterWordTargetRequirement(value) {
+  const normalized = normalizeChapterWordTarget(value);
+  return normalized > 0
+    ? `单章字数以约 ${normalized} 个中文汉字为目标，可根据剧情自然浮动。`
+    : "单章字数优先保证剧情完整、节奏自然，再结合实际内容灵活控制篇幅。";
+}
+
+function countChineseCharacters(value = "") {
+  const matches = String(value || "").match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g);
+  return matches ? matches.length : 0;
+}
+
 function createSettingFileName(key = "") {
   return `${key}.md`;
 }
@@ -89,6 +124,7 @@ function createProjectSummary(project = {}, state = {}, review = {}) {
     premise: project.premise || "",
     status: project.status || "active",
     targetChapters: Number(project.targetChapters) || 0,
+    chapterWordTarget: normalizeChapterWordTarget(project.chapterWordTarget),
     currentChapter: Number(state.currentChapter) || 0,
     lastApprovedChapter: Number(state.lastApprovedChapter) || 0,
     lastGeneratedChapter: Number(state.lastGeneratedChapter) || 0,
@@ -109,6 +145,7 @@ function createBaseInfoMarkdown(payload = {}) {
     `- 主题：${String(payload.theme || "").trim() || "未填写"}`,
     `- 核心梗概：${String(payload.premise || "").trim() || "未填写"}`,
     `- 目标篇幅：${String(payload.targetChapters || "").trim() || "未填写"}`,
+    `- 每章字数要求：${formatChapterWordTarget(payload.chapterWordTarget)}`,
     `- 风格偏好：${String(payload.stylePreference || "").trim() || "未填写"}`,
     `- 目标读者：${String(payload.audience || "").trim() || "未填写"}`,
     `- 主角信息：${String(payload.protagonist || "").trim() || "未填写"}`,
@@ -120,6 +157,8 @@ function createBaseInfoMarkdown(payload = {}) {
     "## 自动化写作要求",
     "- 先生成完整设定，再进入正文写作。",
     "- 后续每章必须同时参考设定文件、已完成章节、章节摘要与状态快照。",
+    "- 正文章节以中文表达为主，除必要专有名词外尽量不要混入英文句子。",
+    `- ${createChapterWordTargetRequirement(payload.chapterWordTarget)}`,
     "- 章节输出为 Markdown 正文，不要输出额外解释。",
   ];
   return lines.join("\n");
@@ -132,6 +171,7 @@ function buildProjectPromptSummary(project = {}) {
     `主题：${project.theme || ""}`,
     `核心梗概：${project.premise || ""}`,
     `目标篇幅：${project.targetChapters || ""}`,
+    `每章字数要求：${formatChapterWordTarget(project.chapterWordTarget)}`,
     `风格偏好：${project.stylePreference || ""}`,
     `目标读者：${project.audience || ""}`,
     `主角信息：${project.protagonist || ""}`,
@@ -163,6 +203,78 @@ function extractChapterTitle(content = "", chapterNo = 0) {
     .split(/\r?\n/)
     .find((line) => /^#\s+/.test(String(line || "").trim()));
   return firstHeading ? firstHeading.replace(/^#\s+/, "").trim() : `第${chapterNo}章`;
+}
+
+function extractChapterPlanSections(content = "") {
+  const lines = String(content || "").split(/\r?\n/);
+  const sections = [];
+  let current = null;
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || "");
+    const trimmed = line.trim();
+    const headingMatch = trimmed.match(/^(?:[-*+]\s*)?(?:#+\s*)?(?:\*\*)?第\s*0*(\d{1,4})\s*章/);
+    if (headingMatch) {
+      if (current && current.lines.length) {
+        sections.push({
+          chapterNo: current.chapterNo,
+          content: current.lines.join("\n").trim(),
+        });
+      }
+      current = {
+        chapterNo: Number(headingMatch[1]) || 0,
+        lines: [line],
+      };
+      continue;
+    }
+    if (current) {
+      current.lines.push(line);
+    }
+  }
+
+  if (current && current.lines.length) {
+    sections.push({
+      chapterNo: current.chapterNo,
+      content: current.lines.join("\n").trim(),
+    });
+  }
+
+  return sections.filter((item) => item.chapterNo > 0 && item.content);
+}
+
+function buildChapterPlanGuidance(content = "", chapterNo = 0) {
+  const targetChapterNo = parseChapterNo(chapterNo);
+  const sections = extractChapterPlanSections(content);
+  const currentIndex = sections.findIndex((item) => item.chapterNo === targetChapterNo);
+  const current = currentIndex >= 0 ? sections[currentIndex] : null;
+  const previous = currentIndex > 0 ? sections[currentIndex - 1] : sections.filter((item) => item.chapterNo < targetChapterNo).slice(-1)[0] || null;
+  const next = currentIndex >= 0 && currentIndex < sections.length - 1
+    ? sections[currentIndex + 1]
+    : sections.find((item) => item.chapterNo > targetChapterNo) || null;
+
+  return {
+    current: current ? truncateText(current.content, 2400) : "",
+    previous: previous ? truncateText(previous.content, 1400) : "",
+    next: next ? truncateText(next.content, 1400) : "",
+  };
+}
+
+function getChapterPlanTargetCount(project = {}, options = {}) {
+  const projectTarget = Number(project?.targetChapters) || 0;
+  const latestWrittenChapter = Number(options?.latestWrittenChapterNo) || 0;
+  const preferredMinimum = Number(options?.minimumChapterCount) || 20;
+  const explicitTarget = Math.max(projectTarget, latestWrittenChapter);
+  return explicitTarget > 0 ? explicitTarget : preferredMinimum;
+}
+
+function getChapterPlanDetailHint(targetCount = 0) {
+  if (targetCount >= 120) {
+    return "每章控制在 2 条短项以内，重点写清本章事件和结尾钩子，整体保持简明。";
+  }
+  if (targetCount >= 60) {
+    return "每章控制在 2 到 3 条短项，重点写清本章冲突、推进和收束。";
+  }
+  return "每章写 3 条左右短项，至少覆盖本章目标、关键事件和结尾悬念。";
 }
 
 function truncateText(value = "", maxLength = 600) {
@@ -304,6 +416,7 @@ function createNovelModule(deps = {}) {
             chapterNo,
             status,
             title: extractChapterTitle(content, chapterNo),
+            characterCount: countChineseCharacters(content),
             bytes: Buffer.byteLength(content, "utf8"),
             updatedAt: stat.mtimeMs,
           });
@@ -335,6 +448,93 @@ function createNovelModule(deps = {}) {
     };
   }
 
+  async function deleteChapterAndProgress(projectId, chapterNo) {
+    const normalizedChapterNo = parseChapterNo(chapterNo);
+    if (!normalizedChapterNo) {
+      const error = new Error("Invalid chapter number");
+      error.statusCode = 400;
+      throw error;
+    }
+    const { project, state, review, paths } = await readProjectFileSet(projectId);
+    const chapterEntries = await listChaptersMeta(projectId);
+    const deletedChapterNos = Array.from(new Set(
+      chapterEntries
+        .map((item) => Number(item.chapterNo) || 0)
+        .filter((value) => value >= normalizedChapterNo)
+    )).sort((a, b) => a - b);
+
+    if (!deletedChapterNos.length) {
+      const error = new Error("Chapter not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    await Promise.all(
+      deletedChapterNos.flatMap((value) => ([
+        fs.promises.rm(path.join(paths.chaptersDir, formatChapterFileName(value)), { force: true }),
+        fs.promises.rm(path.join(paths.draftsDir, formatChapterFileName(value, ".draft.md")), { force: true }),
+        fs.promises.rm(path.join(paths.summariesDir, formatChapterFileName(value, ".summary.md")), { force: true }),
+        fs.promises.rm(path.join(paths.snapshotsDir, formatChapterFileName(value, ".state.md")), { force: true }),
+      ]))
+    );
+
+    const remainingChapters = await listChaptersMeta(projectId);
+    const remainingChapterNos = Array.from(new Set(
+      remainingChapters.map((item) => Number(item.chapterNo) || 0).filter(Boolean)
+    )).sort((a, b) => a - b);
+    const approvedChapterNos = Array.from(new Set(
+      remainingChapters
+        .filter((item) => item.status === "approved")
+        .map((item) => Number(item.chapterNo) || 0)
+        .filter(Boolean)
+    )).sort((a, b) => a - b);
+    const draftChapterNos = Array.from(new Set(
+      remainingChapters
+        .filter((item) => item.status === "draft")
+        .map((item) => Number(item.chapterNo) || 0)
+        .filter(Boolean)
+    )).sort((a, b) => a - b);
+
+    const preferredPendingChapter = Number(state.pendingDraftChapter) || 0;
+    const nextPendingDraftChapter = draftChapterNos.includes(preferredPendingChapter)
+      ? preferredPendingChapter
+      : (draftChapterNos[0] || 0);
+    const nextCurrentChapter = remainingChapterNos.length ? remainingChapterNos[remainingChapterNos.length - 1] : 0;
+    const nextLastApprovedChapter = approvedChapterNos.length ? approvedChapterNos[approvedChapterNos.length - 1] : 0;
+    const nextState = {
+      ...state,
+      phase: nextPendingDraftChapter ? "review" : (nextCurrentChapter > 0 ? "writing" : "planning"),
+      currentChapter: nextCurrentChapter,
+      lastApprovedChapter: nextLastApprovedChapter,
+      lastGeneratedChapter: nextCurrentChapter,
+      pendingDraftChapter: nextPendingDraftChapter || null,
+      autoWriteEnabled: false,
+      autoWriteLastCount: 0,
+      updatedAt: Date.now(),
+    };
+    const nextReview = {
+      ...review,
+      pending: (review.pending || []).filter((item) => parseChapterNo(item.chapterNo) < normalizedChapterNo),
+      history: (review.history || []).filter((item) => parseChapterNo(item.chapterNo) < normalizedChapterNo).slice(0, 50),
+      updatedAt: Date.now(),
+    };
+
+    await Promise.all([
+      writeJsonFileAtomic(paths.stateFile, nextState),
+      writeJsonFileAtomic(paths.reviewFile, nextReview),
+      writeJsonFileAtomic(paths.projectFile, { ...project, updatedAt: Date.now() }),
+    ]);
+
+    debug(`deleted chapters project=${projectId} from=${normalizedChapterNo} count=${deletedChapterNos.length}`);
+    return {
+      ok: true,
+      deletedFromChapter: normalizedChapterNo,
+      deletedChapterNos,
+      deletedChapterCount: deletedChapterNos.length,
+      resetToChapter: nextCurrentChapter,
+    };
+  }
+
   async function createProject(payload = {}) {
     await ensureNovelsDir();
     const name = sanitizeProjectName(payload.name || "");
@@ -363,12 +563,11 @@ function createNovelModule(deps = {}) {
       theme: String(payload.theme || "").trim(),
       premise: String(payload.premise || "").trim(),
       targetChapters: Number(payload.targetChapters) || 0,
+      chapterWordTarget: normalizeChapterWordTarget(payload.chapterWordTarget),
       stylePreference: String(payload.stylePreference || "").trim(),
       audience: String(payload.audience || "").trim(),
       protagonist: String(payload.protagonist || "").trim(),
-      keywords: Array.isArray(payload.keywords)
-        ? payload.keywords.map((item) => String(item || "").trim()).filter(Boolean)
-        : String(payload.keywords || "").split(/[，,\s]+/).map((item) => item.trim()).filter(Boolean),
+      keywords: normalizeKeywords(payload.keywords),
       notes: String(payload.notes || "").trim(),
       status: "active",
       qqReviewEnabled: payload.qqReviewEnabled === true,
@@ -408,12 +607,11 @@ function createNovelModule(deps = {}) {
       theme: String(payload.theme ?? record.project.theme ?? "").trim(),
       premise: String(payload.premise ?? record.project.premise ?? "").trim(),
       targetChapters: Number(payload.targetChapters ?? record.project.targetChapters) || 0,
+      chapterWordTarget: normalizeChapterWordTarget(payload.chapterWordTarget, record.project.chapterWordTarget),
       stylePreference: String(payload.stylePreference ?? record.project.stylePreference ?? "").trim(),
       audience: String(payload.audience ?? record.project.audience ?? "").trim(),
       protagonist: String(payload.protagonist ?? record.project.protagonist ?? "").trim(),
-      keywords: Array.isArray(payload.keywords)
-        ? payload.keywords.map((item) => String(item || "").trim()).filter(Boolean)
-        : record.project.keywords,
+      keywords: normalizeKeywords(payload.keywords, record.project.keywords),
       notes: String(payload.notes ?? record.project.notes ?? "").trim(),
       qqReviewEnabled: payload.qqReviewEnabled === true,
       qqTargetType: String(payload.qqTargetType ?? record.project.qqTargetType ?? "private").trim() || "private",
@@ -435,11 +633,147 @@ function createNovelModule(deps = {}) {
     debug(`deleted project=${projectId}`);
     return { ok: true, id: projectId };
   }
-  async function generateSettingText(project, key, existingSettings = {}) {
-    const title = SETTING_DEFINITIONS.find((item) => item.key === key)?.title || key;
+
+  async function readWrittenChapterCanon(projectId, options = {}) {
+    const paths = getProjectPaths(novelsDir, projectId);
+    const recentFullCount = Math.max(1, Number(options.recentFullCount) || 2);
+    const earlierSummaryCount = Math.max(0, Number(options.earlierSummaryCount) || 6);
+    const chapterEntries = await listChaptersMeta(projectId);
+    const chapterNumbers = Array.from(new Set(
+      chapterEntries.map((item) => Number(item.chapterNo) || 0).filter(Boolean)
+    )).sort((a, b) => a - b);
+
+    if (!chapterNumbers.length) {
+      return {
+        hasContent: false,
+        latestChapterNo: 0,
+        timeline: "",
+        recentFullTexts: [],
+        earlierSummaries: [],
+        latestSnapshot: "",
+      };
+    }
+
+    const chapterMetaByNo = new Map();
+    for (const entry of chapterEntries) {
+      const chapterNo = Number(entry.chapterNo) || 0;
+      if (!chapterNo) continue;
+      const previous = chapterMetaByNo.get(chapterNo);
+      if (!previous || entry.status === "draft" || previous.status !== "draft") {
+        chapterMetaByNo.set(chapterNo, entry);
+      }
+    }
+
+    const timeline = chapterNumbers.map((chapterNo) => {
+      const meta = chapterMetaByNo.get(chapterNo) || {};
+      return `- 第${chapterNo}章｜${meta.status || "unknown"}｜${meta.title || `第${chapterNo}章`}`;
+    }).join("\n");
+
+    const recentFullChapterNos = chapterNumbers.slice(-recentFullCount);
+    const earlierSummaryChapterNos = chapterNumbers.slice(0, -recentFullCount).slice(-earlierSummaryCount);
+    const recentFullTexts = [];
+    for (const chapterNo of recentFullChapterNos) {
+      const chapter = await getChapterContent(projectId, chapterNo, { preferDraft: true });
+      recentFullTexts.push(`## 第${chapterNo}章正文\n${truncateText(chapter.content, 3200)}`);
+    }
+
+    const earlierSummaries = [];
+    for (const chapterNo of earlierSummaryChapterNos) {
+      const summaryPath = path.join(paths.summariesDir, formatChapterFileName(chapterNo, ".summary.md"));
+      let summary = await readTextFile(summaryPath, "");
+      if (!summary.trim()) {
+        const chapter = await getChapterContent(projectId, chapterNo, { preferDraft: true });
+        summary = chapter.content;
+      }
+      earlierSummaries.push(`## 第${chapterNo}章摘要\n${truncateText(summary, 1200)}`);
+    }
+
+    const latestChapterNo = chapterNumbers[chapterNumbers.length - 1];
+    const latestSnapshot = truncateText(await readTextFile(
+      path.join(paths.snapshotsDir, formatChapterFileName(latestChapterNo, ".state.md")),
+      ""
+    ), 2200);
+
+    return {
+      hasContent: true,
+      latestChapterNo,
+      timeline,
+      recentFullTexts,
+      earlierSummaries,
+      latestSnapshot,
+    };
+  }
+
+  async function generateChapterPlanText(project, existingSettings = {}, options = {}) {
+    const alignToWrittenChapters = options.alignToWrittenChapters === true;
+    const chapterCanonContext = options.chapterCanonContext || null;
+    const targetChapterCount = getChapterPlanTargetCount(project, {
+      latestWrittenChapterNo: chapterCanonContext?.latestChapterNo || 0,
+    });
+    const detailHint = getChapterPlanDetailHint(targetChapterCount);
+    const previousContext = Object.entries(existingSettings)
+      .filter(([existingKey, content]) => existingKey !== "chapter-plan" && String(content || "").trim())
+      .map(([existingKey, content]) => `## ${existingKey}\n${truncateText(content, 1200)}`)
+      .join("\n\n");
     const systemPrompt = [
-      "你是中文长篇小说策划 Agent。",
-      "请严格根据用户给出的小说定位生成设定。",
+      alignToWrittenChapters ? "你是中文长篇小说章节细纲整理 Agent。" : "你是中文长篇小说章节细纲策划 Agent。",
+      alignToWrittenChapters ? "请根据已写章节、现有设定和项目定位，整理出尽量逐章展开的章节细纲。" : "请严格根据用户给出的小说定位，生成尽量逐章展开的章节细纲。",
+      "输出纯 Markdown，不要使用代码块，不要解释过程。",
+      "章节细纲请尽量按一章一章地来写，优先一章一条，尽量不要并章、略写、跳号或写成阶段概述。",
+    ].join("\n");
+    const userPrompt = [
+      `请为小说项目《${project.name}》生成“章节细纲”文件。`,
+      "",
+      "### 项目基础信息",
+      buildProjectPromptSummary(project),
+      "",
+      "### 已有设定参考",
+      previousContext || "暂无，按项目基础信息自行补全。",
+      "",
+      ...(alignToWrittenChapters ? [
+        "### 已写章节既成事实",
+        chapterCanonContext?.timeline || "暂无",
+        "",
+        "### 最近章节正文",
+        chapterCanonContext?.recentFullTexts?.join("\n\n") || "暂无",
+        "",
+        "### 更早章节摘要",
+        chapterCanonContext?.earlierSummaries?.join("\n\n") || "暂无",
+        "",
+        "### 最新章节状态快照",
+        chapterCanonContext?.latestSnapshot || "暂无",
+        "",
+      ] : []),
+      "输出格式建议：",
+      "1. 文件标题使用“# 章节细纲”。",
+      `2. 优先从第1章连续写到第${targetChapterCount}章，请尽量按一章一章地来，尽量逐章编号。`,
+      "3. 最好每章单独使用一个标题，推荐格式为“## 第N章 章节标题”，让每一章单独成条。",
+      "4. 尽量避免写成“第1-3章”“前十章”“第一卷前半段”这类合并、概写、略写格式。",
+      "5. 已经写出的章节要与既成正文一致；尚未写到的章节，在不违背既成正文的前提下继续规划。",
+      `6. ${detailHint}`,
+      "7. 每章内容尽量只写本章事件推进，不要把下一章的大事件提前塞进本章条目里。",
+      "",
+      "现在直接输出完整的 Markdown 章节细纲。",
+    ].filter(Boolean).join("\n");
+
+    return await generateText({
+      purpose: "novel_setting_chapter-plan",
+      systemPrompt,
+      userPrompt,
+      temperature: 0.75,
+    });
+  }
+
+  async function generateSettingText(project, key, existingSettings = {}, options = {}) {
+    const title = SETTING_DEFINITIONS.find((item) => item.key === key)?.title || key;
+    const alignToWrittenChapters = options.alignToWrittenChapters === true;
+    const chapterCanonContext = options.chapterCanonContext || null;
+    if (key === "chapter-plan") {
+      return await generateChapterPlanText(project, existingSettings, options);
+    }
+    const systemPrompt = [
+      alignToWrittenChapters ? "你是中文长篇小说设定整理 Agent。" : "你是中文长篇小说策划 Agent。",
+      alignToWrittenChapters ? "请根据已写章节、现有设定和项目定位，反向整理并修正设定。" : "请严格根据用户给出的小说定位生成设定。",
       "输出纯 Markdown，不要使用代码块，不要解释过程。",
       "内容要可直接保存为小说项目文件。",
     ].join("\n");
@@ -456,12 +790,27 @@ function createNovelModule(deps = {}) {
       "### 已有设定参考",
       previousContext || "暂无，按项目基础信息自行补全。",
       "",
+      ...(alignToWrittenChapters ? [
+        "### 已写章节既成事实",
+        chapterCanonContext?.timeline || "暂无",
+        "",
+        "### 最近章节正文",
+        chapterCanonContext?.recentFullTexts?.join("\n\n") || "暂无",
+        "",
+        "### 更早章节摘要",
+        chapterCanonContext?.earlierSummaries?.join("\n\n") || "暂无",
+        "",
+        "### 最新章节状态快照",
+        chapterCanonContext?.latestSnapshot || "暂无",
+        "",
+      ] : []),
       "要求：",
-      "1. 与题材、主题、主角和卖点保持一致。",
-      "2. 适合长篇连载，具有延展性。",
-      "3. 输出结构清晰，可直接写入 Markdown 文件。",
-      `4. 文件标题使用“# ${title}”。`,
-    ].join("\n");
+      alignToWrittenChapters ? "1. 以已写章节为既成事实，不得推翻、改写或忽略已经发生的剧情。" : "1. 与题材、主题、主角和卖点保持一致。",
+      alignToWrittenChapters ? "2. 若旧设定与已写章节冲突，以既成正文为准，对设定进行归档、修正和补缀。" : "2. 适合长篇连载，具有延展性。",
+      alignToWrittenChapters ? "3. 对尚未写到的后续设定，要在不违背既成正文的前提下继续保持延展性。" : "3. 输出结构清晰，可直接写入 Markdown 文件。",
+      alignToWrittenChapters ? "4. 特别是章节细纲、人物关系、世界规则、力量边界要向当前正文对齐。" : `4. 文件标题使用“# ${title}”。`,
+      alignToWrittenChapters ? `5. 文件标题使用“# ${title}”。` : "",
+    ].filter(Boolean).join("\n");
     return await generateText({
       purpose: `novel_setting_${key}`,
       systemPrompt,
@@ -472,9 +821,13 @@ function createNovelModule(deps = {}) {
 
   async function generateSettings(projectId, options = {}) {
     const overwrite = options.overwrite === true;
+    const alignToWrittenChapters = options.alignToWrittenChapters === true;
     const { project } = await readProjectFileSet(projectId);
     const generated = {};
     const currentSettings = {};
+    const chapterCanonContext = alignToWrittenChapters
+      ? (options.chapterCanonContext || await readWrittenChapterCanon(projectId))
+      : null;
     for (const definition of SETTING_DEFINITIONS) {
       currentSettings[definition.key] = await readSetting(projectId, definition.key);
     }
@@ -491,6 +844,9 @@ function createNovelModule(deps = {}) {
       const content = await generateSettingText(project, definition.key, {
         ...currentSettings,
         ...generated,
+      }, {
+        alignToWrittenChapters,
+        chapterCanonContext,
       });
       generated[definition.key] = content;
       await writeSetting(projectId, definition.key, content);
@@ -501,6 +857,20 @@ function createNovelModule(deps = {}) {
       updatedAt: Date.now(),
     });
     return generated;
+  }
+
+  async function reconcileSettingsFromChapters(projectId, options = {}) {
+    const chapterCanonContext = await readWrittenChapterCanon(projectId, options);
+    if (!chapterCanonContext.hasContent) {
+      const error = new Error("当前还没有已写章节，暂时无法按正文整理设定");
+      error.statusCode = 400;
+      throw error;
+    }
+    return await generateSettings(projectId, {
+      overwrite: options.overwrite !== false,
+      alignToWrittenChapters: true,
+      chapterCanonContext,
+    });
   }
 
   async function readRecentChapterContext(projectId, chapterNo) {
@@ -547,9 +917,11 @@ function createNovelModule(deps = {}) {
       settings[definition.key] = await readSetting(projectId, definition.key);
     }
     const chapterContext = await readRecentChapterContext(projectId, chapterNo);
+    const chapterPlanGuidance = buildChapterPlanGuidance(settings["chapter-plan"] || "", chapterNo);
     const systemPrompt = [
       "你是长篇中文网络小说自动写作 Agent。",
       "必须严格遵守给定设定、既有剧情和连续性要求。",
+      "当前章节细纲是最高优先级约束，不得跳章、并章或抢跑后续关键事件。",
       "只输出 Markdown 正文，不要解释，不要使用代码块。",
       "正文必须有章节标题、足够的场景推进、人物互动和悬念。",
     ].join("\n");
@@ -558,6 +930,14 @@ function createNovelModule(deps = {}) {
       "",
       "### 项目基础信息",
       buildProjectPromptSummary(project),
+      "",
+      "### 当前章节细纲（最高优先级）",
+      chapterPlanGuidance.current || `未从“章节细纲”中定位到第 ${chapterNo} 章条目。请优先参考相邻章节细纲、设定文件和既有剧情，仍然按第${chapterNo}章推进，并尽量避免并章、跳章或抢跑后续关键事件。`,
+      "",
+      "### 相邻章节细纲参考",
+      chapterPlanGuidance.previous ? `上一章参考：\n${chapterPlanGuidance.previous}` : "上一章参考：暂无",
+      "",
+      chapterPlanGuidance.next ? `下一章边界：\n${chapterPlanGuidance.next}` : "下一章边界：暂无",
       "",
       "### 设定文件",
       Object.entries(settings)
@@ -575,9 +955,14 @@ function createNovelModule(deps = {}) {
       "",
       "### 写作要求",
       "1. 保持设定一致，不要吃书。",
-      "2. 推进主线并留下下一章悬念。",
-      "3. 不要只写设定说明，要写完整正文。",
-      `4. 标题格式使用“# 第${chapterNo}章 ...”。`,
+      "2. 必须优先完成“当前章节细纲（最高优先级）”中的核心事件、场景和情绪推进。",
+      "3. 不得提前写入下一章的大事件、觉醒节点、关系跃迁、反转或结局信息。",
+      "4. 如果最近章节全文已经误触后续节点，本章也要按当前章节细纲回收节奏，不要继续抢跑。",
+      "5. 推进主线并留下下一章悬念。",
+      "6. 不要只写设定说明，要写完整正文。",
+      `7. 标题格式使用“# 第${chapterNo}章 ...”。`,
+      `8. 正文以中文表达为主，避免大段英文或中英混写。`,
+      `9. ${createChapterWordTargetRequirement(project.chapterWordTarget)}`,
     ].join("\n");
 
     const chapterContent = await generateText({
@@ -732,6 +1117,9 @@ function createNovelModule(deps = {}) {
         "### 审阅意见",
         feedback || "请整体优化节奏与表现力。",
         "",
+        "### 项目基础信息",
+        buildProjectPromptSummary(project),
+        "",
         "### 设定参考",
         Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, 2200)}`).join("\n\n"),
         "",
@@ -773,6 +1161,26 @@ function createNovelModule(deps = {}) {
       rewritten: true,
     });
     return { ok: true, chapterNo: normalizedChapterNo };
+  }
+
+  async function regenerateChapter(projectId, chapterNo) {
+    const normalizedChapterNo = parseChapterNo(chapterNo);
+    if (!normalizedChapterNo) {
+      const error = new Error("Invalid chapter number");
+      error.statusCode = 400;
+      throw error;
+    }
+    const { state } = await readProjectFileSet(projectId);
+    const pendingChapterNo = Number(state.pendingDraftChapter) || 0;
+    if (pendingChapterNo && pendingChapterNo !== normalizedChapterNo) {
+      const error = new Error(`Chapter ${pendingChapterNo} is still waiting for review`);
+      error.statusCode = 409;
+      throw error;
+    }
+    return await generateChapter(projectId, {
+      chapterNo: normalizedChapterNo,
+      force: true,
+    });
   }
 
   async function rejectChapter(projectId, chapterNo, feedback = "") {
@@ -858,6 +1266,7 @@ function createNovelModule(deps = {}) {
           status: candidate.includes(".draft.md") ? "draft" : "approved",
           content,
           title: extractChapterTitle(content, normalizedChapterNo),
+          characterCount: countChineseCharacters(content),
         };
       }
     }
@@ -1021,6 +1430,18 @@ function createNovelModule(deps = {}) {
       return true;
     }
 
+    const reconcileSettingsMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/reconcile-settings$/);
+    if (reconcileSettingsMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(reconcileSettingsMatch[1]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, {
+        ok: true,
+        projectId,
+        generated: await reconcileSettingsFromChapters(projectId, { overwrite: payload.overwrite !== false }),
+      });
+      return true;
+    }
+
     const settingsListMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/settings$/);
     if (settingsListMatch && req.method === "GET") {
       const projectId = decodeURIComponent(settingsListMatch[1]);
@@ -1081,6 +1502,12 @@ function createNovelModule(deps = {}) {
       sendJson(res, 200, { ok: true, ...(await getChapterContent(projectId, chapterNo, { preferDraft: true })) });
       return true;
     }
+    if (chapterContentMatch && req.method === "DELETE") {
+      const projectId = decodeURIComponent(chapterContentMatch[1]);
+      const chapterNo = decodeURIComponent(chapterContentMatch[2]);
+      sendJson(res, 200, await deleteChapterAndProgress(projectId, chapterNo));
+      return true;
+    }
 
     const approveMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/([^/]+)\/approve$/);
     if (approveMatch && req.method === "POST") {
@@ -1108,6 +1535,14 @@ function createNovelModule(deps = {}) {
       return true;
     }
 
+    const regenerateMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/([^/]+)\/regenerate$/);
+    if (regenerateMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(regenerateMatch[1]);
+      const chapterNo = decodeURIComponent(regenerateMatch[2]);
+      sendJson(res, 200, { ok: true, ...(await regenerateChapter(projectId, chapterNo)) });
+      return true;
+    }
+
     const reviewMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/reviews$/);
     if (reviewMatch && req.method === "GET") {
       const projectId = decodeURIComponent(reviewMatch[1]);
@@ -1129,9 +1564,12 @@ function createNovelModule(deps = {}) {
     updateProject,
     deleteProject,
     generateSettings,
+    reconcileSettingsFromChapters,
     generateChapter,
     batchGenerateChapters,
     approveChapter,
+    deleteChapterAndProgress,
+    regenerateChapter,
     rejectChapter,
     getChapterContent,
   };
