@@ -40,6 +40,7 @@ function createMockJsonResponse(payload, statusCode = 200) {
 }
 
 function createDomElement(tagName = "div") {
+  const styleStore = {};
   const element = {
     tagName: String(tagName || "div").toUpperCase(),
     value: "",
@@ -47,7 +48,14 @@ function createDomElement(tagName = "div") {
     className: "",
     children: [],
     dataset: {},
-    style: {},
+    style: {
+      setProperty(name, value) {
+        styleStore[name] = value;
+      },
+      removeProperty(name) {
+        delete styleStore[name];
+      },
+    },
     disabled: false,
     hidden: false,
     selectedIndex: 0,
@@ -62,6 +70,33 @@ function createDomElement(tagName = "div") {
     },
     showModal() {
       this.open = true;
+    },
+  };
+  element.classList = {
+    add(...tokens) {
+      const classes = new Set(String(element.className || "").split(/\s+/).filter(Boolean));
+      tokens.forEach((token) => {
+        if (token) classes.add(token);
+      });
+      element.className = Array.from(classes).join(" ");
+    },
+    remove(...tokens) {
+      const classes = new Set(String(element.className || "").split(/\s+/).filter(Boolean));
+      tokens.forEach((token) => {
+        classes.delete(token);
+      });
+      element.className = Array.from(classes).join(" ");
+    },
+    toggle(token, force) {
+      const classes = new Set(String(element.className || "").split(/\s+/).filter(Boolean));
+      const shouldHave = force === undefined ? !classes.has(token) : Boolean(force);
+      if (shouldHave) classes.add(token);
+      else classes.delete(token);
+      element.className = Array.from(classes).join(" ");
+      return shouldHave;
+    },
+    contains(token) {
+      return String(element.className || "").split(/\s+/).filter(Boolean).includes(token);
     },
   };
   let innerHtmlValue = "";
@@ -88,6 +123,7 @@ function createNovelsPageHarness(fetchImpl) {
   const alerts = [];
   const confirms = [];
   const prompts = [];
+  const localStorageStore = new Map();
   let confirmResult = true;
   let promptResult = null;
 
@@ -101,10 +137,23 @@ function createNovelsPageHarness(fetchImpl) {
   const context = {
     console,
     document: {
+      body: createDomElement("body"),
+      hidden: false,
       querySelector: (selector) => getElement(selector),
       createElement: (tagName) => createDomElement(tagName),
+      addEventListener: () => {},
     },
-    fetch: async (url, options = {}) => await fetchImpl(url, options),
+    fetch: async (url, options = {}) => {
+      try {
+        return await fetchImpl(url, options);
+      } catch (error) {
+        const method = String(options?.method || "GET").toUpperCase();
+        if (url === "/connection-config" && method === "GET") {
+          return createMockJsonResponse({ ok: true, config: { model: "" } });
+        }
+        throw error;
+      }
+    },
     alert: (message) => {
       alerts.push(String(message));
     },
@@ -120,6 +169,17 @@ function createNovelsPageHarness(fetchImpl) {
     clearTimeout,
     setInterval,
     clearInterval,
+    localStorage: {
+      getItem(key) {
+        return localStorageStore.has(key) ? localStorageStore.get(key) : null;
+      },
+      setItem(key, value) {
+        localStorageStore.set(key, String(value));
+      },
+      removeItem(key) {
+        localStorageStore.delete(key);
+      },
+    },
   };
 
   context.window = {
@@ -127,6 +187,7 @@ function createNovelsPageHarness(fetchImpl) {
     alert: context.alert,
     confirm: context.confirm,
     prompt: context.prompt,
+    addEventListener: () => {},
   };
 
   vm.runInNewContext(script, context, { filename: scriptPath });
@@ -2100,6 +2161,100 @@ async function main() {
     assert.equal(harness.getElement("#project-meta").textContent.includes("ai-sci-fi"), true);
     assert.equal(harness.getElement("#project-list").children.length, 1);
     assert.equal(harness.getElement("#chapter-list").children[0].innerHTML.includes("1200 姹夊瓧"), true);
+  });
+
+  await runTest("novels page shows the current model and refreshes sidebar preview while editing", async () => {
+    const project = {
+      id: "project-live-preview",
+      name: "initial-project",
+      genre: "科幻",
+      theme: "旧主题",
+      premise: "premise",
+      targetChapters: 20,
+      chapterWordTarget: 2800,
+      stylePreference: "clean",
+      audience: "general",
+      protagonist: "lead",
+      keywords: ["ai"],
+      notes: "notes",
+      qqReviewEnabled: false,
+      qqTargetType: "private",
+      qqTargetId: "",
+    };
+    const harness = createNovelsPageHarness(async (url, options = {}) => {
+      const method = String(options.method || "GET").toUpperCase();
+      if (url === "/connection-config" && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          config: { model: "model-live-preview" },
+        });
+      }
+      if (url === "/novels/projects" && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          projects: [{
+            id: project.id,
+            name: project.name,
+            genre: project.genre,
+            theme: project.theme,
+            lastApprovedChapter: 1,
+            pendingDraftChapter: 0,
+          }],
+        });
+      }
+      if (url === `/novels/projects/${project.id}` && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          project,
+          state: {
+            phase: "planning",
+            currentChapter: 1,
+            lastGeneratedChapter: 1,
+            lastApprovedChapter: 1,
+            pendingDraftChapter: null,
+            autoWriteEnabled: false,
+            autoWriteLastCount: 0,
+          },
+          review: { pending: [] },
+          chapters: [],
+          settings: {
+            "base-info": { key: "base-info", title: "基础信息" },
+          },
+        });
+      }
+      if (url === `/novels/projects/${project.id}/settings/base-info` && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          key: "base-info",
+          content: "# base info",
+        });
+      }
+      throw new Error(`Unexpected novels page request: ${method} ${url}`);
+    });
+
+    seedNovelsPageButtonText(harness);
+    await harness.flush(10);
+
+    assert.equal(harness.getElement("#current-model-meta").textContent.includes("model-live-preview"), true);
+
+    await harness.getElement("#project-list").children[0].onclick();
+    await harness.flush(10);
+
+    assert.equal(harness.getElement("#project-meta").textContent.includes("model-live-preview"), true);
+
+    harness.getElement("#project-name").value = "draft-project-name";
+    harness.getElement("#project-name").oninput();
+    harness.getElement("#project-genre").value = "都市奇幻";
+    harness.getElement("#project-genre").oninput();
+    harness.getElement("#project-theme").value = "新主题";
+    harness.getElement("#project-theme").oninput();
+
+    assert.equal(harness.getElement("#project-title").textContent, "draft-project-name");
+    assert.equal(harness.getElement("#project-meta").textContent.includes("都市奇幻"), true);
+    assert.equal(harness.getElement("#project-meta").textContent.includes("新主题"), true);
+    assert.equal(harness.getElement("#project-list-meta").textContent.includes("draft-project-name"), true);
+    assert.equal(harness.getElement("#project-list").children[0].innerHTML.includes("draft-project-name"), true);
+    assert.equal(harness.getElement("#project-list").children[0].innerHTML.includes("新主题"), true);
   });
 
   await runTest("novels page create flow shows progress, suppresses duplicate clicks, and waits for sidebar selection", async () => {
