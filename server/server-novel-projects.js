@@ -285,6 +285,43 @@ function truncateText(value = "", maxLength = 600) {
   return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
 }
 
+function stripMarkdownTitle(value = "") {
+  return String(value || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/^#{1,6}\s+.*$/m, "")
+    .trim();
+}
+
+function formatQqNovelSection(title, lines = []) {
+  return [
+    `【${title}】`,
+    ...lines.filter(Boolean),
+  ].join("\n");
+}
+
+function formatQqNovelSummary(projectName, chapterNo, summary = "") {
+  const content = stripMarkdownTitle(summary);
+  return formatQqNovelSection(`${projectName}｜第 ${chapterNo} 章摘要`, [
+    "",
+    content || "暂无摘要内容。",
+  ]);
+}
+
+function formatQqNovelContent(projectName, chapter = {}) {
+  const chapterNo = Number(chapter.chapterNo) || 0;
+  const title = String(chapter.title || "").trim() || `第 ${chapterNo} 章`;
+  const statusLabel = chapter.status === "draft" ? "待审草稿" : "正式章节";
+  const characterCount = Math.max(0, Number(chapter.characterCount) || 0);
+  const content = String(chapter.content || "").trim();
+  return formatQqNovelSection(`${projectName}｜第 ${chapterNo} 章正文`, [
+    `标题：${title}`,
+    `状态：${statusLabel}`,
+    characterCount ? `字数：${characterCount} 字` : "",
+    "",
+    truncateText(content, 1500) || "暂无正文内容。",
+  ]);
+}
+
 function parseChapterNo(value) {
   const normalized = Number.parseInt(String(value || ""), 10);
   return Number.isFinite(normalized) && normalized > 0 ? normalized : 0;
@@ -1362,14 +1399,16 @@ function createNovelModule(deps = {}) {
       if (!summary.trim()) {
         return `《${match[1]}》第 ${chapterNo} 章还没有摘要。`;
       }
-      return summary;
+      const { project } = await readProjectFileSet(projectId);
+      return formatQqNovelSummary(project.name, chapterNo, summary);
     }
 
     match = commandText.match(/^查看\s+(.+?)\s+第\s*(\d+)\s*章正文$/);
     if (match) {
       const projectId = await resolveProjectId(match[1]);
       const chapter = await getChapterContent(projectId, match[2], { preferDraft: true });
-      return truncateText(chapter.content, 1500);
+      const { project } = await readProjectFileSet(projectId);
+      return formatQqNovelContent(project.name, chapter);
     }
 
     match = commandText.match(/^通过\s+(.+?)\s+第\s*(\d+)\s*章$/);

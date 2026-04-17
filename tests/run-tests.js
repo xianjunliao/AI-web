@@ -3813,6 +3813,44 @@ async function main() {
     assert.equal(reply.includes("宸查€氳繃"), true);
   });
 
+  await runTest("qq novel commands format summary and chapter content for reading", async () => {
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose }) => {
+        if (purpose === "novel_chapter") {
+          return "# Chapter 1 Dawn\n\nThis is the chapter body for qq reading.";
+        }
+        if (purpose === "novel_summary") {
+          return "# Summary\n\nThis is a concise summary.";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# Snapshot\n\nsnapshot";
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "qq-layout-test",
+      autoGenerateSettings: false,
+    });
+    await novelModule.generateChapter(detail.project.id);
+
+    const summaryReply = await novelModule.handleQqCommand({
+      text: "-n 查看 qq-layout-test 第1章摘要",
+    });
+    const contentReply = await novelModule.handleQqCommand({
+      text: "-n 查看 qq-layout-test 第1章正文",
+    });
+
+    assert.equal(summaryReply.includes("【qq-layout-test｜第 1 章摘要】"), true);
+    assert.equal(summaryReply.includes("This is a concise summary."), true);
+    assert.equal(summaryReply.includes("# Summary"), false);
+    assert.equal(contentReply.includes("【qq-layout-test｜第 1 章正文】"), true);
+    assert.equal(contentReply.includes("标题：Chapter 1 Dawn"), true);
+    assert.equal(contentReply.includes("状态：待审草稿"), true);
+    assert.equal(contentReply.includes("This is the chapter body for qq reading."), true);
+  });
+
   if (process.exitCode) {
     process.exit(process.exitCode);
   }

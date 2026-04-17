@@ -122,10 +122,41 @@
 ## 技术栈与运行方式
 
 ### 运行环境
-- Node.js
-- Windows PowerShell
-- 本地模型服务（默认按 `http://127.0.0.1:1234` 访问）
+- Windows 10 / 11
+- Node.js 20+（本机当前已用 Node.js 22 验证）
+- Windows PowerShell 5.1+ 或 PowerShell 7+
+- 本地模型服务（默认按 `http://127.0.0.1:1234` 访问，例如 LM Studio）
 - 如需 QQ 机器人，还需要本地 OneBot / NapCat 兼容 HTTP 桥
+
+### 零密钥安装说明
+本项目默认面向 **本地模型 / 本地服务** 使用，按默认链路启动时：
+- **不需要 OpenAI Key**
+- **不需要云端 API Key**
+- **不需要额外数据库**
+
+只要本机具备以下条件即可直接跑起来：
+1. 安装 Node.js
+2. `npm install`
+3. 准备一个本地 OpenAI 兼容模型接口（默认 `http://127.0.0.1:1234`）
+4. 执行 `npm start`
+
+可选组件：
+- 需要 QQ 机器人时，再安装 / 启动 NapCat 或其他 OneBot HTTP 桥
+- 需要浏览器自动化能力时，再额外安装 Playwright 运行环境
+
+### 首次安装
+```powershell
+git clone <你的仓库地址>
+cd AI-web
+npm install
+```
+
+### 本地模型准备
+推荐直接使用本地 OpenAI 兼容接口，例如：
+- LM Studio
+- 其他提供 `/v1/chat/completions` 兼容接口的本地模型服务
+
+如果模型地址不是默认值，可在页面配置中修改连接地址。
 
 ### 安装依赖
 ```powershell
@@ -212,6 +243,8 @@ AI-web/
 - `data/scheduled-tasks.json`：定时任务数据
 - `data/skill-runner-config.json`：skill-runner 配置
 - `data/novels/`：小说项目目录
+
+> 说明：`logs/`、`data/temp/`、`data/novels/`、浏览器 profile、个人临时 persona、`.history/` 等均属于本地运行数据或历史文件，不建议提交到 git。
 
 ### data/novels/
 每本小说会独立保存为一个项目目录，例如：
