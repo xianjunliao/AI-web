@@ -3,44 +3,29 @@
 }
 
 body.novel-page {
-  --novel-bg-watermark-opacity: 0.14;
-  --novel-bg-watermark-scale: 1.02;
-  --novel-bg-watermark-saturate: 0.78;
-  --novel-bg-watermark-contrast: 0.9;
+  --novel-bg-watermark-opacity: 0.34;
+  --novel-bg-watermark-scale: 1;
 }
 
 body.novel-page.has-custom-background::before {
-  background-image:
-    radial-gradient(circle at 18% 20%, rgba(255, 255, 255, 0.22), transparent 26%),
-    radial-gradient(circle at 82% 16%, rgba(205, 229, 255, 0.18), transparent 24%),
-    var(--custom-bg-image);
-  background-size: auto, auto, cover;
-  background-position: center, center, center;
+  background-image: var(--custom-bg-image);
+  background-size: cover;
+  background-position: center;
   background-repeat: no-repeat;
   background-attachment: fixed;
-  filter:
-    blur(calc(var(--custom-bg-blur) * 0.72))
-    brightness(calc(var(--custom-bg-brightness) + 0.08))
-    saturate(var(--novel-bg-watermark-saturate))
-    contrast(var(--novel-bg-watermark-contrast))
-    grayscale(0.12);
+  filter: blur(var(--custom-bg-blur)) brightness(var(--custom-bg-brightness));
   transform: scale(var(--novel-bg-watermark-scale));
   opacity: var(--novel-bg-watermark-opacity);
-  mix-blend-mode: multiply;
+  mix-blend-mode: normal;
 }
 
 body.novel-page.has-custom-background::after {
   opacity: 1;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, calc(var(--custom-bg-overlay-opacity) + 0.3)),
-      rgba(245, 249, 255, calc(var(--custom-bg-overlay-opacity) + 0.12))
-    ),
-    radial-gradient(circle at 14% 18%, rgba(133, 180, 228, 0.08), transparent 22%),
-    radial-gradient(circle at 84% 78%, rgba(125, 213, 197, 0.06), transparent 24%),
-    repeating-linear-gradient(180deg, rgba(97, 126, 161, 0.018) 0 1px, transparent 1px 6px);
-  backdrop-filter: blur(calc(var(--custom-bg-blur) * 0.28));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, calc(var(--custom-bg-overlay-opacity) + 0.08)),
+    rgba(245, 249, 255, calc(var(--custom-bg-overlay-opacity) + 0.02))
+  );
 }
 
 .novel-shell {

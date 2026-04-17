@@ -29,6 +29,8 @@
   --custom-bg-blur: 0px;
   --custom-bg-brightness: 1;
   --custom-bg-overlay-opacity: 0.2;
+  --custom-bg-image-opacity: 0.72;
+  --custom-bg-image-scale: 1;
 }
 
 * {
@@ -92,8 +94,8 @@ body.has-custom-background::before {
   background-repeat: no-repeat;
   background-attachment: fixed;
   filter: blur(var(--custom-bg-blur)) brightness(var(--custom-bg-brightness));
-  transform: scale(1.04);
-  opacity: 1;
+  transform: scale(var(--custom-bg-image-scale));
+  opacity: var(--custom-bg-image-opacity);
   mask-image: none;
 }
 
@@ -106,14 +108,12 @@ body::after {
 }
 
 body.has-custom-background::after {
-  opacity: 0.38;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, calc(var(--custom-bg-overlay-opacity) + 0.12)),
-      rgba(245, 249, 255, var(--custom-bg-overlay-opacity))
-    );
-  backdrop-filter: blur(calc(var(--custom-bg-blur) * 0.35));
+  opacity: 1;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, calc(var(--custom-bg-overlay-opacity) + 0.08)),
+    rgba(245, 249, 255, calc(var(--custom-bg-overlay-opacity) + 0.02))
+  );
 }
 
 .app-shell {

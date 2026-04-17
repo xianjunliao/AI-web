@@ -247,6 +247,7 @@ const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, sending: false, previewMaximized: false, toolActivities: [] };
 const DEFAULT_QQ_PUSH_TARGET_TYPE = "private";
 const DEFAULT_QQ_PUSH_TARGET_ID = "1036986718";
+const DEFAULT_WORKSPACE_TITLE = "文远的智能实验室";
 const $ = (s) => document.querySelector(s);
 const els = {
   chatForm: $("#chat-form"), chatMessages: $("#chat-messages"), userInput: $("#user-input"), sendButton: $("#send-button"),
@@ -254,6 +255,7 @@ const els = {
   remoteApiEnabled: $("#remote-api-enabled"), remoteBaseUrl: $("#remote-base-url"), remoteApiPath: $("#remote-api-path"),
   remoteModelsPath: $("#remote-models-path"), remoteApiKey: $("#remote-api-key"), remoteConnectionMeta: $("#remote-connection-meta"),
   remoteConfigFields: $("#remote-config-fields"), connectionModeMeta: $("#connection-mode-meta"),
+  workspaceTitle: $("#workspace-title"), workspaceTitleInput: $("#workspace-title-input"),
   assistantName: $("#assistant-name"), userName: $("#user-name"), systemPrompt: $("#system-prompt"), contextLimit: $("#context-limit"),
   qqPushEnabled: $("#qq-push-enabled"), qqBridgeUrl: $("#qq-bridge-url"), qqAccessToken: $("#qq-access-token"), qqWebhookEndpoint: $("#qq-webhook-endpoint"), copyQqWebhookEndpoint: $("#copy-qq-webhook-endpoint"), qqTargetType: $("#qq-target-type"), qqTargetId: $("#qq-target-id"), qqTargetProfileSelect: $("#qq-target-profile-select"), qqTargetProfileMeta: $("#qq-target-profile-meta"), saveQqTargetProfile: $("#save-qq-target-profile"), deleteQqTargetProfile: $("#delete-qq-target-profile"), qqPushMeta: $("#qq-push-meta"), testQqPush: $("#test-qq-push"),
   qqBotEnabled: $("#qq-bot-enabled"), qqBotGroupMentionOnly: $("#qq-bot-group-mention-only"), qqTaskPushEnabled: $("#qq-task-push-enabled"), qqBotTriggerPrefix: $("#qq-bot-trigger-prefix"), qqBotAllowedUsers: $("#qq-bot-allowed-users"), qqBotAllowedGroups: $("#qq-bot-allowed-groups"), qqBotPersona: $("#qq-bot-persona"), qqBotPersonaPreset: $("#qq-bot-persona-preset"), qqBotPersonaPresetDescription: $("#qq-bot-persona-preset-description"), qqBotPersonaFileInput: $("#qq-bot-persona-file-input"), importQqBotPersona: $("#import-qq-bot-persona"), exportQqBotPersona: $("#export-qq-bot-persona"), clearQqBotPersona: $("#clear-qq-bot-persona"), qqBotMeta: $("#qq-bot-meta"), qqBotModelSelect: $("#qq-bot-model-select"), qqToolsReadEnabled: $("#qq-tools-read-enabled"), qqToolsWriteEnabled: $("#qq-tools-write-enabled"), qqToolsCommandEnabled: $("#qq-tools-command-enabled"), qqToolsSkillEnabled: $("#qq-tools-skill-enabled"), qqToolsFileSendEnabled: $("#qq-tools-file-send-enabled"), qqFileShareRoots: $("#qq-file-share-roots"), qqToolPermissionMeta: $("#qq-tool-permission-meta"), qqProfileToolsReadEnabled: $("#qq-profile-tools-read-enabled"), qqProfileToolsWriteEnabled: $("#qq-profile-tools-write-enabled"), qqProfileToolsCommandEnabled: $("#qq-profile-tools-command-enabled"), qqProfileToolsSkillEnabled: $("#qq-profile-tools-skill-enabled"), qqProfileToolsFileSendEnabled: $("#qq-profile-tools-file-send-enabled"), qqProfileFileShareRoots: $("#qq-profile-file-share-roots"), qqProfileToolPermissionMeta: $("#qq-profile-tool-permission-meta"), qqLoadSkills: $("#qq-load-skills"), qqApplySkill: $("#qq-apply-skill"), qqClearSkillSelection: $("#qq-clear-skill-selection"), qqDisableSkill: $("#qq-disable-skill"), qqSkillsList: $("#qq-skills-list"), qqSkillMeta: $("#qq-skill-meta"), qqSkillPreview: $("#qq-skill-preview"),
@@ -705,6 +707,21 @@ function getAvatarSettings() {
     userAvatar: s.userAvatar || "",
   };
 }
+function getWorkspaceTitleSetting() {
+  const draftValue = els.workspaceTitleInput?.value;
+  if (typeof draftValue === "string" && draftValue.trim()) {
+    return draftValue.trim();
+  }
+  const s = saved();
+  return String(s.workspaceTitle || "").trim() || DEFAULT_WORKSPACE_TITLE;
+}
+function renderWorkspaceBranding() {
+  const title = getWorkspaceTitleSetting();
+  if (els.workspaceTitle) {
+    els.workspaceTitle.textContent = title;
+  }
+  document.title = title;
+}
 function getWorkspaceBackgroundSetting(targetOverride = "") {
   const s = saved();
   const target = String(targetOverride || els.backgroundTargetPage?.value || "chat");
@@ -723,6 +740,15 @@ function getWorkspaceBackgroundSetting(targetOverride = "") {
     blur: Math.max(0, Number(record.blur) || 0),
     brightness: Math.min(140, Math.max(60, Number(record.brightness) || 100)),
     overlay: Math.min(80, Math.max(0, Number(record.overlay) || 20)),
+  };
+}
+function getWorkspaceBackgroundVisualStyle(background = {}) {
+  const blur = Math.max(0, Number(background.blur) || 0);
+  const overlay = Math.min(80, Math.max(0, Number(background.overlay) || 20));
+  const overlayRatio = overlay / 100;
+  return {
+    opacity: Math.max(0.24, Math.min(0.62, 0.54 - overlayRatio * 0.34)),
+    scale: blur > 0 ? Math.min(1.03, 1 + blur * 0.0012) : 1,
   };
 }
 function updateWorkspaceBackgroundSetting(patch = {}, { target = String(els.backgroundTargetPage?.value || "chat") } = {}) {
@@ -767,17 +793,22 @@ function renderAllAvatarPreviews() {
 }
 function applyWorkspaceBackground() {
   const background = getWorkspaceBackgroundSetting("chat");
+  const visualStyle = getWorkspaceBackgroundVisualStyle(background);
   document.body.classList.toggle("has-custom-background", Boolean(background.image));
   if (background.image) {
     document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
     document.body.style.setProperty("--custom-bg-blur", `${background.blur}px`);
     document.body.style.setProperty("--custom-bg-brightness", `${background.brightness / 100}`);
     document.body.style.setProperty("--custom-bg-overlay-opacity", `${background.overlay / 100}`);
+    document.body.style.setProperty("--custom-bg-image-opacity", String(visualStyle.opacity));
+    document.body.style.setProperty("--custom-bg-image-scale", String(visualStyle.scale));
   } else {
     document.body.style.removeProperty("--custom-bg-image");
     document.body.style.removeProperty("--custom-bg-blur");
     document.body.style.removeProperty("--custom-bg-brightness");
     document.body.style.removeProperty("--custom-bg-overlay-opacity");
+    document.body.style.removeProperty("--custom-bg-image-opacity");
+    document.body.style.removeProperty("--custom-bg-image-scale");
   }
 }
 function renderWorkspaceBackgroundPreview() {
@@ -956,6 +987,7 @@ function save() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({
     ...old,
     baseUrl: els.baseUrl?.value.trim() || "", apiPath: els.apiPath?.value.trim() || "/api/v1/chat/completions", model: selectedModel(), modelHistory: history,
+    workspaceTitle: els.workspaceTitleInput?.value.trim() || DEFAULT_WORKSPACE_TITLE,
     assistantName: els.assistantName?.value.trim() || "繁星", userName: els.userName?.value.trim() || "文远", systemPrompt: els.systemPrompt?.value.trim() || "",
     personaPrompt: els.personaPrompt?.value.trim() || "", personaPreset: els.personaPreset?.value || "none", contextLimit: els.contextLimit?.value.trim() || "32768", modelContextLimits: contextLimits,
     qqPushEnabled: Boolean(els.qqPushEnabled?.checked),
@@ -987,12 +1019,13 @@ function save() {
     activeSkill: cloneSkillForStorage(state.activeSkill),
     ...getResizableTextareaState(),
   }));
-  renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderWorkspaceBackgroundPreview(); renderQqPushMeta();
+  renderWorkspaceBranding(); renderModelMeta(); refreshMetrics(); renderAllAvatarPreviews(); renderWorkspaceBackgroundPreview(); renderQqPushMeta();
 }
 function load() {
   const s = saved();
   if (els.baseUrl) els.baseUrl.value = s.baseUrl || "";
   if (els.apiPath) els.apiPath.value = s.apiPath || "/api/v1/chat/completions";
+  if (els.workspaceTitleInput) els.workspaceTitleInput.value = s.workspaceTitle || DEFAULT_WORKSPACE_TITLE;
   if (els.assistantName) els.assistantName.value = s.assistantName || "繁星";
   if (els.userName) els.userName.value = s.userName || "文远";
   if (els.systemPrompt) els.systemPrompt.value = s.systemPrompt || "";
@@ -1030,6 +1063,7 @@ function load() {
   renderSkillPreview();
   renderAllAvatarPreviews();
   renderWorkspaceBackgroundPreview();
+  renderWorkspaceBranding();
   renderQqPushMeta();
 }
 
@@ -1967,6 +2001,11 @@ function bind() {
     }
   });
   [els.baseUrl, els.apiPath, els.assistantName, els.userName, els.systemPrompt].forEach((el) => el?.addEventListener("change", () => { save(); setStatus(`已保存配置，当前接口：${chatEndpoint()}`); }));
+  els.workspaceTitleInput?.addEventListener("input", () => renderWorkspaceBranding());
+  els.workspaceTitleInput?.addEventListener("change", () => {
+    save();
+    setStatus(`已更新工作台标题：${getWorkspaceTitleSetting()}`);
+  });
   els.contextLimit?.addEventListener("change", () => {
     persistContextLimitForSelectedModel();
     save();
@@ -11665,6 +11704,12 @@ els.modelSelect?.addEventListener("change", () => {
 
 window.addEventListener("focus", () => {
   syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
+});
+
+window.addEventListener("storage", (event) => {
+  if (event?.key && event.key !== SETTINGS_KEY) return;
+  load();
+  renderWorkspaceBranding();
 });
 
 document.addEventListener("visibilitychange", () => {

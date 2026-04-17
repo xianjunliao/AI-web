@@ -181,15 +181,11 @@ function removeStyleProperty(element, name) {
 
 function getNovelBackgroundWatermarkStyle(background = {}) {
   const blur = Math.max(0, Number(background.blur) || 0);
-  const brightness = Math.min(140, Math.max(60, Number(background.brightness) || 100));
   const overlay = Math.min(80, Math.max(0, Number(background.overlay) || 20));
   const overlayRatio = overlay / 100;
-  const brightnessRatio = brightness / 100;
   return {
-    opacity: Math.max(0.08, Math.min(0.22, 0.18 - overlayRatio * 0.08 + Math.max(0, 1 - brightnessRatio) * 0.06)),
-    scale: Math.min(1.06, 1.015 + blur * 0.0016),
-    saturate: Math.max(0.56, Math.min(0.92, 0.84 - overlayRatio * 0.24)),
-    contrast: Math.max(0.84, Math.min(1.02, 0.96 - overlayRatio * 0.08 + Math.max(0, brightnessRatio - 1) * 0.05)),
+    opacity: Math.max(0.24, Math.min(0.62, 0.54 - overlayRatio * 0.34)),
+    scale: blur > 0 ? Math.min(1.03, 1 + blur * 0.0012) : 1,
   };
 }
 
@@ -206,8 +202,6 @@ function applyNovelPageBackground() {
     setStyleProperty(body, "--custom-bg-overlay-opacity", `${background.overlay / 100}`);
     setStyleProperty(body, "--novel-bg-watermark-opacity", String(watermarkStyle.opacity));
     setStyleProperty(body, "--novel-bg-watermark-scale", String(watermarkStyle.scale));
-    setStyleProperty(body, "--novel-bg-watermark-saturate", String(watermarkStyle.saturate));
-    setStyleProperty(body, "--novel-bg-watermark-contrast", String(watermarkStyle.contrast));
   } else {
     removeStyleProperty(body, "--custom-bg-image");
     removeStyleProperty(body, "--custom-bg-blur");
@@ -215,8 +209,6 @@ function applyNovelPageBackground() {
     removeStyleProperty(body, "--custom-bg-overlay-opacity");
     removeStyleProperty(body, "--novel-bg-watermark-opacity");
     removeStyleProperty(body, "--novel-bg-watermark-scale");
-    removeStyleProperty(body, "--novel-bg-watermark-saturate");
-    removeStyleProperty(body, "--novel-bg-watermark-contrast");
   }
 }
 
