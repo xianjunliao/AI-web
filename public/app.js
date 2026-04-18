@@ -245,6 +245,13 @@ let workspacePersonaPresets = [];
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 
 const state = { messages: [], files: [], skills: [], selectedSkill: null, activeSkill: null, sending: false, previewMaximized: false, toolActivities: [] };
+const metricsRuntime = {
+  staticChars: 0,
+  draftRefreshTimer: 0,
+  lastPromptChars: 0,
+  lastEstimatedTokens: 0,
+  lastContextLimit: 32768,
+};
 const DEFAULT_QQ_PUSH_TARGET_TYPE = "private";
 const DEFAULT_QQ_PUSH_TARGET_ID = "1036986718";
 const DEFAULT_WORKSPACE_TITLE = "文远的智能实验室";
@@ -375,6 +382,40 @@ const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
   reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
   reader.readAsDataURL(file);
 });
+
+const loadImageElement = (source) => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.decoding = "async";
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error("图片加载失败"));
+  image.src = source;
+});
+function getFittedImageSize(width, height, maxDimension) {
+  const longestEdge = Math.max(Number(width) || 0, Number(height) || 0, 1);
+  const scale = Math.min(1, Number(maxDimension) / longestEdge);
+  return {
+    width: Math.max(1, Math.round((Number(width) || 1) * scale)),
+    height: Math.max(1, Math.round((Number(height) || 1) * scale)),
+  };
+}
+function canvasToJpegDataUrl(canvas, quality = 0.84) {
+  return canvas.toDataURL("image/jpeg", quality);
+}
+async function processBackgroundImageFile(file) {
+  const sourceDataUrl = await readFileAsDataUrl(file);
+  const image = await loadImageElement(sourceDataUrl);
+  // Keep chat backgrounds close to viewport size to reduce repaint cost.
+  const baseSize = getFittedImageSize(image.naturalWidth, image.naturalHeight, 1440);
+  const baseCanvas = document.createElement("canvas");
+  baseCanvas.width = baseSize.width;
+  baseCanvas.height = baseSize.height;
+  const baseContext = baseCanvas.getContext("2d");
+  baseContext.drawImage(image, 0, 0, baseSize.width, baseSize.height);
+  return {
+    image: canvasToJpegDataUrl(baseCanvas, 0.78),
+    softImage: "",
+  };
+}
 
 function hasExplicitLocalSaveIntent(text = "") {
   const normalized = String(text).toLowerCase();
@@ -728,6 +769,7 @@ function getLegacyPageBackgroundRecord(target = "chat") {
   const record = backgrounds[target] && typeof backgrounds[target] === "object" ? backgrounds[target] : {};
   return {
     image: String(record.image || (target === "chat" ? s.workspaceBackgroundImage || "" : "") || ""),
+    softImage: String(record.softImage || ""),
     blur: Math.max(0, Number(record.blur) || 0),
     shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
   };
@@ -740,6 +782,7 @@ function getWorkspaceBackgroundSetting() {
   return {
     target: "chat",
     image: String(record.image || ""),
+    softImage: String(record.softImage || ""),
     blur: Math.max(0, Number(record.blur) || 0),
     shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
   };
@@ -752,6 +795,7 @@ function updateWorkspaceBackgroundSetting(patch = {}) {
     workspaceBackgroundImage: String(patch.image ?? previous.image ?? ""),
     chatPageBackground: {
       image: String(patch.image ?? previous.image ?? ""),
+      softImage: String(patch.softImage ?? previous.softImage ?? ""),
       blur: Math.max(0, Number(patch.blur ?? previous.blur ?? 0) || 0),
       shellOpacity: Math.min(100, Math.max(30, Number(patch.shellOpacity ?? previous.shellOpacity ?? 70) || 70)),
     },
@@ -789,26 +833,32 @@ function renderAllAvatarPreviews() {
   renderAvatarPreview("assistant");
   renderAvatarPreview("user");
 }
+function clearWorkspaceBackgroundEffects() {
+  document.body.classList.remove("has-custom-background");
+  document.body.style.removeProperty("--custom-bg-image");
+  document.body.style.removeProperty("--custom-bg-soft-image");
+  document.body.style.removeProperty("--custom-bg-blur");
+  document.body.style.removeProperty("--custom-bg-image-opacity");
+  document.body.style.removeProperty("--custom-bg-soft-opacity");
+  document.body.style.removeProperty("--custom-bg-soft-scale");
+  document.body.style.removeProperty("--app-shell-opacity-factor");
+  document.body.style.removeProperty("--surface-opacity-factor");
+}
 function applyWorkspaceBackground() {
   const background = getWorkspaceBackgroundSetting();
-  const shellOpacityFactor = background.shellOpacity / 100;
-  const surfaceOpacityFactor = Math.min(1, 0.1 + shellOpacityFactor * 0.45);
-  document.body.classList.toggle("has-custom-background", Boolean(background.image));
-  if (background.image) {
-    document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
-    document.body.style.setProperty("--custom-bg-blur", `${background.blur}px`);
-    document.body.style.setProperty("--custom-bg-image-opacity", "1");
-    document.body.style.setProperty("--custom-bg-image-scale", "1");
-    document.body.style.setProperty("--app-shell-opacity-factor", `${shellOpacityFactor}`);
-    document.body.style.setProperty("--surface-opacity-factor", `${surfaceOpacityFactor}`);
-  } else {
-    document.body.style.removeProperty("--custom-bg-image");
-    document.body.style.removeProperty("--custom-bg-blur");
-    document.body.style.removeProperty("--custom-bg-image-opacity");
-    document.body.style.removeProperty("--custom-bg-image-scale");
-    document.body.style.removeProperty("--app-shell-opacity-factor");
-    document.body.style.removeProperty("--surface-opacity-factor");
+  if (!background.image) {
+    clearWorkspaceBackgroundEffects();
+    return;
   }
+  const shellOpacityFactor = background.shellOpacity / 100;
+  const surfaceOpacityFactor = Math.min(1, 0.42 + shellOpacityFactor * 0.38);
+  const softOpacity = 0.08 + (Math.max(0, background.blur) / 24) * 0.18;
+  document.body.classList.add("has-custom-background");
+  document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
+  document.body.style.setProperty("--custom-bg-image-opacity", "1");
+  document.body.style.setProperty("--custom-bg-soft-opacity", `${softOpacity}`);
+  document.body.style.setProperty("--app-shell-opacity-factor", `${shellOpacityFactor}`);
+  document.body.style.setProperty("--surface-opacity-factor", `${surfaceOpacityFactor}`);
 }
 function renderWorkspaceBackgroundPreview(override = null) {
   const savedBackground = getWorkspaceBackgroundSetting();
@@ -817,6 +867,7 @@ function renderWorkspaceBackgroundPreview(override = null) {
       ...savedBackground,
       ...override,
       image: String(override.image ?? savedBackground.image ?? ""),
+      softImage: String(override.softImage ?? savedBackground.softImage ?? ""),
       blur: Math.max(0, Number(override.blur ?? savedBackground.blur ?? 0) || 0),
       shellOpacity: Math.min(100, Math.max(30, Number(override.shellOpacity ?? savedBackground.shellOpacity ?? 70) || 70)),
     }
@@ -834,23 +885,18 @@ function renderWorkspaceBackgroundPreview(override = null) {
       ? `当前已为聊天页启用自定义背景；柔化 ${background.blur}px，界面透明度 ${background.shellOpacity}%。`
       : "支持为聊天页上传独立背景，并调整柔化与界面透明度。";
   }
-  const shellOpacityFactor = background.shellOpacity / 100;
-  const surfaceOpacityFactor = Math.min(1, 0.1 + shellOpacityFactor * 0.45);
-  document.body.classList.toggle("has-custom-background", Boolean(background.image));
   if (background.image) {
+    const shellOpacityFactor = background.shellOpacity / 100;
+    const surfaceOpacityFactor = Math.min(1, 0.42 + shellOpacityFactor * 0.38);
+    const softOpacity = 0.08 + (Math.max(0, background.blur) / 24) * 0.18;
+    document.body.classList.add("has-custom-background");
     document.body.style.setProperty("--custom-bg-image", `url("${background.image}")`);
-    document.body.style.setProperty("--custom-bg-blur", `${background.blur}px`);
     document.body.style.setProperty("--custom-bg-image-opacity", "1");
-    document.body.style.setProperty("--custom-bg-image-scale", "1");
+    document.body.style.setProperty("--custom-bg-soft-opacity", `${softOpacity}`);
     document.body.style.setProperty("--app-shell-opacity-factor", `${shellOpacityFactor}`);
     document.body.style.setProperty("--surface-opacity-factor", `${surfaceOpacityFactor}`);
   } else {
-    document.body.style.removeProperty("--custom-bg-image");
-    document.body.style.removeProperty("--custom-bg-blur");
-    document.body.style.removeProperty("--custom-bg-image-opacity");
-    document.body.style.removeProperty("--custom-bg-image-scale");
-    document.body.style.removeProperty("--app-shell-opacity-factor");
-    document.body.style.removeProperty("--surface-opacity-factor");
+    clearWorkspaceBackgroundEffects();
   }
 }
 function cloneSkillForStorage(skill) {
@@ -934,12 +980,22 @@ function estimateDraftChars() {
   return els.userInput?.value.length || 0;
 }
 
+function estimateStaticPromptChars() {
+  return estimateSystemMessageChars() + estimateConversationHistoryChars() + estimateAttachedFileChars();
+}
+
 function estimateCurrentPromptTokens() {
-  const chars = estimateSystemMessageChars() + estimateConversationHistoryChars() + estimateAttachedFileChars() + estimateDraftChars();
+  const chars = estimateStaticPromptChars() + estimateDraftChars();
   return {
     chars,
     estimatedTokens: Math.ceil(chars / 4),
   };
+}
+
+function cancelDraftMetricsRefresh() {
+  if (!metricsRuntime.draftRefreshTimer) return;
+  window.clearTimeout(metricsRuntime.draftRefreshTimer);
+  metricsRuntime.draftRefreshTimer = 0;
 }
 
 function cloneSettingBundleForStorage(bundle) {
@@ -1136,9 +1192,17 @@ function renderModelMeta() {
   els.modelSelectionMeta.textContent = selectedModel() ? `当前模型：${selectedModel()}` : "当前未选择模型";
   renderConversationMiniheadMeta();
 }
-function refreshMetrics(usage = null, elapsedMs = null) {
-  const { chars, estimatedTokens: est } = estimateCurrentPromptTokens();
+function refreshMetrics(usage = null, elapsedMs = null, options = {}) {
+  const useCachedStatic = Boolean(options?.useCachedStatic);
+  if (!useCachedStatic) cancelDraftMetricsRefresh();
+  const staticChars = useCachedStatic ? metricsRuntime.staticChars : estimateStaticPromptChars();
+  metricsRuntime.staticChars = staticChars;
+  const chars = staticChars + estimateDraftChars();
+  const est = Math.ceil(chars / 4);
   const limit = Number(els.contextLimit?.value || 32768) || 32768;
+  metricsRuntime.lastPromptChars = chars;
+  metricsRuntime.lastEstimatedTokens = est;
+  metricsRuntime.lastContextLimit = limit;
   const totalText = usage?.total_tokens != null ? String(usage.total_tokens) : (els.metricTotal?.dataset.value || "-");
   const speedText = usage?.completion_tokens && elapsedMs ? `${(usage.completion_tokens / Math.max(elapsedMs / 1000, 0.1)).toFixed(1)} tok/s` : (els.metricSpeed?.dataset.value || "-");
   const usageText = `${est} / ${limit} · ${Math.min(est / limit * 100, 100).toFixed(1)}%`;
@@ -1148,6 +1212,14 @@ function refreshMetrics(usage = null, elapsedMs = null) {
   setMetricChip(els.metricSpeed, "速率", speedText);
   setMetricChip(els.metricContextUsage, "上下文使用情况", usageText);
   if (els.usageBarFill) els.usageBarFill.style.width = `${Math.min(est / limit * 100, 100)}%`;
+}
+
+function scheduleDraftMetricsRefresh() {
+  cancelDraftMetricsRefresh();
+  metricsRuntime.draftRefreshTimer = window.setTimeout(() => {
+    metricsRuntime.draftRefreshTimer = 0;
+    refreshMetrics(null, null, { useCachedStatic: true, draftOnly: true });
+  }, 120);
 }
 
 function setMetricChip(el, label, value) {
@@ -1195,7 +1267,7 @@ function messageAvatarMarkup(role) {
 }
 
 function scrollChatToBottom(behavior = "smooth") {
-  if (!els.chatMessages) return;
+  if (!els.chatMessages || chatRenderRuntime.suppressAutoScroll) return;
   if (behavior === "auto") {
     els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
     return;
@@ -1236,7 +1308,7 @@ function appendMessageHtmlPreview(bubble, content) {
   bubble.append(row);
 }
 
-function buildMessageCard(role, cls = role, images = [], timestamp = Date.now()) {
+function buildMessageCard(role, cls = role, images = [], timestamp = Date.now(), options = {}) {
   const card = document.createElement("article");
   card.className = `message ${cls}`;
   const avatar = messageAvatarMarkup(role);
@@ -1260,8 +1332,11 @@ function buildMessageCard(role, cls = role, images = [], timestamp = Date.now())
   appendMessageImages(bubble, images);
   stack.append(head, bubble);
   card.append(avatar, stack);
-  els.chatMessages?.append(card);
-  scrollChatToBottom("smooth");
+  const appendTarget = options?.appendTarget || els.chatMessages;
+  appendTarget?.append(card);
+  if (options?.scrollBehavior !== "none") {
+    scrollChatToBottom(options?.scrollBehavior || "smooth");
+  }
   return { card, bubble, contentEl };
 }
 
@@ -1292,8 +1367,8 @@ function finalizeAssistantMessageContent(contentEl, bubble, content = "") {
   appendMessageHtmlPreview(bubble, content);
 }
 
-async function appendAssistantMessageWithTyping(content, cls = "assistant", images = [], timestamp = Date.now()) {
-  const { card, bubble, contentEl } = buildMessageCard("assistant", cls, images, timestamp);
+async function appendAssistantMessageWithTyping(content, cls = "assistant", images = [], timestamp = Date.now(), options = {}) {
+  const { card, bubble, contentEl } = buildMessageCard("assistant", cls, images, timestamp, options);
   const fullText = String(content || "");
   if (!fullText) {
     finalizeAssistantMessageContent(contentEl, bubble, fullText);
@@ -1329,7 +1404,7 @@ async function appendAssistantMessageWithTyping(content, cls = "assistant", imag
   return card;
 }
 
-function appendMessage(role, content, cls = role, images = [], timestamp = Date.now()) {
+function appendMessage(role, content, cls = role, images = [], timestamp = Date.now(), options = {}) {
   if (role === "system") {
     setStatus(content, cls === "error" ? "error" : cls === "success" ? "success" : "default");
     return null;
@@ -1339,7 +1414,7 @@ function appendMessage(role, content, cls = role, images = [], timestamp = Date.
       .split(/\n\s*\n/)
       .find((part) => isDesktopAutomationRestrictionMessage(part)) || String(content || "");
   }
-  const { card, bubble, contentEl } = buildMessageCard(role, cls, images, timestamp);
+  const { card, bubble, contentEl } = buildMessageCard(role, cls, images, timestamp, options);
   contentEl.innerHTML = rich(content);
   enhanceMessageCodeBlocks(contentEl);
   appendMessageHtmlPreview(bubble, content);
@@ -1454,12 +1529,12 @@ function renderScheduledTaskChatCardContent(contentEl, renderMeta = {}, fallback
   contentEl.append(card);
 }
 
-function appendScheduledTaskChatMessage(message = {}) {
+function appendScheduledTaskChatMessage(message = {}, options = {}) {
   const timestamp = message.timestamp || Date.now();
   const content = typeof message.content === "string"
     ? message.content
     : normalizeContent(message.content) || JSON.stringify(message.content ?? "");
-  const { card, contentEl } = buildMessageCard("assistant", "assistant scheduled-task-chat", [], timestamp);
+  const { card, contentEl } = buildMessageCard("assistant", "assistant scheduled-task-chat", [], timestamp, options);
   renderScheduledTaskChatCardContent(contentEl, message.renderMeta || {}, content);
   return card;
 }
@@ -2000,8 +2075,13 @@ const initialSubmitHandler = submit;
 
 function bind() {
   els.chatForm?.addEventListener("submit", initialSubmitHandler);
-  els.userInput?.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); els.chatForm?.requestSubmit(); } });
-  els.userInput?.addEventListener("input", () => refreshMetrics());
+  els.userInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      els.chatForm?.requestSubmit();
+    }
+  });
+  els.userInput?.addEventListener("input", () => scheduleDraftMetricsRefresh());
   els.settingsTrigger?.addEventListener("click", () => setSettingsModal(true));
   els.novelStudioTrigger?.addEventListener("click", () => {
     window.location.href = "/novels.html";
@@ -2074,7 +2154,7 @@ function bind() {
     save();
   });
   els.clearWorkspaceBackground?.addEventListener("click", () => {
-    updateWorkspaceBackgroundSetting({ image: "" });
+    updateWorkspaceBackgroundSetting({ image: "", softImage: "" });
     renderWorkspaceBackgroundPreview();
     save();
     setStatus("已恢复聊天页默认背景");
@@ -2114,7 +2194,7 @@ function bind() {
       const [file] = Array.from(e.target.files || []);
       if (!file) return;
       if (file.size > MAX_BACKGROUND_SIZE) throw new Error("背景图片不能超过 8MB");
-      updateWorkspaceBackgroundSetting({ image: await readFileAsDataUrl(file) });
+      updateWorkspaceBackgroundSetting(await processBackgroundImageFile(file));
       renderWorkspaceBackgroundPreview();
       save();
       setStatus(`已更新聊天页背景：${file.name}`);
@@ -2263,6 +2343,10 @@ const conversationTurnDeleteRuntime = {
   pending: null,
   timer: null,
   countdownTimer: null,
+};
+
+const chatRenderRuntime = {
+  suppressAutoScroll: false,
 };
 
 function collectHistoryMessageText(content, parts = []) {
@@ -2798,9 +2882,9 @@ function renderChatHistoryList() {
   updateChatHistoryMeta();
 }
 
-function appendStoredConversationMessage(message = {}) {
+function appendStoredConversationMessage(message = {}, options = {}) {
   if (message?.role === "assistant" && message?.renderType === "scheduled-task-reply") {
-    appendScheduledTaskChatMessage(message);
+    appendScheduledTaskChatMessage(message, options);
     return;
   }
 
@@ -2812,7 +2896,8 @@ function appendStoredConversationMessage(message = {}) {
     restoredContent,
     message?.role || "assistant",
     [],
-    message?.timestamp || Date.now()
+    message?.timestamp || Date.now(),
+    options
   );
 }
 
@@ -3943,12 +4028,12 @@ buildToolOnlyFallbackReply = function buildToolOnlyFallbackReplyWithQq(messages 
 };
 
 const refreshMetricsBeforeStableContextUsage = refreshMetrics;
-refreshMetrics = function refreshMetricsStableContextUsage(usage = null, elapsedMs = null) {
-  refreshMetricsBeforeStableContextUsage(usage, elapsedMs);
+refreshMetrics = function refreshMetricsStableContextUsage(usage = null, elapsedMs = null, options = {}) {
+  refreshMetricsBeforeStableContextUsage(usage, elapsedMs, options);
 
   const limit = getConfiguredContextLimit();
   const totalValue = Number(usage?.total_tokens ?? els.metricTotal?.dataset.value);
-  const estimatedCurrentContext = estimateCurrentPromptTokens().estimatedTokens;
+  const estimatedCurrentContext = Number(metricsRuntime.lastEstimatedTokens) || 0;
 
   const stableUsage = Math.max(
     Number.isFinite(totalValue) ? totalValue : 0,
@@ -4097,8 +4182,8 @@ systemMessages = function systemMessagesWithContextLimitRule() {
 };
 
 const refreshMetricsBeforeContextLimitWarning = refreshMetrics;
-refreshMetrics = function refreshMetricsWithContextLimitWarning(usage = null, elapsedMs = null) {
-  refreshMetricsBeforeContextLimitWarning(usage, elapsedMs);
+refreshMetrics = function refreshMetricsWithContextLimitWarning(usage = null, elapsedMs = null, options = {}) {
+  refreshMetricsBeforeContextLimitWarning(usage, elapsedMs, options);
 
   const limit = getConfiguredContextLimit();
   const totalValue = Number(usage?.total_tokens ?? els.metricTotal?.dataset.value);
@@ -4195,8 +4280,8 @@ executeTool = async function executeToolWithExistingFileGuard(toolCall) {
 };
 
 const refreshMetricsBeforeUsageTotalRule = refreshMetrics;
-refreshMetrics = function refreshMetricsUseTotalForUsage(usage = null, elapsedMs = null) {
-  refreshMetricsBeforeUsageTotalRule(usage, elapsedMs);
+refreshMetrics = function refreshMetricsUseTotalForUsage(usage = null, elapsedMs = null, options = {}) {
+  refreshMetricsBeforeUsageTotalRule(usage, elapsedMs, options);
 
   const limit = getConfiguredContextLimit();
   const totalValue = Number(usage?.total_tokens ?? els.metricTotal?.dataset.value);
@@ -4325,6 +4410,33 @@ submit = async function submitWithSessionOperationGuard(ev) {
 };
 els.chatForm?.addEventListener("submit", submit, true);
 
+function dispatchComposerSubmitFromKeyboard() {
+  if (state.sending) {
+    return;
+  }
+  queueMicrotask(() => {
+    submit({
+      preventDefault() {},
+      stopImmediatePropagation() {},
+    });
+  });
+}
+
+els.userInput?.addEventListener("keydown", (event) => {
+  if (
+    event.key !== "Enter"
+    || event.shiftKey
+    || event.isComposing
+    || event.defaultPrevented
+    || state.sending
+  ) {
+    return;
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  dispatchComposerSubmitFromKeyboard();
+}, true);
+
 updateSessionOperationAvailability();
 
 function isSettingTextFile(file) {
@@ -4409,8 +4521,11 @@ systemMessages = function systemMessagesWithSettingBundle() {
 };
 
 const refreshMetricsBeforeSettingBundle = refreshMetrics;
-refreshMetrics = function refreshMetricsWithSettingBundle(usage = null, elapsedMs = null) {
-  refreshMetricsBeforeSettingBundle(usage, elapsedMs);
+refreshMetrics = function refreshMetricsWithSettingBundle(usage = null, elapsedMs = null, options = {}) {
+  refreshMetricsBeforeSettingBundle(usage, elapsedMs, options);
+  if (options?.draftOnly) {
+    return;
+  }
   renderSettingBundlePreview();
 };
 
@@ -5669,6 +5784,7 @@ submit = async function submitInChatPending(ev) {
   ev.preventDefault();
   ev.stopImmediatePropagation();
   if (state.sending) return;
+  cancelDraftMetricsRefresh();
 
   const text = els.userInput?.value.trim() || "";
   if (!text && !state.files.length) {
@@ -7119,9 +7235,19 @@ function renderConversationFromMessagesStable(messages) {
   if (!state.messages.length) {
     els.chatMessages?.replaceChildren();
   } else {
-    state.messages.forEach((message) => {
-      appendStoredConversationMessage(message);
-    });
+    const fragment = document.createDocumentFragment();
+    chatRenderRuntime.suppressAutoScroll = true;
+    try {
+      state.messages.forEach((message) => {
+        appendStoredConversationMessage(message, {
+          appendTarget: fragment,
+          scrollBehavior: "none",
+        });
+      });
+      els.chatMessages?.append(fragment);
+    } finally {
+      chatRenderRuntime.suppressAutoScroll = false;
+    }
   }
 
   decorateConversationTurnDeleteButtons();
@@ -7129,6 +7255,7 @@ function renderConversationFromMessagesStable(messages) {
   refreshMetrics();
   chatHistoryRuntime.suppressAutoSave = false;
   updateCurrentChatTitle();
+  scrollChatToBottom("auto");
 }
 
 renderConversationFromMessages = function renderConversationFromMessagesFinalStable(messages) {

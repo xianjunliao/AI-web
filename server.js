@@ -22,7 +22,12 @@ const { createScheduler } = require("./server/server-scheduler");
 const { createStartupCleanup } = require("./server/server-cleanup");
 const { createDataInitializer, createServerBootstrap } = require("./server/server-bootstrap");
 const { createSharedConnectionConfigModule } = require("./server/server-connection-config");
-const { createStaticServer, createApiProxy } = require("./server/server-http");
+const {
+  createStaticServer,
+  createApiProxy,
+  requestJsonWithRetry,
+  requestBufferWithRetry,
+} = require("./server/server-http");
 const { createNovelModule } = require("./server/server-novel-projects");
 const {
   inferScheduledTaskArgsFromText,
@@ -197,10 +202,16 @@ proxyRequest = createApiProxy({
     const resolved = getResolvedModelServiceConfig();
     return {
       targetOrigin: resolved.targetOrigin,
+      chatPath: resolved.chatPath,
+      modelsPath: resolved.modelsPath,
       extraHeaders: resolved.authHeaders,
+      timeoutMs: 20_000,
+      retryCount: 1,
+      retryDelayMs: 750,
     };
   },
   sendJson,
+  logDebug: appendServerDebugLog,
 });
 
 function getResolvedModelServiceConfig() {
@@ -226,6 +237,35 @@ function buildModelServiceUrl(kind = "chat") {
   const resolved = getResolvedModelServiceConfig();
   const apiPath = kind === "models" ? resolved.modelsPath : resolved.chatPath;
   return new URL(apiPath, resolved.targetOrigin);
+}
+
+async function warmupModelServiceConnection({ reason = "startup" } = {}) {
+  const resolved = getResolvedModelServiceConfig();
+  if (resolved.mode !== "remote") {
+    return false;
+  }
+
+  const targetUrl = buildModelServiceUrl("models");
+  try {
+    await requestJson(targetUrl, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        ...resolved.authHeaders,
+      },
+      timeoutMs: 10_000,
+      retryCount: 2,
+      retryDelayMs: 1_500,
+    });
+    appendServerDebugLog(`model warmup succeeded reason=${reason} url=${targetUrl.toString()}`);
+    return true;
+  } catch (error) {
+    appendServerDebugLog(
+      `model warmup failed reason=${reason} code=${String(error?.code || "")} `
+      + `status=${String(error?.statusCode || "")} message=${String(error?.message || "unknown")}`
+    );
+    return false;
+  }
 }
 
 function clampTextForModel(value, maxLength) {
@@ -274,53 +314,13 @@ function legacyParseQqIdListV1(value) {
     .filter(Boolean);
 }
 
-function requestJson(targetUrl, options = {}, body = null) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(targetUrl);
-    const transport = url.protocol === "https:" ? https : http;
-    const payload = body ? Buffer.from(JSON.stringify(body), "utf8") : null;
+function requestJson(targetUrl, options = {}) {
+  return requestJsonWithRetry(targetUrl, options);
+}
 
-    const req = transport.request(
-      {
-        protocol: url.protocol,
-        hostname: url.hostname,
-        port: url.port || (url.protocol === "https:" ? 443 : 80),
-        path: `${url.pathname}${url.search}`,
-        method: options.method || "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          ...(payload ? { "Content-Length": payload.length } : {}),
-          ...(options.headers || {}),
-        },
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          const raw = Buffer.concat(chunks).toString("utf8");
-          let parsed = null;
-          try {
-            parsed = raw ? JSON.parse(raw) : null;
-          } catch {
-            parsed = raw;
-          }
-          if (res.statusCode >= 400) {
-            const error = new Error(
-              parsed?.message || parsed?.msg || parsed?.error || `QQ bridge request failed: ${res.statusCode}`
-            );
-            error.statusCode = res.statusCode;
-            reject(error);
-            return;
-          }
-          resolve(parsed);
-        });
-      }
-    );
-
-    req.on("error", reject);
-    if (payload) req.write(payload);
-    req.end();
-  });
+async function requestBuffer(targetUrl, options = {}) {
+  const response = await requestBufferWithRetry(targetUrl, options);
+  return response.body;
 }
 
 async function legacySendQqMessageV1(args = {}) {
@@ -1327,79 +1327,6 @@ async function legacyHandleScheduledTaskRunV1(res, taskId) {
   } catch (error) {
     sendJson(res, error.statusCode || 500, { error: error.message || "Failed to run scheduled task" });
   }
-}
-
-function requestJson(targetUrl, { method = "GET", headers = {}, body = "" } = {}) {
-  const transport = targetUrl.protocol === "https:" ? https : http;
-
-  return new Promise((resolve, reject) => {
-    const req = transport.request(
-      targetUrl,
-      {
-        method,
-        headers,
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          try {
-            const raw = Buffer.concat(chunks).toString("utf8");
-            const data = raw ? JSON.parse(raw) : {};
-            if ((res.statusCode || 500) >= 400) {
-              const error = new Error(data.error || `Request failed: ${res.statusCode}`);
-              error.statusCode = res.statusCode || 500;
-              reject(error);
-              return;
-            }
-            resolve(data);
-          } catch (error) {
-            reject(error);
-          }
-        });
-      }
-    );
-
-    req.on("error", reject);
-    if (body) {
-      req.write(body);
-    }
-    req.end();
-  });
-}
-
-function requestBuffer(targetUrl, { method = "GET", headers = {}, body = "" } = {}) {
-  const transport = targetUrl.protocol === "https:" ? https : http;
-
-  return new Promise((resolve, reject) => {
-    const req = transport.request(
-      targetUrl,
-      {
-        method,
-        headers,
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          const buffer = Buffer.concat(chunks);
-          if ((res.statusCode || 500) >= 400) {
-            const error = new Error(`Request failed: ${res.statusCode}`);
-            error.statusCode = res.statusCode || 500;
-            reject(error);
-            return;
-          }
-          resolve(buffer);
-        });
-      }
-    );
-
-    req.on("error", reject);
-    if (body) {
-      req.write(body);
-    }
-    req.end();
-  });
 }
 
 async function requestText(targetUrl, options = {}) {
@@ -3085,6 +3012,9 @@ const bootstrapServer = createServerBootstrap({
 });
 
 bootstrapServer()
+  .then(() => {
+    warmupModelServiceConnection({ reason: "startup" }).catch(() => {});
+  })
   .catch((error) => {
     console.error("Failed to initialize scheduler:", error);
     process.exit(1);

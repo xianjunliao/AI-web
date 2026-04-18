@@ -1,5 +1,6 @@
 ﻿const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { Readable } = require("node:stream");
@@ -19,6 +20,7 @@ const { createExecuteToolCall } = require("../server/server-tool-dispatcher");
 const { createScheduler } = require("../server/server-scheduler");
 const { createQqModule } = require("../server/server-qq");
 const { createServerBootstrap } = require("../server/server-bootstrap");
+const { createApiProxy, requestJsonWithRetry } = require("../server/server-http");
 const { createTaskModelInvoker } = require("../server/server-task-model");
 const { maybeRunDirectWebSearch } = require("../server/server-live-web-search");
 const { createNovelModule } = require("../server/server-novel-projects");
@@ -37,6 +39,85 @@ function createMockJsonResponse(payload, statusCode = 200) {
     status: statusCode,
     json: async () => payload,
   };
+}
+
+function createJsonHttpPayload(payload) {
+  const body = JSON.stringify(payload);
+  return {
+    body,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": Buffer.byteLength(body),
+    },
+  };
+}
+
+async function listenHttpServer(server) {
+  await new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  return server.address();
+}
+
+async function closeHttpServer(server) {
+  if (!server?.listening) {
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestHttpJsonOnce(targetUrl, { method = "GET", headers = {}, body = "" } = {}) {
+  const url = targetUrl instanceof URL ? targetUrl : new URL(String(targetUrl));
+  const transport = url.protocol === "https:" ? require("node:https") : http;
+  const bodyBuffer = body ? Buffer.from(String(body), "utf8") : Buffer.alloc(0);
+
+  return await new Promise((resolve, reject) => {
+    const req = transport.request(
+      url,
+      {
+        method,
+        headers: {
+          ...(bodyBuffer.length ? { "Content-Length": bodyBuffer.length } : {}),
+          ...headers,
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          const data = raw ? JSON.parse(raw) : {};
+          if ((res.statusCode || 500) >= 400) {
+            const error = new Error(data.error || `Request failed: ${res.statusCode}`);
+            error.statusCode = res.statusCode || 500;
+            reject(error);
+            return;
+          }
+          resolve(data);
+        });
+      }
+    );
+
+    req.on("error", reject);
+    if (bodyBuffer.length) {
+      req.write(bodyBuffer);
+    }
+    req.end();
+  });
 }
 
 function createDomElement(tagName = "div") {
@@ -464,6 +545,92 @@ async function main() {
     assert.equal(isPublicStaticPath("/app.js"), true);
     assert.equal(isPublicStaticPath("/qq-bot-config.json"), false);
     assert.equal(isPublicStaticPath("/data/scheduled-tasks.json"), false);
+  });
+
+  await runTest("requestJsonWithRetry retries transient upstream errors", async () => {
+    let attempts = 0;
+    const upstreamServer = http.createServer((req, res) => {
+      attempts += 1;
+      const payload = attempts === 1
+        ? createJsonHttpPayload({ error: "warming up" })
+        : createJsonHttpPayload({ ok: true, data: [{ id: "remote-model" }] });
+      res.writeHead(attempts === 1 ? 503 : 200, payload.headers);
+      res.end(payload.body);
+    });
+
+    const upstreamAddress = await listenHttpServer(upstreamServer);
+    const targetUrl = new URL(`http://127.0.0.1:${upstreamAddress.port}/v1/models`);
+
+    try {
+      const data = await requestJsonWithRetry(targetUrl, {
+        method: "GET",
+        retryCount: 1,
+        retryDelayMs: 10,
+        timeoutMs: 2_000,
+      });
+
+      assert.equal(attempts, 2);
+      assert.equal(data.ok, true);
+      assert.equal(data.data[0].id, "remote-model");
+    } finally {
+      await closeHttpServer(upstreamServer);
+    }
+  });
+
+  await runTest("createApiProxy remaps standard model routes to configured remote paths", async () => {
+    let upstreamAttempts = 0;
+    const seenPaths = [];
+    const seenAuthHeaders = [];
+
+    const upstreamServer = http.createServer((req, res) => {
+      upstreamAttempts += 1;
+      seenPaths.push(req.url || "");
+      seenAuthHeaders.push(String(req.headers.authorization || ""));
+
+      const payload = upstreamAttempts === 1
+        ? createJsonHttpPayload({ error: "warming up" })
+        : createJsonHttpPayload({ data: [{ id: "proxy-model" }] });
+      res.writeHead(upstreamAttempts === 1 ? 503 : 200, payload.headers);
+      res.end(payload.body);
+    });
+    const upstreamAddress = await listenHttpServer(upstreamServer);
+    const upstreamOrigin = `http://127.0.0.1:${upstreamAddress.port}`;
+
+    const proxyRequest = createApiProxy({
+      targetOrigin: upstreamOrigin,
+      getProxyConfig: () => ({
+        targetOrigin: upstreamOrigin,
+        modelsPath: "/provider/models",
+        extraHeaders: { Authorization: "Bearer test-token" },
+        retryCount: 1,
+        retryDelayMs: 10,
+        timeoutMs: 2_000,
+      }),
+      sendJson: (res, statusCode, payload) => {
+        const response = createJsonHttpPayload(payload);
+        res.writeHead(statusCode, response.headers);
+        res.end(response.body);
+      },
+    });
+
+    const proxyServer = http.createServer((req, res) => {
+      const pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
+      proxyRequest(req, res, pathname);
+    });
+    const proxyAddress = await listenHttpServer(proxyServer);
+    const proxyUrl = new URL(`http://127.0.0.1:${proxyAddress.port}/api/v1/models?scope=base`);
+
+    try {
+      const data = await requestHttpJsonOnce(proxyUrl);
+
+      assert.equal(upstreamAttempts, 2);
+      assert.deepEqual(seenPaths, ["/provider/models?scope=base", "/provider/models?scope=base"]);
+      assert.deepEqual(seenAuthHeaders, ["Bearer test-token", "Bearer test-token"]);
+      assert.equal(data.data[0].id, "proxy-model");
+    } finally {
+      await closeHttpServer(proxyServer);
+      await closeHttpServer(upstreamServer);
+    }
   });
 
   await runTest("bootstrap loads shared connection config before QQ config", async () => {

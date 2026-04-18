@@ -7,6 +7,11 @@ const els = {
   list: $("#project-list"),
   listMeta: $("#project-list-meta"),
   modelMeta: $("#current-model-meta"),
+  openNovelBackgroundDialog: $("#open-novel-background-dialog-top"),
+  novelBackgroundDialog: $("#novel-background-dialog"),
+  novelBackgroundDialogBody: $("#novel-background-dialog-body"),
+  closeNovelBackgroundDialog: $("#close-novel-background-dialog"),
+  novelBackgroundCard: $(".novel-background-card"),
   novelBackgroundInput: $("#novel-background-input"),
   uploadNovelBackground: $("#upload-novel-background"),
   clearNovelBackground: $("#clear-novel-background"),
@@ -60,6 +65,7 @@ const els = {
   createProject: $("#create-project"),
   closeCreateDialog: $("#close-create-dialog"),
   cancelCreate: $("#cancel-create"),
+  saveCreateDraft: $("#save-create-draft"),
   confirmCreate: $("#confirm-create"),
   createOperationBox: $("#create-operation-feedback"),
   createOperationTitle: $("#create-operation-title"),
@@ -146,6 +152,7 @@ function getLegacyPageBackgroundRecord(target = "novel") {
   const record = backgrounds[target] && typeof backgrounds[target] === "object" ? backgrounds[target] : {};
   return {
     image: String(record.image || ""),
+    softImage: String(record.softImage || ""),
     blur: Math.max(0, Number(record.blur) || 0),
     shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
   };
@@ -158,6 +165,7 @@ function getSavedBackgroundForNovelPage() {
     : getLegacyPageBackgroundRecord("novel");
   return {
     image: String(record.image || ""),
+    softImage: String(record.softImage || ""),
     blur: Math.max(0, Number(record.blur) || 0),
     shellOpacity: Math.min(100, Math.max(30, Number(record.shellOpacity) || 70)),
   };
@@ -170,6 +178,7 @@ function updateNovelPageBackgroundSetting(patch = {}) {
     ...current,
     novelPageBackground: {
       image: String(patch.image ?? previous.image ?? ""),
+      softImage: String(patch.softImage ?? previous.softImage ?? ""),
       blur: Math.max(0, Number(patch.blur ?? previous.blur ?? 0) || 0),
       shellOpacity: Math.min(100, Math.max(30, Number(patch.shellOpacity ?? previous.shellOpacity ?? 70) || 70)),
     },
@@ -218,29 +227,40 @@ function removeStyleProperty(element, name) {
   }
   delete element.style[name];
 }
+function clearNovelPageBackgroundEffects() {
+  const body = document?.body;
+  if (!body) return;
+  toggleClassName(body, "has-custom-background", false);
+  removeStyleProperty(body, "--custom-bg-image");
+  removeStyleProperty(body, "--custom-bg-soft-image");
+  removeStyleProperty(body, "--custom-bg-blur");
+  removeStyleProperty(body, "--custom-bg-image-opacity");
+  removeStyleProperty(body, "--custom-bg-soft-opacity");
+  removeStyleProperty(body, "--custom-bg-soft-scale");
+  removeStyleProperty(body, "--app-shell-opacity-factor");
+  removeStyleProperty(body, "--surface-opacity-factor");
+}
 
 function applyNovelPageBackground() {
   const body = document?.body;
   if (!body) return;
   const background = getSavedBackgroundForNovelPage();
-  const shellOpacityFactor = background.shellOpacity / 100;
-  const surfaceOpacityFactor = Math.min(1, 0.1 + shellOpacityFactor * 0.45);
-  toggleClassName(body, "has-custom-background", Boolean(background.image));
-  if (background.image) {
-    setStyleProperty(body, "--custom-bg-image", `url("${background.image}")`);
-    setStyleProperty(body, "--custom-bg-blur", `${background.blur}px`);
-    setStyleProperty(body, "--custom-bg-image-opacity", "1");
-    setStyleProperty(body, "--custom-bg-image-scale", "1");
-    setStyleProperty(body, "--app-shell-opacity-factor", `${shellOpacityFactor}`);
-    setStyleProperty(body, "--surface-opacity-factor", `${surfaceOpacityFactor}`);
-  } else {
-    removeStyleProperty(body, "--custom-bg-image");
-    removeStyleProperty(body, "--custom-bg-blur");
-    removeStyleProperty(body, "--custom-bg-image-opacity");
-    removeStyleProperty(body, "--custom-bg-image-scale");
-    removeStyleProperty(body, "--app-shell-opacity-factor");
-    removeStyleProperty(body, "--surface-opacity-factor");
+  if (!background.image) {
+    clearNovelPageBackgroundEffects();
+    return;
   }
+  const shellOpacityFactor = background.shellOpacity / 100;
+  const surfaceOpacityFactor = Math.min(1, 0.42 + shellOpacityFactor * 0.38);
+  const softOpacity = 0.1 + (Math.max(0, background.blur) / 24) * 0.38;
+  const softScale = 1.02 + (Math.max(0, background.blur) / 24) * 0.08;
+  toggleClassName(body, "has-custom-background", true);
+  setStyleProperty(body, "--custom-bg-image", `url("${background.image}")`);
+  setStyleProperty(body, "--custom-bg-soft-image", `url("${background.softImage || background.image}")`);
+  setStyleProperty(body, "--custom-bg-image-opacity", "1");
+  setStyleProperty(body, "--custom-bg-soft-opacity", `${softOpacity}`);
+  setStyleProperty(body, "--custom-bg-soft-scale", `${softScale}`);
+  setStyleProperty(body, "--app-shell-opacity-factor", `${shellOpacityFactor}`);
+  setStyleProperty(body, "--surface-opacity-factor", `${surfaceOpacityFactor}`);
 }
 
 function renderNovelBackgroundControls(override = null) {
@@ -250,6 +270,7 @@ function renderNovelBackgroundControls(override = null) {
       ...savedBackground,
       ...override,
       image: String(override.image ?? savedBackground.image ?? ""),
+      softImage: String(override.softImage ?? savedBackground.softImage ?? ""),
       blur: Math.max(0, Number(override.blur ?? savedBackground.blur ?? 0) || 0),
       shellOpacity: Math.min(100, Math.max(30, Number(override.shellOpacity ?? savedBackground.shellOpacity ?? 70) || 70)),
     }
@@ -271,25 +292,23 @@ function renderNovelBackgroundControls(override = null) {
       ? `当前已为小说页启用自定义背景；柔化 ${background.blur}px，界面透明度 ${background.shellOpacity}%。`
       : "支持为小说页上传独立背景，并调整柔化与界面透明度。";
   }
-  const body = document?.body;
-  if (!body) return;
-  const shellOpacityFactor = background.shellOpacity / 100;
-  const surfaceOpacityFactor = Math.min(1, 0.1 + shellOpacityFactor * 0.45);
-  toggleClassName(body, "has-custom-background", Boolean(background.image));
   if (background.image) {
+    const body = document?.body;
+    if (!body) return;
+    const shellOpacityFactor = background.shellOpacity / 100;
+    const surfaceOpacityFactor = Math.min(1, 0.42 + shellOpacityFactor * 0.38);
+    const softOpacity = 0.1 + (Math.max(0, background.blur) / 24) * 0.38;
+    const softScale = 1.02 + (Math.max(0, background.blur) / 24) * 0.08;
+    toggleClassName(body, "has-custom-background", true);
     setStyleProperty(body, "--custom-bg-image", `url("${background.image}")`);
-    setStyleProperty(body, "--custom-bg-blur", `${background.blur}px`);
+    setStyleProperty(body, "--custom-bg-soft-image", `url("${background.softImage || background.image}")`);
     setStyleProperty(body, "--custom-bg-image-opacity", "1");
-    setStyleProperty(body, "--custom-bg-image-scale", "1");
+    setStyleProperty(body, "--custom-bg-soft-opacity", `${softOpacity}`);
+    setStyleProperty(body, "--custom-bg-soft-scale", `${softScale}`);
     setStyleProperty(body, "--app-shell-opacity-factor", `${shellOpacityFactor}`);
     setStyleProperty(body, "--surface-opacity-factor", `${surfaceOpacityFactor}`);
   } else {
-    removeStyleProperty(body, "--custom-bg-image");
-    removeStyleProperty(body, "--custom-bg-blur");
-    removeStyleProperty(body, "--custom-bg-image-opacity");
-    removeStyleProperty(body, "--custom-bg-image-scale");
-    removeStyleProperty(body, "--app-shell-opacity-factor");
-    removeStyleProperty(body, "--surface-opacity-factor");
+    clearNovelPageBackgroundEffects();
   }
 }
 
@@ -300,6 +319,47 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(new Error("文件读取失败"));
     reader.readAsDataURL(file);
   });
+}
+
+function loadImageElement(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("图片加载失败"));
+    image.src = source;
+  });
+}
+function getFittedImageSize(width, height, maxDimension) {
+  const longestEdge = Math.max(Number(width) || 0, Number(height) || 0, 1);
+  const scale = Math.min(1, Number(maxDimension) / longestEdge);
+  return {
+    width: Math.max(1, Math.round((Number(width) || 1) * scale)),
+    height: Math.max(1, Math.round((Number(height) || 1) * scale)),
+  };
+}
+function canvasToJpegDataUrl(canvas, quality = 0.84) {
+  return canvas.toDataURL("image/jpeg", quality);
+}
+async function processBackgroundImageFile(file) {
+  const sourceDataUrl = await readFileAsDataUrl(file);
+  const image = await loadImageElement(sourceDataUrl);
+  const baseSize = getFittedImageSize(image.naturalWidth, image.naturalHeight, 1800);
+  const softSize = getFittedImageSize(image.naturalWidth, image.naturalHeight, 640);
+  const baseCanvas = document.createElement("canvas");
+  baseCanvas.width = baseSize.width;
+  baseCanvas.height = baseSize.height;
+  const baseContext = baseCanvas.getContext("2d");
+  baseContext.drawImage(image, 0, 0, baseSize.width, baseSize.height);
+  const softCanvas = document.createElement("canvas");
+  softCanvas.width = softSize.width;
+  softCanvas.height = softSize.height;
+  const softContext = softCanvas.getContext("2d");
+  softContext.drawImage(image, 0, 0, softSize.width, softSize.height);
+  return {
+    image: canvasToJpegDataUrl(baseCanvas, 0.84),
+    softImage: canvasToJpegDataUrl(softCanvas, 0.7),
+  };
 }
 
 async function syncCurrentModel(options = {}) {
@@ -351,6 +411,12 @@ const WORKSPACE_STATES = {
     emptyTitle: "项目已创建",
     emptyBody: "新项目已经准备好了。请从左侧点击刚创建的项目卡片，再继续编辑项目信息、设定文件和章节内容。",
   },
+  draftCreated: {
+    meta: "鑽夌椤圭洰宸蹭繚瀛橈紝璇风偣鍑诲乏渚ч」鐩户缁畬鍠勩€?",
+    status: "鑽夌椤圭洰宸蹭繚瀛樸€備綘鍙互鍏堝畬鍠勯」鐩俊鎭紝鍚庣画鍐嶆墜鍔ㄧ敓鎴愯瀹氥€?",
+    emptyTitle: "鑽夌宸蹭繚瀛?",
+    emptyBody: "椤圭洰宸茬粡浠ヨ崏绋跨殑褰㈠紡淇濆瓨銆傝浠庡乏渚х偣鍑昏椤圭洰锛岀户缁ˉ鍏呬俊鎭紱鍑嗗濂藉悗鍐嶇偣鍑烩€滅敓鎴愯瀹氣€濄€?",
+  },
   deleted: {
     meta: "项目已删除，请重新从左侧选择项目。",
     status: "项目已删除。请从左侧选择其他项目，或新建项目继续。",
@@ -376,6 +442,24 @@ const OPERATION_CONFIGS = {
       { progress: 8, hint: "正在保存项目信息..." },
       { progress: 38, hint: "正在生成基础设定，这一步可能需要一点时间..." },
       { progress: 72, hint: "正在整理项目列表..." },
+    ],
+  },
+  saveDraft: {
+    title: "姝ｅ湪淇濆瓨椤圭洰鑽夌",
+    buttonText: "淇濆瓨鑽夌涓?..",
+    successTitle: "鑽夌淇濆瓨瀹屾垚",
+    successHint: "椤圭洰鑽夌宸蹭繚瀛橈紝鍙互鍚庣画鍐嶇敓鎴愯瀹氥€?",
+    errorTitle: "淇濆瓨鑽夌澶辫触",
+    feedbackTarget: "dialog",
+    initialProgress: 8,
+    stepMs: 220,
+    stepValue: 8,
+    ceiling: 86,
+    releaseDelayMs: 280,
+    stages: [
+      { progress: 8, hint: "姝ｅ湪淇濆瓨椤圭洰鍩虹淇℃伅..." },
+      { progress: 42, hint: "姝ｅ湪鍒濆鍖栬崏绋块」鐩?.." },
+      { progress: 72, hint: "姝ｅ湪鍒锋柊椤圭洰鍒楄〃..." },
     ],
   },
   save: {
@@ -603,6 +687,7 @@ const actionButtons = [
   els.emptyCreateProject,
   els.closeCreateDialog,
   els.cancelCreate,
+  els.saveCreateDraft,
   els.confirmCreate,
   els.openChat,
   els.saveProject,
@@ -1021,6 +1106,10 @@ function syncLocalProjectPreviewFromFields() {
   renderProjectHeader();
 }
 
+function getProjectStatusLabel(project = {}) {
+  return String(project?.status || "").trim().toLowerCase() === "draft" ? "鑽夌" : "宸插垱寤?";
+}
+
 function renderProjectList() {
   els.list.innerHTML = "";
   renderCurrentModelMeta();
@@ -1065,6 +1154,60 @@ function renderWorkspaceState(config = WORKSPACE_STATES.empty) {
   setElementHidden(els.projectActions, true);
   setElementHidden(els.projectContent, true);
   setElementHidden(els.emptyState, false);
+}
+
+function getProjectStatusLabel(project = {}) {
+  return String(project?.status || "").trim().toLowerCase() === "draft" ? "草稿" : "已创建";
+}
+
+function renderProjectHeader(detail = state.detail) {
+  if (!detail?.project) return;
+  const project = detail.project;
+  const projectState = detail.state || {};
+  const metaParts = [
+    `状态：${getProjectStatusLabel(project)}`,
+    project.genre || "未设题材",
+    project.theme ? `主题：${project.theme}` : "",
+    `已通过 ${projectState.lastApprovedChapter || 0} 章`,
+    `待审 ${projectState.pendingDraftChapter || 0}`,
+  ].filter(Boolean);
+  const currentModel = getCurrentModelLabel();
+  if (currentModel) {
+    metaParts.push(`当前模型 ${currentModel}`);
+  }
+  els.title.textContent = getProjectDisplayName(project);
+  els.meta.textContent = metaParts.join(" · ");
+}
+
+function renderProjectList() {
+  els.list.innerHTML = "";
+  renderCurrentModelMeta();
+
+  if (!state.projects.length) {
+    els.listMeta.textContent = "当前还没有小说项目。";
+    els.list.innerHTML = '<div class="file-empty">还没有小说项目。</div>';
+    return;
+  }
+
+  const activeProject = state.projects.find((project) => project.id === state.activeId);
+  els.listMeta.textContent = activeProject
+    ? `共 ${state.projects.length} 个项目，当前选中：《${getProjectDisplayName(activeProject)}》。`
+    : `共 ${state.projects.length} 个项目。点击左侧项目卡片查看详情。`;
+
+  state.projects.forEach((project) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `project-item ${project.id === state.activeId ? "active" : ""}`;
+    item.innerHTML = [
+      `<strong>${escapeHtml(getProjectDisplayName(project))}</strong>`,
+      `<div class="muted">状态：${escapeHtml(getProjectStatusLabel(project))}</div>`,
+      `<div class="muted">${escapeHtml(project.genre || "未设题材")}</div>`,
+      `<div class="muted">${escapeHtml(project.theme || "未设主题")}</div>`,
+      `<div class="muted">已通过 ${project.lastApprovedChapter || 0} 章 / 待审 ${project.pendingDraftChapter || 0}</div>`,
+    ].join("");
+    item.onclick = () => loadProject(project.id);
+    els.list.append(item);
+  });
 }
 
 function renderProjectDetail(detail) {
@@ -1171,6 +1314,92 @@ async function refreshProjects(options = {}) {
   }
 
   renderWorkspaceState(idleState);
+}
+
+function renderProjectDetail(detail) {
+  state.detail = detail;
+  state.activeId = detail.project.id;
+  const { project, state: projectState, review, chapters, settings } = detail;
+  state.settings = settings;
+
+  setElementHidden(els.emptyState, true);
+  setElementHidden(els.projectContent, false);
+  setElementHidden(els.projectActions, false);
+  renderProjectList();
+  renderProjectHeader(detail);
+  els.generateSettings.textContent = "生成设定";
+  setStatusBar(
+    project.status === "draft"
+      ? `已选中《${getProjectDisplayName(project)}》草稿。你可以先继续补全信息，准备好后再生成设定。`
+      : `已选中《${getProjectDisplayName(project)}》。你现在可以编辑项目信息、设定文件和章节内容。`,
+  );
+
+  Object.entries(els.fields).forEach(([key, input]) => {
+    if (!input) return;
+    if (key === "keywords") input.value = Array.isArray(project[key]) ? project[key].join(", ") : project[key] || "";
+    else if (key === "qqReviewEnabled") input.value = project.qqReviewEnabled ? "true" : "false";
+    else input.value = project[key] ?? "";
+  });
+
+  els.progress.innerHTML = "";
+  [
+    `阶段：${projectState.phase || "planning"}`,
+    `当前章：${projectState.currentChapter || 0}`,
+    `最近生成：${projectState.lastGeneratedChapter || 0}`,
+    `最后通过：${projectState.lastApprovedChapter || 0}`,
+    `待审：${projectState.pendingDraftChapter || 0}`,
+    `审阅队列：${(review.pending || []).length}`,
+    `连续写作：${projectState.autoWriteEnabled ? `已启用（最近批量 ${projectState.autoWriteLastCount || 0} 章）` : "未启用"}`,
+  ].forEach((text) => {
+    const div = document.createElement("div");
+    div.className = "stack-item";
+    div.textContent = text;
+    els.progress.append(div);
+  });
+
+  const settingItems = Object.values(settings || {});
+  els.settingSelect.innerHTML = settingItems.map((item) => `<option value="${item.key}">${item.title}</option>`).join("");
+  if (!settingItems.some((item) => item.key === state.activeSetting)) {
+    state.activeSetting = settingItems[0]?.key || "base-info";
+  }
+  els.settingSelect.value = state.activeSetting;
+  loadSetting(state.activeSetting).catch((error) => {
+    setStatusBar(error.message, "error");
+    els.settingEditor.value = "";
+  });
+
+  els.chapterList.innerHTML = "";
+  (chapters || []).forEach((chapter) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chapter-item";
+    button.dataset.chapterNo = String(chapter.chapterNo || "");
+    button.dataset.status = String(chapter.status || "");
+    button.innerHTML = `<strong>第${chapter.chapterNo} 章</strong><div class="muted">${chapter.status} · ${chapter.title}</div><div class="muted">${formatChineseCharacterCount(chapter.characterCount)}</div>`;
+    button.onclick = () => loadChapter(chapter.chapterNo);
+    els.chapterList.append(button);
+  });
+  if (!chapters?.length) {
+    els.chapterList.innerHTML = '<div class="file-empty">暂无章节。</div>';
+    els.chapterViewer.value = "";
+    resetChapterState();
+    closeReader();
+    return;
+  }
+  if (state.activeChapterNo && !chapters.some((chapter) => Number(chapter.chapterNo) === Number(state.activeChapterNo))) {
+    resetChapterState();
+    els.chapterViewer.value = "";
+    closeReader();
+  } else {
+    updateActiveChapterListSelection();
+    if (els.readerDialog?.open && state.readerChapterNo) {
+      if (getChapterSequence().includes(Number(state.readerChapterNo))) {
+        renderChapterReader();
+      } else {
+        closeReader();
+      }
+    }
+  }
 }
 
 async function loadProject(projectId) {
@@ -1438,6 +1667,51 @@ async function createProject() {
   });
 }
 
+async function createProjectFromPayload(payload, options = {}) {
+  if (!payload.name) {
+    throw new Error("请填写项目名称");
+  }
+
+  const operationConfig = options.operationConfig || OPERATION_CONFIGS.create;
+  const idleState = options.idleState || WORKSPACE_STATES.created;
+
+  const data = await runWithOperation(operationConfig, options.triggerButton || null, async () => {
+    const created = await j("/novels/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.activeId = "";
+    await refreshProjects({ autoSelect: false, idleState });
+    return created;
+  });
+  if (options.closeDialog !== false) {
+    closeCreateDialog("created");
+  }
+  return data;
+}
+
+async function createProject() {
+  const payload = projectPayloadFromFields(els.newFields);
+  return await createProjectFromPayload(payload, {
+    closeDialog: true,
+    triggerButton: els.confirmCreate,
+  });
+}
+
+async function createDraftProject() {
+  const payload = {
+    ...projectPayloadFromFields(els.newFields),
+    autoGenerateSettings: false,
+  };
+  return await createProjectFromPayload(payload, {
+    closeDialog: true,
+    triggerButton: els.saveCreateDraft,
+    operationConfig: OPERATION_CONFIGS.saveDraft,
+    idleState: WORKSPACE_STATES.draftCreated,
+  });
+}
+
 async function saveProject() {
   const projectId = requireActiveProject("保存项目");
   const payload = projectPayloadFromFields(els.fields);
@@ -1618,6 +1892,25 @@ function bindLiveProjectFieldSync() {
   });
 }
 
+function mountNovelBackgroundDialogContent() {
+  if (!els.novelBackgroundDialogBody || !els.novelBackgroundCard) return;
+  if (els.novelBackgroundCard.parentElement === els.novelBackgroundDialogBody) return;
+  els.novelBackgroundCard.classList.add("novel-background-modal-card");
+  els.novelBackgroundDialogBody.append(els.novelBackgroundCard);
+}
+
+function openNovelBackgroundDialog() {
+  mountNovelBackgroundDialogContent();
+  if (els.novelBackgroundDialog?.open) return;
+  els.novelBackgroundDialog?.showModal();
+}
+
+function closeNovelBackgroundDialog() {
+  if (!els.novelBackgroundDialog?.open) return false;
+  els.novelBackgroundDialog.close("dismiss");
+  return true;
+}
+
 function openCreateDialog() {
   if (isOperationBusy() || els.dialog?.open) return;
   els.dialog.showModal();
@@ -1649,6 +1942,19 @@ els.emptyCreateProject.onclick = openCreateDialog;
 els.closeCreateDialog.onclick = requestCloseCreateDialog;
 els.cancelCreate.onclick = requestCloseCreateDialog;
 els.dialog.oncancel = requestCloseCreateDialog;
+els.openNovelBackgroundDialog?.addEventListener("click", () => {
+  if (isOperationBusy()) return;
+  openNovelBackgroundDialog();
+});
+els.closeNovelBackgroundDialog?.addEventListener("click", () => closeNovelBackgroundDialog());
+if (els.novelBackgroundDialog) {
+  els.novelBackgroundDialog.oncancel = (event) => {
+    if (event?.preventDefault) {
+      event.preventDefault();
+    }
+    closeNovelBackgroundDialog();
+  };
+}
 els.reviewFeedback.oninput = () => setReviewFeedbackValue(els.reviewFeedback.value);
 els.readerReviewFeedback.oninput = () => setReviewFeedbackValue(els.readerReviewFeedback.value);
 els.toggleReaderReview.onclick = () => setReaderReviewExpanded(Boolean(els.readerReviewBody?.hidden));
@@ -1682,6 +1988,7 @@ els.readerDialog.oncancel = (event) => {
   closeReader();
 };
 bindAsyncAction(els.confirmCreate, () => createProject(), { preventDefault: true });
+bindAsyncAction(els.saveCreateDraft, () => createDraftProject(), { preventDefault: true });
 els.openChat.onclick = () => {
   if (isOperationBusy()) return;
   window.location.href = "/";
@@ -1691,7 +1998,7 @@ els.uploadNovelBackground?.addEventListener("click", () => {
   els.novelBackgroundInput?.click();
 });
 els.clearNovelBackground?.addEventListener("click", () => {
-  updateNovelPageBackgroundSetting({ image: "" });
+  updateNovelPageBackgroundSetting({ image: "", softImage: "" });
   renderNovelBackgroundControls();
   setStatusBar("已恢复小说页默认背景");
 });
@@ -1702,7 +2009,7 @@ els.novelBackgroundInput?.addEventListener("change", async (event) => {
     if (file.size > MAX_BACKGROUND_SIZE) {
       throw new Error("背景图片不能超过 8MB");
     }
-    updateNovelPageBackgroundSetting({ image: await readFileAsDataUrl(file) });
+    updateNovelPageBackgroundSetting(await processBackgroundImageFile(file));
     renderNovelBackgroundControls();
     setStatusBar(`已更新小说页背景：${file.name}`);
   } catch (error) {
@@ -1742,6 +2049,7 @@ setReaderReviewExpanded(false);
 hideOperationFeedback("workspace");
 hideOperationFeedback("dialog");
 hideOperationFeedback("reader");
+mountNovelBackgroundDialogContent();
 renderCurrentModelMeta();
 renderNovelBackgroundControls();
 syncCurrentModel({ quiet: true }).catch(() => {});

@@ -606,7 +606,7 @@ function createNovelModule(deps = {}) {
       protagonist: String(payload.protagonist || "").trim(),
       keywords: normalizeKeywords(payload.keywords),
       notes: String(payload.notes || "").trim(),
-      status: "active",
+      status: payload.autoGenerateSettings === false ? "draft" : "active",
       qqReviewEnabled: payload.qqReviewEnabled === true,
       qqTargetType: String(payload.qqTargetType || "private").trim() || "private",
       qqTargetId: String(payload.qqTargetId || "").trim(),
@@ -891,6 +891,7 @@ function createNovelModule(deps = {}) {
 
     await writeJsonFileAtomic(getProjectPaths(novelsDir, projectId).projectFile, {
       ...project,
+      status: "active",
       updatedAt: Date.now(),
     });
     return generated;

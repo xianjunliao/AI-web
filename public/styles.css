@@ -1,4 +1,6 @@
 :root {
+  --font-ui: "Segoe UI Variable Text", "SF Pro Text", "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+  --font-display: "Segoe UI Variable Display", "SF Pro Display", "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
   --bg: #f5f8fd;
   --bg-soft: #ebf1f8;
   --panel: rgba(255, 255, 255, 0.86);
@@ -34,9 +36,12 @@
   --scrollbar-thumb: linear-gradient(180deg, rgba(79, 140, 255, 0.32), rgba(125, 197, 255, 0.26));
   --scrollbar-thumb-hover: linear-gradient(180deg, rgba(79, 140, 255, 0.42), rgba(125, 197, 255, 0.34));
   --custom-bg-image: none;
+  --custom-bg-soft-image: none;
   --custom-bg-blur: 0px;
   --custom-bg-image-opacity: 1;
   --custom-bg-image-scale: 1;
+  --custom-bg-soft-opacity: 0.24;
+  --custom-bg-soft-scale: 1.04;
   --app-shell-opacity-factor: 1;
   --surface-opacity-factor: 1;
 }
@@ -66,7 +71,11 @@ body {
   height: 100vh;
   overflow: hidden;
   color: var(--text);
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-ui);
+  line-height: 1.55;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background:
     radial-gradient(circle at 12% 14%, rgba(128, 185, 255, 0.22), transparent 26%),
     radial-gradient(circle at 88% 12%, rgba(157, 220, 255, 0.18), transparent 22%),
@@ -488,6 +497,7 @@ body.has-custom-background .workspace {
 .workspace-header h2,
 .section-head h2 {
   margin: 0;
+  font-family: var(--font-display);
 }
 
 .workspace-header h2 {
@@ -3580,6 +3590,7 @@ button:disabled {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.28),
     0 18px 34px rgba(107, 128, 156, 0.04);
+  contain: layout paint;
 }
 
 .composer::before {
@@ -3603,6 +3614,7 @@ button:disabled {
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: linear-gradient(180deg, rgba(248, 251, 255, 0.12), rgba(241, 246, 253, 0.04));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  contain: layout paint;
 }
 
 .metric-chip {
@@ -3796,6 +3808,7 @@ button:disabled {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.26),
     0 10px 24px rgba(76, 98, 129, 0.035);
+  contain: layout paint;
 }
 
 .hint {
@@ -3871,6 +3884,7 @@ button:disabled {
   font-size: 36px;
   line-height: 1.12;
   font-weight: 800;
+  font-family: var(--font-display);
   letter-spacing: -0.02em;
   color: #1e314f;
   text-shadow: 0 1px 14px rgba(255, 255, 255, 0.2);
@@ -3909,6 +3923,7 @@ button:disabled {
 .settings-modal-panel .avatar-config-head > span,
 .settings-modal-panel .background-config-card h4,
 .settings-modal-panel .remote-config-fields strong {
+  font-family: var(--font-display);
   color: #1d314f;
   text-shadow: none;
 }
@@ -4521,4 +4536,715 @@ body.activity-modal-open {
 
 .lightbox-prev { left: 24px; }
 .lightbox-next { right: 24px; }
+
+/* Default lightweight theme: background-image and heavy glass rendering are disabled. */
+body,
+body.has-custom-background {
+  background:
+    radial-gradient(circle at 12% 14%, rgba(128, 185, 255, 0.18), transparent 24%),
+    radial-gradient(circle at 88% 12%, rgba(157, 220, 255, 0.16), transparent 20%),
+    radial-gradient(circle at 72% 72%, rgba(185, 240, 232, 0.16), transparent 22%),
+    linear-gradient(180deg, #fbfdff 0%, #f5f8fd 52%, #edf3fa 100%) !important;
+  --text: #142033;
+  --muted: #61738c;
+  --display-text: #1a2c47;
+  --secondary-text: #607895;
+  --tertiary-text: #7f9fcd;
+  --emphasis-text: #27456d;
+  --capsule-text: #486382;
+  --capsule-border: rgba(129, 160, 203, 0.22);
+  --capsule-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(242, 247, 255, 0.88));
+  --capsule-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.94), 0 8px 18px rgba(107, 128, 156, 0.05);
+  --panel: rgba(255, 255, 255, 0.92);
+  --panel-strong: rgba(255, 255, 255, 0.96);
+  --panel-alt: rgba(245, 249, 255, 0.94);
+  --assistant: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(241, 247, 255, 0.94));
+  --user: linear-gradient(145deg, rgba(236, 244, 255, 0.98), rgba(224, 236, 252, 0.94));
+}
+
+body::before,
+body::after,
+.app-shell::before,
+.sidebar::before,
+.workspace::before,
+.chat-column::before {
+  content: none !important;
+  background: none !important;
+  filter: none !important;
+  mask-image: none !important;
+}
+
+.app-shell *,
+.activity-modal *,
+.novel-reader-shell *,
+.novel-dialog * {
+  backdrop-filter: none !important;
+}
+
+.sidebar,
+.workspace,
+.sidebar-panel,
+.chat-column,
+.preview-panel,
+.brand-block,
+.composer,
+.composer-metrics-strip,
+.current-chat-title,
+.inline-meta-card,
+.preview-empty,
+.chat-history-item,
+.message-avatar,
+.message-bubble,
+.status-bar,
+.config-group,
+.sub-config-fold,
+.tool-activity-trigger,
+.activity-modal-panel,
+.inline-prompt-panel,
+.inline-prompt-input,
+#user-input {
+  box-shadow: 0 8px 20px rgba(107, 128, 156, 0.05) !important;
+}
+
+.sidebar,
+.workspace,
+.sidebar-panel,
+.chat-column,
+.preview-panel,
+.brand-block,
+.composer,
+.composer-metrics-strip,
+.current-chat-title,
+.inline-meta-card,
+.preview-empty,
+.chat-history-item,
+.message-avatar,
+.status-bar,
+.config-group,
+.sub-config-fold,
+.tool-activity-trigger,
+.activity-modal-panel,
+.inline-prompt-panel,
+.inline-prompt-input,
+#user-input {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 248, 255, 0.92)) !important;
+}
+
+.message.assistant .message-bubble {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 255, 0.94)) !important;
+}
+
+.message.user .message-bubble {
+  background: linear-gradient(145deg, rgba(236, 244, 255, 0.98), rgba(224, 236, 252, 0.94)) !important;
+}
+
+.message.pending .message-bubble {
+  background: linear-gradient(135deg, rgba(249, 252, 255, 0.96), rgba(237, 244, 252, 0.9)) !important;
+}
+
+.primary-button,
+.secondary-button {
+  background: linear-gradient(135deg, #4e88f3, #79abff 58%, #9fc0ff 100%) !important;
+  border-color: rgba(86, 136, 224, 0.16) !important;
+  box-shadow: 0 8px 16px rgba(79, 140, 255, 0.14) !important;
+}
+
+.ghost-button,
+.metric-chip,
+.history-delete-button,
+.history-rename-button {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 248, 255, 0.88)) !important;
+  box-shadow: 0 6px 14px rgba(107, 128, 156, 0.04) !important;
+}
+
+.activity-modal-backdrop {
+  background: rgba(221, 230, 242, 0.42) !important;
+}
+
+.background-config-card {
+  display: flex !important;
+}
+
+body.has-custom-background {
+  --panel: rgba(251, 253, 255, 0.82);
+  --panel-strong: rgba(252, 254, 255, 0.88);
+  --panel-alt: rgba(246, 249, 255, 0.78);
+  --capsule-text: #eef5ff;
+  --capsule-border: rgba(255, 255, 255, 0.28);
+  --capsule-bg: rgba(250, 252, 255, 0.18);
+  --capsule-shadow: 0 4px 12px rgba(55, 83, 122, 0.06);
+  background:
+    radial-gradient(circle at 14% 16%, rgba(128, 185, 255, 0.06), transparent 22%),
+    radial-gradient(circle at 86% 14%, rgba(157, 220, 255, 0.05), transparent 18%),
+    linear-gradient(180deg, rgba(12, 23, 38, 0.06), rgba(12, 23, 38, 0.14)) !important;
+}
+
+body.has-custom-background::before {
+  content: "" !important;
+  background-image:
+    linear-gradient(180deg, rgba(248, 251, 255, 0.14), rgba(26, 39, 58, 0.18)),
+    var(--custom-bg-image) !important;
+  background-size: cover, cover !important;
+  background-position: center, center !important;
+  background-repeat: no-repeat, no-repeat !important;
+  opacity: 1 !important;
+}
+
+body.has-custom-background::after {
+  content: "" !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(214, 231, 252, 0.08)) !important;
+  opacity: var(--custom-bg-soft-opacity) !important;
+  transform: none !important;
+}
+
+body.has-custom-background .sidebar,
+body.has-custom-background .workspace,
+body.has-custom-background .sidebar-panel,
+body.has-custom-background .chat-column,
+body.has-custom-background .preview-panel,
+body.has-custom-background .brand-block,
+body.has-custom-background .composer,
+body.has-custom-background .activity-modal-panel,
+body.has-custom-background .novel-empty-state,
+body.has-custom-background .novel-dialog-form,
+body.has-custom-background .novel-reader-shell {
+  background: rgba(251, 253, 255, 0.78) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: 0 6px 18px rgba(44, 68, 100, 0.08) !important;
+}
+
+body.has-custom-background .composer-metrics-strip,
+body.has-custom-background .current-chat-title,
+body.has-custom-background .inline-meta-card,
+body.has-custom-background .preview-empty,
+body.has-custom-background .chat-history-item,
+body.has-custom-background .message-avatar,
+body.has-custom-background .status-bar,
+body.has-custom-background .config-group,
+body.has-custom-background .sub-config-fold,
+body.has-custom-background .tool-activity-trigger,
+body.has-custom-background .inline-prompt-panel,
+body.has-custom-background .inline-prompt-input,
+body.has-custom-background #user-input,
+body.has-custom-background .project-item,
+body.has-custom-background .chapter-item,
+body.has-custom-background .stack-item,
+body.has-custom-background .review-box,
+body.has-custom-background .novel-operation-card,
+body.has-custom-background .novel-reader-review,
+body.has-custom-background .novel-model-meta {
+  background: rgba(249, 252, 255, 0.72) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  box-shadow: 0 4px 12px rgba(44, 68, 100, 0.06) !important;
+}
+
+body.has-custom-background .message.assistant .message-bubble {
+  background: rgba(255, 255, 255, 0.8) !important;
+}
+
+body.has-custom-background .message.user .message-bubble {
+  background: rgba(233, 242, 255, 0.78) !important;
+}
+
+body.has-custom-background .message.pending .message-bubble {
+  background: rgba(246, 250, 254, 0.74) !important;
+}
+
+body.has-custom-background .ghost-button,
+body.has-custom-background .metric-chip,
+body.has-custom-background .history-delete-button,
+body.has-custom-background .history-rename-button {
+  background: rgba(250, 252, 255, 0.68) !important;
+  box-shadow: 0 3px 10px rgba(44, 68, 100, 0.05) !important;
+}
+
+.composer,
+.composer-metrics-strip {
+  background: rgba(248, 251, 255, 0.94) !important;
+  box-shadow: 0 4px 12px rgba(107, 128, 156, 0.05) !important;
+}
+
+.composer::before,
+.metric-chip::before {
+  content: none !important;
+}
+
+#user-input {
+  background: rgba(255, 255, 255, 0.98) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84) !important;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, background 0.14s ease !important;
+}
+
+.metric-chip,
+.metric-chip-usage {
+  box-shadow: none !important;
+}
+
+.metric-chip-bar-fill {
+  transition: width 0.12s linear !important;
+}
+
+/* Stronger faux-glass pass without bringing back heavy blur. */
+.sidebar,
+.workspace,
+.sidebar-panel,
+.chat-column,
+.preview-panel,
+.brand-block,
+.composer,
+.activity-modal-panel,
+.novel-empty-state,
+.novel-dialog-form,
+.novel-reader-shell {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.42), transparent 34%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(244, 248, 255, 0.62) 56%, rgba(226, 238, 255, 0.5)) !important;
+  border-color: rgba(255, 255, 255, 0.56) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(211, 225, 245, 0.18),
+    0 14px 32px rgba(94, 118, 150, 0.1) !important;
+}
+
+.current-chat-title,
+.inline-meta-card,
+.preview-empty,
+.chat-history-item,
+.message-avatar,
+.status-bar,
+.config-group,
+.sub-config-fold,
+.tool-activity-trigger,
+.inline-prompt-panel,
+.inline-prompt-input,
+#user-input,
+.project-item,
+.chapter-item,
+.stack-item,
+.review-box,
+.novel-operation-card,
+.novel-reader-review,
+.novel-model-meta {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255, 255, 255, 0.34), transparent 32%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(244, 248, 255, 0.52) 58%, rgba(229, 239, 255, 0.4)) !important;
+  border-color: rgba(255, 255, 255, 0.5) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 10px 22px rgba(94, 118, 150, 0.08) !important;
+}
+
+.message.assistant .message-bubble {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 255, 255, 0.34), transparent 32%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(242, 248, 255, 0.58) 54%, rgba(226, 239, 255, 0.42)) !important;
+  border-color: rgba(255, 255, 255, 0.48) !important;
+}
+
+.message.user .message-bubble {
+  background:
+    radial-gradient(circle at 86% 0%, rgba(255, 255, 255, 0.28), transparent 28%),
+    linear-gradient(145deg, rgba(236, 245, 255, 0.86), rgba(224, 236, 252, 0.58) 54%, rgba(205, 224, 248, 0.42)) !important;
+  border-color: rgba(215, 232, 255, 0.54) !important;
+}
+
+.message.pending .message-bubble {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255, 255, 255, 0.3), transparent 30%),
+    linear-gradient(145deg, rgba(250, 252, 255, 0.84), rgba(238, 245, 252, 0.56) 54%, rgba(226, 237, 248, 0.38)) !important;
+}
+
+.ghost-button,
+.metric-chip,
+.history-delete-button,
+.history-rename-button {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(244, 248, 255, 0.52) 56%, rgba(228, 238, 255, 0.42)) !important;
+  border-color: rgba(255, 255, 255, 0.48) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 8px 18px rgba(94, 118, 150, 0.07) !important;
+}
+
+#user-input {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 255, 255, 0.28), transparent 32%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(244, 248, 255, 0.56) 58%, rgba(231, 240, 255, 0.42)) !important;
+  border-color: rgba(255, 255, 255, 0.54) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    0 8px 18px rgba(94, 118, 150, 0.07) !important;
+}
+
+body.has-custom-background .sidebar,
+body.has-custom-background .workspace,
+body.has-custom-background .sidebar-panel,
+body.has-custom-background .chat-column,
+body.has-custom-background .preview-panel,
+body.has-custom-background .brand-block,
+body.has-custom-background .composer,
+body.has-custom-background .activity-modal-panel,
+body.has-custom-background .novel-empty-state,
+body.has-custom-background .novel-dialog-form,
+body.has-custom-background .novel-reader-shell {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.34), transparent 34%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.58), rgba(244, 248, 255, 0.34) 56%, rgba(220, 234, 255, 0.24)) !important;
+  border-color: rgba(255, 255, 255, 0.44) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    inset 0 -1px 0 rgba(214, 226, 245, 0.12),
+    0 16px 34px rgba(44, 68, 100, 0.12) !important;
+}
+
+body.has-custom-background .composer-metrics-strip,
+body.has-custom-background .current-chat-title,
+body.has-custom-background .inline-meta-card,
+body.has-custom-background .preview-empty,
+body.has-custom-background .chat-history-item,
+body.has-custom-background .message-avatar,
+body.has-custom-background .status-bar,
+body.has-custom-background .config-group,
+body.has-custom-background .sub-config-fold,
+body.has-custom-background .tool-activity-trigger,
+body.has-custom-background .inline-prompt-panel,
+body.has-custom-background .inline-prompt-input,
+body.has-custom-background #user-input,
+body.has-custom-background .project-item,
+body.has-custom-background .chapter-item,
+body.has-custom-background .stack-item,
+body.has-custom-background .review-box,
+body.has-custom-background .novel-operation-card,
+body.has-custom-background .novel-reader-review,
+body.has-custom-background .novel-model-meta {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255, 255, 255, 0.28), transparent 30%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.46), rgba(244, 248, 255, 0.24) 58%, rgba(224, 236, 255, 0.16)) !important;
+  border-color: rgba(255, 255, 255, 0.36) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.68),
+    0 10px 24px rgba(44, 68, 100, 0.09) !important;
+}
+
+body.has-custom-background .message.assistant .message-bubble {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 255, 255, 0.24), transparent 30%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.52), rgba(242, 248, 255, 0.28) 54%, rgba(222, 236, 255, 0.18)) !important;
+  border-color: rgba(255, 255, 255, 0.38) !important;
+}
+
+body.has-custom-background .message.user .message-bubble {
+  background:
+    radial-gradient(circle at 86% 0%, rgba(255, 255, 255, 0.2), transparent 28%),
+    linear-gradient(145deg, rgba(236, 245, 255, 0.5), rgba(224, 236, 252, 0.28) 54%, rgba(205, 224, 248, 0.18)) !important;
+  border-color: rgba(219, 234, 255, 0.4) !important;
+}
+
+body.has-custom-background .message.pending .message-bubble {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255, 255, 255, 0.22), transparent 28%),
+    linear-gradient(145deg, rgba(250, 252, 255, 0.48), rgba(238, 245, 252, 0.24) 54%, rgba(226, 237, 248, 0.16)) !important;
+}
+
+body.has-custom-background .ghost-button,
+body.has-custom-background .metric-chip,
+body.has-custom-background .history-delete-button,
+body.has-custom-background .history-rename-button {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.5), rgba(244, 248, 255, 0.26) 56%, rgba(226, 238, 255, 0.18)) !important;
+  border-color: rgba(255, 255, 255, 0.36) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.68),
+    0 8px 18px rgba(44, 68, 100, 0.08) !important;
+}
+
+/* Settings modal stays cleaner and less glassy than the main workspace. */
+.settings-modal-panel {
+  background:
+    linear-gradient(180deg, rgba(252, 253, 255, 0.98), rgba(246, 249, 253, 0.95)) !important;
+  border-color: rgba(163, 184, 214, 0.22) !important;
+  box-shadow:
+    0 24px 48px rgba(72, 92, 122, 0.12),
+    0 8px 22px rgba(72, 92, 122, 0.06) !important;
+}
+
+.settings-modal-panel .config-group,
+.settings-modal-panel .sub-config-fold,
+.settings-modal-panel .qq-panel-content,
+.settings-modal-panel .background-config-card,
+.settings-modal-panel .avatar-config-card,
+.settings-modal-panel .remote-config-fields,
+.settings-modal-panel .config-group-body .inline-meta-card,
+.settings-modal-panel .qq-panel-content .inline-meta-card,
+.settings-modal-panel .persona-preset-description,
+.settings-modal-panel .inline-prompt-input,
+.settings-modal-panel input,
+.settings-modal-panel textarea,
+.settings-modal-panel select {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(247, 250, 254, 0.94)) !important;
+  border-color: rgba(151, 175, 210, 0.24) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 6px 16px rgba(86, 106, 136, 0.05) !important;
+}
+
+.settings-modal-panel .config-group-summary {
+  background:
+    linear-gradient(180deg, rgba(250, 252, 255, 0.98), rgba(244, 247, 252, 0.94)) !important;
+  border-bottom: 1px solid rgba(151, 175, 210, 0.14);
+  box-shadow: none !important;
+}
+
+.settings-modal-panel .ghost-button,
+.settings-modal-panel .metric-chip,
+.settings-modal-panel .history-delete-button,
+.settings-modal-panel .history-rename-button {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 248, 252, 0.92)) !important;
+  border-color: rgba(155, 179, 214, 0.22) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    0 5px 14px rgba(86, 106, 136, 0.05) !important;
+}
+
+.settings-modal-panel .activity-modal-subtitle,
+.settings-modal-panel .section-head p,
+.settings-modal-panel .config-group-summary small,
+.settings-modal-panel .sub-config-head p,
+.settings-modal-panel .hint,
+.settings-modal-panel label > span,
+.settings-modal-panel .inline-meta-card,
+.settings-modal-panel .persona-preset-description {
+  letter-spacing: 0.01em;
+}
+
+/* Contrast and hierarchy pass: make type clearer and lift the settings dialog above the page. */
+body.has-custom-background {
+  --display-text: #213a5b !important;
+  --secondary-text: #587193 !important;
+  --tertiary-text: #7c96ba !important;
+  --capsule-text: #486485 !important;
+  --capsule-border: rgba(255, 255, 255, 0.46) !important;
+}
+
+.workspace-header h2,
+.brand-block h1,
+.preview-panel-head h3,
+.section-head h2,
+.activity-modal-head h3 {
+  color: #203552 !important;
+  text-shadow: none !important;
+}
+
+.section-minihead-badge,
+.eyebrow,
+.config-group-summary small,
+.settings-modal-panel .eyebrow {
+  color: #7087a8 !important;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.section-minihead-text,
+.minihead-meta-label,
+.minihead-meta-separator,
+.minihead-meta-overflow,
+.status-bar,
+.hint,
+.message-time,
+.section-head p,
+.activity-modal-subtitle {
+  color: #5f7697 !important;
+}
+
+.minihead-meta-value,
+.current-chat-title,
+.message-role,
+.settings-modal-panel label > span,
+.settings-modal-panel .section-head h2,
+.settings-modal-panel .config-group-summary,
+.settings-modal-panel .sub-config-head strong,
+.settings-modal-panel .avatar-config-head > span,
+.settings-modal-panel .background-config-card h4,
+.settings-modal-panel .remote-config-fields strong {
+  color: #234060 !important;
+}
+
+#settings-backdrop,
+#settings-modal .activity-modal-backdrop {
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.22), rgba(233, 240, 249, 0.78) 42%, rgba(219, 228, 240, 0.9) 100%) !important;
+  backdrop-filter: blur(18px) saturate(1.08) !important;
+}
+
+#settings-modal .settings-modal-panel {
+  position: absolute;
+  isolation: isolate;
+  background:
+    linear-gradient(180deg, rgba(252, 254, 255, 0.995), rgba(247, 250, 254, 0.985)) !important;
+  border-color: rgba(155, 179, 214, 0.34) !important;
+  box-shadow:
+    0 38px 84px rgba(39, 54, 79, 0.22),
+    0 14px 36px rgba(39, 54, 79, 0.12) !important;
+}
+
+#settings-modal .settings-modal-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.18) 22%, transparent 42%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+#settings-modal .settings-modal-head,
+#settings-modal .settings-modal-content {
+  position: relative;
+  z-index: 1;
+}
+
+#settings-modal .settings-modal-head {
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(162, 184, 216, 0.22);
+}
+
+#settings-modal .settings-modal-panel .config-group,
+#settings-modal .settings-modal-panel .sub-config-fold,
+#settings-modal .settings-modal-panel .qq-panel-content,
+#settings-modal .settings-modal-panel .background-config-card,
+#settings-modal .settings-modal-panel .avatar-config-card,
+#settings-modal .settings-modal-panel .remote-config-fields,
+#settings-modal .settings-modal-panel .config-group-body .inline-meta-card,
+#settings-modal .settings-modal-panel .qq-panel-content .inline-meta-card,
+#settings-modal .settings-modal-panel .persona-preset-description,
+#settings-modal .settings-modal-panel .inline-prompt-input,
+#settings-modal .settings-modal-panel input,
+#settings-modal .settings-modal-panel textarea,
+#settings-modal .settings-modal-panel select {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.992), rgba(248, 250, 254, 0.97)) !important;
+  border-color: rgba(149, 174, 209, 0.28) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    0 8px 20px rgba(86, 106, 136, 0.06) !important;
+}
+
+#settings-modal .settings-modal-panel .config-group-summary {
+  background:
+    linear-gradient(180deg, rgba(252, 253, 255, 0.995), rgba(246, 249, 253, 0.97)) !important;
+  border-bottom: 1px solid rgba(149, 174, 209, 0.18);
+}
+
+/* Sidebar readability pass: stronger contrast for the left session column. */
+.sidebar-history-panel {
+  background:
+    linear-gradient(180deg, rgba(252, 254, 255, 0.92), rgba(242, 247, 253, 0.84)) !important;
+  border-color: rgba(255, 255, 255, 0.5) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 16px 36px rgba(72, 94, 126, 0.12) !important;
+}
+
+.sidebar-history-panel .eyebrow {
+  color: #6f86a7 !important;
+}
+
+.sidebar-history-panel .section-head-compact h2 {
+  color: #1f3958 !important;
+  text-shadow: none !important;
+  font-weight: 800;
+}
+
+.sidebar-history-panel .section-head-compact > .section-head-copy > p:last-of-type,
+.sidebar-history-panel .file-empty,
+.sidebar-history-panel .chat-history-group-label {
+  color: #607999 !important;
+  text-shadow: none !important;
+}
+
+#chat-history-meta.inline-meta-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 250, 254, 0.92)) !important;
+  border-color: rgba(151, 175, 210, 0.24) !important;
+  color: #6a82a3 !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 8px 18px rgba(86, 106, 136, 0.06) !important;
+}
+
+.sidebar-history-panel .chat-history-item {
+  background:
+    radial-gradient(circle at top left, rgba(146, 196, 255, 0.1), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(241, 246, 253, 0.88)) !important;
+  border-color: rgba(154, 179, 213, 0.24) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    0 10px 22px rgba(82, 102, 134, 0.08) !important;
+}
+
+.sidebar-history-panel .chat-history-item:hover {
+  border-color: rgba(113, 162, 237, 0.3) !important;
+  background:
+    radial-gradient(circle at top left, rgba(150, 201, 255, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(242, 247, 255, 0.92)) !important;
+}
+
+.sidebar-history-panel .chat-history-item.is-active {
+  border-color: rgba(92, 148, 234, 0.34) !important;
+  background:
+    radial-gradient(circle at top left, rgba(156, 205, 255, 0.18), transparent 34%),
+    linear-gradient(180deg, rgba(246, 250, 255, 0.98), rgba(234, 242, 255, 0.92)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 14px 28px rgba(80, 109, 156, 0.1) !important;
+}
+
+.sidebar-history-panel .chat-history-title {
+  color: #24405f !important;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.sidebar-history-panel .chat-history-meta-line {
+  color: #5d7798 !important;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sidebar-history-panel .history-delete-button,
+.sidebar-history-panel .history-rename-button {
+  color: #7990b1 !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(244, 248, 252, 0.88)) !important;
+  border-color: rgba(157, 181, 214, 0.22) !important;
+}
+
+body.has-custom-background .sidebar-history-panel {
+  background:
+    linear-gradient(180deg, rgba(251, 253, 255, 0.78), rgba(240, 246, 253, 0.68)) !important;
+  border-color: rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 18px 38px rgba(44, 68, 100, 0.14) !important;
+}
+
+body.has-custom-background .sidebar-history-panel .eyebrow {
+  color: #6681a6 !important;
+}
+
+body.has-custom-background .sidebar-history-panel .section-head-compact h2,
+body.has-custom-background .sidebar-history-panel .chat-history-title {
+  color: #203d5d !important;
+}
+
+body.has-custom-background .sidebar-history-panel .section-head-compact > .section-head-copy > p:last-of-type,
+body.has-custom-background .sidebar-history-panel .chat-history-meta-line,
+body.has-custom-background .sidebar-history-panel .chat-history-group-label,
+body.has-custom-background #chat-history-meta.inline-meta-card,
+body.has-custom-background .sidebar-history-panel .file-empty {
+  color: #567394 !important;
+}
 

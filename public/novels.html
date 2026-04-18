@@ -24,6 +24,9 @@
 
         <div id="project-list-meta" class="inline-meta-card">当前还没有小说项目。</div>
         <div id="current-model-meta" class="inline-meta-card novel-model-meta">当前模型：读取中...</div>
+        <div class="button-row left wrap-row novel-sidebar-actions">
+          <button id="open-novel-background-dialog" class="ghost-button" type="button">背景图设置</button>
+        </div>
         <section class="background-config-card novel-background-card">
           <div class="avatar-config-head">
             <span>小说页背景图</span>
@@ -63,8 +66,9 @@
         </div>
         <div class="button-row wrap-row workspace-chat-actions novel-workspace-actions">
           <button id="open-chat" class="ghost-button settings-trigger" type="button">返回聊天页</button>
+          <button id="open-novel-background-dialog-top" class="ghost-button settings-trigger" type="button">背景图设置</button>
           <div id="project-actions" class="button-row wrap-row novel-project-actions is-hidden">
-            <button id="generate-settings" class="ghost-button" type="button">重新生成设定</button>
+            <button id="generate-settings" class="ghost-button" type="button">生成设定</button>
             <button id="reconcile-settings" class="ghost-button" type="button">按正文整理设定</button>
             <button id="batch-generate" class="ghost-button" type="button">连续写作</button>
             <button id="generate-chapter" class="primary-button" type="button">生成下一章</button>
@@ -222,8 +226,22 @@
       </section>
       <menu class="button-row end novel-dialog-actions">
         <button id="cancel-create" class="ghost-button" type="button">取消</button>
+        <button id="save-create-draft" class="ghost-button" type="button">保存草稿</button>
         <button id="confirm-create" value="default" class="primary-button" type="submit">创建并生成设定</button>
       </menu>
+    </form>
+  </dialog>
+
+  <dialog id="novel-background-dialog" class="novel-dialog novel-background-dialog">
+    <form method="dialog" class="dialog-form novel-dialog-form novel-background-dialog-form">
+      <div class="section-head novel-dialog-head">
+        <div class="section-head-copy">
+          <h3>背景图设置</h3>
+          <p>上传小说页背景图，并调整柔化和界面透明度。</p>
+        </div>
+        <button id="close-novel-background-dialog" class="ghost-button icon-button novel-dialog-close" type="button" aria-label="关闭背景图设置窗口" title="关闭">&times;</button>
+      </div>
+      <div id="novel-background-dialog-body"></div>
     </form>
   </dialog>
 

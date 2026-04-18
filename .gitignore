@@ -16,3 +16,4 @@ data/runner-browser-profiles/*
 .history/
 persona_*.md
 data/personas/我是小萝莉.md
+/scripts/start-local-ai-chat.vbs
