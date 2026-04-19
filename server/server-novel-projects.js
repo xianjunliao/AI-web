@@ -16,6 +16,7 @@ const SETTING_DEFINITIONS = [
 ];
 
 const SETTING_KEY_SET = new Set(SETTING_DEFINITIONS.map((item) => item.key));
+const PLANNING_SETTING_KEY_SET = new Set(["outline", "volume-plan", "chapter-plan"]);
 
 function padChapterNo(value) {
   return String(value).padStart(4, "0");
@@ -56,9 +57,34 @@ function normalizeChapterWordTarget(value, fallbackValue = 0) {
   return Number.isFinite(normalized) && normalized > 0 ? Math.round(normalized) : 0;
 }
 
+function normalizeTargetChapters(value, fallbackValue = 0) {
+  const normalized = Number(value ?? fallbackValue);
+  return Number.isFinite(normalized) && normalized > 0 ? Math.round(normalized) : 0;
+}
+
+function formatTargetChapters(value) {
+  const normalized = normalizeTargetChapters(value);
+  return normalized > 0 ? `${normalized}章` : "未填写";
+}
+
+function formatEstimatedTotalCharacters(targetChapters, chapterWordTarget) {
+  const normalizedChapters = normalizeTargetChapters(targetChapters);
+  const normalizedWordTarget = normalizeChapterWordTarget(chapterWordTarget);
+  return normalizedChapters > 0 && normalizedWordTarget > 0
+    ? `约 ${normalizedChapters * normalizedWordTarget} 个中文汉字`
+    : "未填写";
+}
+
 function formatChapterWordTarget(value) {
   const normalized = normalizeChapterWordTarget(value);
   return normalized > 0 ? `约 ${normalized} 个中文汉字` : "未填写";
+}
+
+function createTargetChaptersRequirement(value) {
+  const normalized = normalizeTargetChapters(value);
+  return normalized > 0
+    ? `用户明确给出的目标章节数为 ${normalized} 章。涉及总纲、分卷规划、章节细纲时，必须以 ${normalized} 章总量来规划，不得擅自扩写成数十章或上百章。`
+    : "若未填写目标章节数，可结合题材自然规划篇幅，但仍需避免无节制拉长和注水。";
 }
 
 function createChapterWordTargetRequirement(value) {
@@ -75,6 +101,37 @@ function countChineseCharacters(value = "") {
 
 function createSettingFileName(key = "") {
   return `${key}.md`;
+}
+
+function createSettingGenerationContext(currentSettings = {}, generated = {}, options = {}) {
+  const key = String(options.key || "").trim();
+  const overwrite = options.overwrite === true;
+  const alignToWrittenChapters = options.alignToWrittenChapters === true;
+  const singleSetting = options.singleSetting === true;
+
+  if (!overwrite || alignToWrittenChapters) {
+    return {
+      ...currentSettings,
+      ...generated,
+    };
+  }
+
+  if (singleSetting) {
+    if (PLANNING_SETTING_KEY_SET.has(key)) {
+      return {
+        "base-info": currentSettings["base-info"] || "",
+      };
+    }
+    return {
+      ...currentSettings,
+      ...generated,
+    };
+  }
+
+  return {
+    "base-info": currentSettings["base-info"] || "",
+    ...generated,
+  };
 }
 
 function getProjectPaths(novelsDir, projectId) {
@@ -144,8 +201,9 @@ function createBaseInfoMarkdown(payload = {}) {
     `- 题材：${String(payload.genre || "").trim() || "未填写"}`,
     `- 主题：${String(payload.theme || "").trim() || "未填写"}`,
     `- 核心梗概：${String(payload.premise || "").trim() || "未填写"}`,
-    `- 目标篇幅：${String(payload.targetChapters || "").trim() || "未填写"}`,
+    `- 目标章节数：${formatTargetChapters(payload.targetChapters)}`,
     `- 每章字数要求：${formatChapterWordTarget(payload.chapterWordTarget)}`,
+    `- 预计总字数：${formatEstimatedTotalCharacters(payload.targetChapters, payload.chapterWordTarget)}`,
     `- 风格偏好：${String(payload.stylePreference || "").trim() || "未填写"}`,
     `- 目标读者：${String(payload.audience || "").trim() || "未填写"}`,
     `- 主角信息：${String(payload.protagonist || "").trim() || "未填写"}`,
@@ -158,6 +216,7 @@ function createBaseInfoMarkdown(payload = {}) {
     "- 先生成完整设定，再进入正文写作。",
     "- 后续每章必须同时参考设定文件、已完成章节、章节摘要与状态快照。",
     "- 正文章节以中文表达为主，除必要专有名词外尽量不要混入英文句子。",
+    `- ${createTargetChaptersRequirement(payload.targetChapters)}`,
     `- ${createChapterWordTargetRequirement(payload.chapterWordTarget)}`,
     "- 章节输出为 Markdown 正文，不要输出额外解释。",
   ];
@@ -170,8 +229,9 @@ function buildProjectPromptSummary(project = {}) {
     `题材：${project.genre || ""}`,
     `主题：${project.theme || ""}`,
     `核心梗概：${project.premise || ""}`,
-    `目标篇幅：${project.targetChapters || ""}`,
+    `目标章节数：${formatTargetChapters(project.targetChapters)}`,
     `每章字数要求：${formatChapterWordTarget(project.chapterWordTarget)}`,
+    `预计总字数：${formatEstimatedTotalCharacters(project.targetChapters, project.chapterWordTarget)}`,
     `风格偏好：${project.stylePreference || ""}`,
     `目标读者：${project.audience || ""}`,
     `主角信息：${project.protagonist || ""}`,
@@ -764,6 +824,10 @@ function createNovelModule(deps = {}) {
       "### 项目基础信息",
       buildProjectPromptSummary(project),
       "",
+      "### 篇幅硬约束",
+      createTargetChaptersRequirement(project.targetChapters),
+      createChapterWordTargetRequirement(project.chapterWordTarget),
+      "",
       "### 已有设定参考",
       previousContext || "暂无，按项目基础信息自行补全。",
       "",
@@ -786,9 +850,10 @@ function createNovelModule(deps = {}) {
       `2. 优先从第1章连续写到第${targetChapterCount}章，请尽量按一章一章地来，尽量逐章编号。`,
       "3. 最好每章单独使用一个标题，推荐格式为“## 第N章 章节标题”，让每一章单独成条。",
       "4. 尽量避免写成“第1-3章”“前十章”“第一卷前半段”这类合并、概写、略写格式。",
-      "5. 已经写出的章节要与既成正文一致；尚未写到的章节，在不违背既成正文的前提下继续规划。",
-      `6. ${detailHint}`,
-      "7. 每章内容尽量只写本章事件推进，不要把下一章的大事件提前塞进本章条目里。",
+      `5. ${createTargetChaptersRequirement(project.targetChapters)}`,
+      "6. 已经写出的章节要与既成正文一致；尚未写到的章节，在不违背既成正文的前提下继续规划。",
+      `7. ${detailHint}`,
+      "8. 每章内容尽量只写本章事件推进，不要把下一章的大事件提前塞进本章条目里。",
       "",
       "现在直接输出完整的 Markdown 章节细纲。",
     ].filter(Boolean).join("\n");
@@ -824,6 +889,10 @@ function createNovelModule(deps = {}) {
       "### 项目基础信息",
       buildProjectPromptSummary(project),
       "",
+      "### 篇幅硬约束",
+      createTargetChaptersRequirement(project.targetChapters),
+      createChapterWordTargetRequirement(project.chapterWordTarget),
+      "",
       "### 已有设定参考",
       previousContext || "暂无，按项目基础信息自行补全。",
       "",
@@ -837,16 +906,17 @@ function createNovelModule(deps = {}) {
         "### 更早章节摘要",
         chapterCanonContext?.earlierSummaries?.join("\n\n") || "暂无",
         "",
-        "### 最新章节状态快照",
-        chapterCanonContext?.latestSnapshot || "暂无",
-        "",
+      "### 最新章节状态快照",
+      chapterCanonContext?.latestSnapshot || "暂无",
+      "",
       ] : []),
       "要求：",
       alignToWrittenChapters ? "1. 以已写章节为既成事实，不得推翻、改写或忽略已经发生的剧情。" : "1. 与题材、主题、主角和卖点保持一致。",
-      alignToWrittenChapters ? "2. 若旧设定与已写章节冲突，以既成正文为准，对设定进行归档、修正和补缀。" : "2. 适合长篇连载，具有延展性。",
-      alignToWrittenChapters ? "3. 对尚未写到的后续设定，要在不违背既成正文的前提下继续保持延展性。" : "3. 输出结构清晰，可直接写入 Markdown 文件。",
-      alignToWrittenChapters ? "4. 特别是章节细纲、人物关系、世界规则、力量边界要向当前正文对齐。" : `4. 文件标题使用“# ${title}”。`,
-      alignToWrittenChapters ? `5. 文件标题使用“# ${title}”。` : "",
+      `2. ${createTargetChaptersRequirement(project.targetChapters)}`,
+      alignToWrittenChapters ? "3. 若旧设定与已写章节冲突，以既成正文为准，对设定进行归档、修正和补缀。" : "3. 适合长篇连载，具有延展性。",
+      alignToWrittenChapters ? "4. 对尚未写到的后续设定，要在不违背既成正文的前提下继续保持延展性。" : "4. 输出结构清晰，可直接写入 Markdown 文件。",
+      alignToWrittenChapters ? "5. 特别是章节细纲、人物关系、世界规则、力量边界要向当前正文对齐。" : `5. 文件标题使用“# ${title}”。`,
+      alignToWrittenChapters ? `6. 文件标题使用“# ${title}”。` : "",
     ].filter(Boolean).join("\n");
     return await generateText({
       purpose: `novel_setting_${key}`,
@@ -878,9 +948,13 @@ function createNovelModule(deps = {}) {
         generated[definition.key] = currentSettings[definition.key];
         continue;
       }
+      const generationContext = createSettingGenerationContext(currentSettings, generated, {
+        key: definition.key,
+        overwrite,
+        alignToWrittenChapters,
+      });
       const content = await generateSettingText(project, definition.key, {
-        ...currentSettings,
-        ...generated,
+        ...generationContext,
       }, {
         alignToWrittenChapters,
         chapterCanonContext,
@@ -895,6 +969,66 @@ function createNovelModule(deps = {}) {
       updatedAt: Date.now(),
     });
     return generated;
+  }
+
+  async function generateSingleSetting(projectId, key, options = {}) {
+    const normalizedKey = String(key || "").trim();
+    if (!SETTING_KEY_SET.has(normalizedKey)) {
+      const error = new Error("Unsupported setting key");
+      error.statusCode = 404;
+      throw error;
+    }
+    if (normalizedKey === "base-info") {
+      const error = new Error("基础信息由项目字段生成，请修改项目信息后保存项目");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const overwrite = options.overwrite !== false;
+    const alignToWrittenChapters = options.alignToWrittenChapters === true;
+    const { project } = await readProjectFileSet(projectId);
+    const chapterCanonContext = alignToWrittenChapters
+      ? (options.chapterCanonContext || await readWrittenChapterCanon(projectId))
+      : null;
+    if (alignToWrittenChapters && !chapterCanonContext?.hasContent) {
+      const error = new Error("当前还没有已写章节，暂时无法按正文整理设定");
+      error.statusCode = 400;
+      throw error;
+    }
+    const currentSettings = {};
+    for (const definition of SETTING_DEFINITIONS) {
+      currentSettings[definition.key] = await readSetting(projectId, definition.key);
+    }
+
+    if (!overwrite && String(currentSettings[normalizedKey] || "").trim() && !/待自动生成/.test(currentSettings[normalizedKey])) {
+      return {
+        key: normalizedKey,
+        title: SETTING_DEFINITIONS.find((item) => item.key === normalizedKey)?.title || normalizedKey,
+        content: currentSettings[normalizedKey],
+      };
+    }
+
+    const generationContext = createSettingGenerationContext(currentSettings, {}, {
+      key: normalizedKey,
+      overwrite,
+      alignToWrittenChapters,
+      singleSetting: true,
+    });
+    const content = await generateSettingText(project, normalizedKey, generationContext, {
+      alignToWrittenChapters,
+      chapterCanonContext,
+    });
+    await writeSetting(projectId, normalizedKey, content);
+    await writeJsonFileAtomic(getProjectPaths(novelsDir, projectId).projectFile, {
+      ...project,
+      status: "active",
+      updatedAt: Date.now(),
+    });
+    return {
+      key: normalizedKey,
+      title: SETTING_DEFINITIONS.find((item) => item.key === normalizedKey)?.title || normalizedKey,
+      content,
+    };
   }
 
   async function reconcileSettingsFromChapters(projectId, options = {}) {
@@ -1490,6 +1624,35 @@ function createNovelModule(deps = {}) {
       return true;
     }
 
+    const generateSingleSettingMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/settings\/([^/]+)\/generate$/);
+    if (generateSingleSettingMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(generateSingleSettingMatch[1]);
+      const key = decodeURIComponent(generateSingleSettingMatch[2]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, {
+        ok: true,
+        projectId,
+        generated: await generateSingleSetting(projectId, key, { overwrite: payload.overwrite !== false }),
+      });
+      return true;
+    }
+
+    const reconcileSingleSettingMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/settings\/([^/]+)\/reconcile$/);
+    if (reconcileSingleSettingMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(reconcileSingleSettingMatch[1]);
+      const key = decodeURIComponent(reconcileSingleSettingMatch[2]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, {
+        ok: true,
+        projectId,
+        generated: await generateSingleSetting(projectId, key, {
+          overwrite: payload.overwrite !== false,
+          alignToWrittenChapters: true,
+        }),
+      });
+      return true;
+    }
+
     const settingsListMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/settings$/);
     if (settingsListMatch && req.method === "GET") {
       const projectId = decodeURIComponent(settingsListMatch[1]);
@@ -1612,6 +1775,7 @@ function createNovelModule(deps = {}) {
     updateProject,
     deleteProject,
     generateSettings,
+    generateSingleSetting,
     reconcileSettingsFromChapters,
     generateChapter,
     batchGenerateChapters,

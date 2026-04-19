@@ -146,6 +146,8 @@ function createDomElement(tagName = "div") {
     appendChild(child) {
       this.children.push(child);
     },
+    addEventListener() {},
+    removeEventListener() {},
     close() {
       this.open = false;
     },
@@ -300,6 +302,8 @@ function seedNovelsPageButtonText(harness) {
   harness.getElement("#save-project").textContent = "保存";
   harness.getElement("#delete-project").textContent = "删除";
   harness.getElement("#save-setting").textContent = "保存当前设定";
+  harness.getElement("#generate-current-setting").textContent = "生成当前设定";
+  harness.getElement("#reconcile-current-setting").textContent = "按正文整理当前设定";
   harness.getElement("#generate-settings").textContent = "重新生成设定";
   harness.getElement("#reconcile-settings").textContent = "按正文整理设定";
   harness.getElement("#batch-generate").textContent = "连续写作";
@@ -3262,9 +3266,17 @@ async function main() {
 
   await runTest("novels page generation actions show progress and suppress duplicate requests", async () => {
     const fetchCalls = [];
+    let releaseCurrentSettingRequest;
+    let releaseCurrentSettingReconcileRequest;
     let releaseSettingsRequest;
     let releaseChapterRequest;
     let releaseBatchRequest;
+    const currentSettingGate = new Promise((resolve) => {
+      releaseCurrentSettingRequest = resolve;
+    });
+    const currentSettingReconcileGate = new Promise((resolve) => {
+      releaseCurrentSettingReconcileRequest = resolve;
+    });
     const settingsGate = new Promise((resolve) => {
       releaseSettingsRequest = resolve;
     });
@@ -3313,6 +3325,7 @@ async function main() {
       }],
       settings: {
         "base-info": { key: "base-info", title: "鍩虹淇℃伅" },
+        "chapter-plan": { key: "chapter-plan", title: "绔犺妭缁嗙翰" },
       },
     });
 
@@ -3343,6 +3356,24 @@ async function main() {
           key: "base-info",
           content: "# base info",
         });
+      }
+
+      if (url === `/novels/projects/${project.id}/settings/chapter-plan` && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          key: "chapter-plan",
+          content: "# chapter plan",
+        });
+      }
+
+      if (url === `/novels/projects/${project.id}/settings/chapter-plan/generate` && method === "POST") {
+        await currentSettingGate;
+        return createMockJsonResponse({ ok: true });
+      }
+
+      if (url === `/novels/projects/${project.id}/settings/chapter-plan/reconcile` && method === "POST") {
+        await currentSettingReconcileGate;
+        return createMockJsonResponse({ ok: true });
       }
 
       if (url === `/novels/projects/${project.id}/generate-settings` && method === "POST") {
@@ -3381,6 +3412,46 @@ async function main() {
     await harness.flush(8);
     await harness.getElement("#project-list").children[0].onclick();
     await harness.flush(10);
+
+    harness.getElement("#setting-select").value = "chapter-plan";
+    harness.getElement("#setting-select").onchange();
+    await harness.flush(4);
+
+    const firstCurrentSetting = harness.getElement("#generate-current-setting").onclick();
+    await harness.flush(2);
+    harness.getElement("#generate-current-setting").onclick();
+
+    const currentSettingCalls = fetchCalls.filter((call) => call.url === `/novels/projects/${project.id}/settings/chapter-plan/generate` && call.options.method === "POST");
+    assert.equal(currentSettingCalls.length, 1);
+    assert.equal(harness.getElement("#generate-current-setting").disabled, true);
+    assert.equal(harness.getElement("#generate-current-setting").textContent, "鐢熸垚涓?..");
+    assert.equal(harness.getElement("#operation-feedback").hidden, false);
+
+    releaseCurrentSettingRequest();
+    await firstCurrentSetting;
+    await harness.flush(12);
+
+    assert.equal(harness.getElement("#generate-current-setting").disabled, false);
+    assert.equal(harness.getElement("#generate-current-setting").textContent, "生成当前设定");
+    assert.equal(harness.getElement("#operation-feedback").hidden, true);
+
+    const firstCurrentSettingReconcile = harness.getElement("#reconcile-current-setting").onclick();
+    await harness.flush(2);
+    harness.getElement("#reconcile-current-setting").onclick();
+
+    const currentSettingReconcileCalls = fetchCalls.filter((call) => call.url === `/novels/projects/${project.id}/settings/chapter-plan/reconcile` && call.options.method === "POST");
+    assert.equal(currentSettingReconcileCalls.length, 1);
+    assert.equal(harness.getElement("#reconcile-current-setting").disabled, true);
+    assert.equal(harness.getElement("#reconcile-current-setting").textContent, "鏁寸悊涓?..");
+    assert.equal(harness.getElement("#operation-feedback").hidden, false);
+
+    releaseCurrentSettingReconcileRequest();
+    await firstCurrentSettingReconcile;
+    await harness.flush(12);
+
+    assert.equal(harness.getElement("#reconcile-current-setting").disabled, false);
+    assert.equal(harness.getElement("#reconcile-current-setting").textContent, "按正文整理当前设定");
+    assert.equal(harness.getElement("#operation-feedback").hidden, true);
 
     const firstSettings = harness.getElement("#generate-settings").onclick();
     await harness.flush(2);
@@ -3836,6 +3907,125 @@ async function main() {
 
     assert.deepEqual(updated.project.keywords, ["gamma", "delta", "epsilon"]);
     assert.equal(updated.project.chapterWordTarget, 3600);
+  });
+
+  await runTest("novel module overwrite regeneration ignores stale long-range settings and follows updated chapter target", async () => {
+    let worldPrompt = "";
+    let chapterPlanPrompt = "";
+    const { novelModule, novelsDir } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        if (purpose === "novel_setting_world") {
+          worldPrompt = String(userPrompt || "");
+        }
+        if (purpose === "novel_setting_chapter-plan") {
+          chapterPlanPrompt = String(userPrompt || "");
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "stale-setting-overwrite-test",
+      autoGenerateSettings: false,
+    });
+
+    const settingsDir = path.join(novelsDir, detail.project.id, "settings");
+    await writeFileAtomic(path.join(settingsDir, "outline.md"), "# 总纲\n\n旧总纲：预计 220 章完结。\n");
+    await writeFileAtomic(path.join(settingsDir, "volume-plan.md"), "# 分卷规划\n\n旧卷纲：共 220 章，第199章才进入终局。\n");
+    await writeFileAtomic(path.join(settingsDir, "chapter-plan.md"), "# 章节细纲\n\n## 第199章 旧终局\n\n- 旧版本结局。\n");
+
+    await novelModule.updateProject(detail.project.id, {
+      targetChapters: 10,
+      chapterWordTarget: 2000,
+      premise: "十章内完成近未来 AI 情感悬疑故事。",
+    });
+    await novelModule.generateSettings(detail.project.id, { overwrite: true });
+
+    assert.equal(worldPrompt.includes("旧总纲：预计 220 章完结"), false);
+    assert.equal(worldPrompt.includes("旧卷纲：共 220 章"), false);
+    assert.equal(worldPrompt.includes("第199章"), false);
+    assert.equal(worldPrompt.includes("目标章节数：10章"), true);
+    assert.equal(worldPrompt.includes("必须以 10 章总量来规划"), true);
+    assert.equal(worldPrompt.includes("预计总字数：约 20000 个中文汉字"), true);
+    assert.equal(chapterPlanPrompt.includes("目标章节数：10章"), true);
+    assert.equal(chapterPlanPrompt.includes("必须以 10 章总量来规划"), true);
+    assert.equal(chapterPlanPrompt.includes("第199章 旧终局"), false);
+  });
+
+  await runTest("novel module can generate a single planning setting without reusing stale old planning text", async () => {
+    let volumePlanPrompt = "";
+    const { novelModule, novelsDir } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        if (purpose === "novel_setting_volume-plan") {
+          volumePlanPrompt = String(userPrompt || "");
+          return "# 分卷规划\n\n新卷纲";
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "single-setting-generate-test",
+      autoGenerateSettings: false,
+    });
+
+    const settingsDir = path.join(novelsDir, detail.project.id, "settings");
+    await writeFileAtomic(path.join(settingsDir, "volume-plan.md"), "# 分卷规划\n\n旧卷纲：共 180 章。\n");
+    await writeFileAtomic(path.join(settingsDir, "chapter-plan.md"), "# 章节细纲\n\n## 第160章 旧尾声\n\n- 旧内容。\n");
+    await writeFileAtomic(path.join(settingsDir, "outline.md"), "# 总纲\n\n旧总纲：终局在第 170 章。\n");
+
+    await novelModule.updateProject(detail.project.id, {
+      targetChapters: 10,
+      chapterWordTarget: 2000,
+    });
+    const generated = await novelModule.generateSingleSetting(detail.project.id, "volume-plan", { overwrite: true });
+
+    assert.equal(generated.key, "volume-plan");
+    assert.equal(generated.content.includes("新卷纲"), true);
+    assert.equal(volumePlanPrompt.includes("目标章节数：10章"), true);
+    assert.equal(volumePlanPrompt.includes("旧卷纲：共 180 章"), false);
+    assert.equal(volumePlanPrompt.includes("第160章 旧尾声"), false);
+    assert.equal(volumePlanPrompt.includes("旧总纲：终局在第 170 章"), false);
+  });
+
+  await runTest("novel module can reconcile a single setting from written chapters", async () => {
+    let worldPrompt = "";
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        if (purpose === "novel_chapter") {
+          return "# Chapter 1 Start\n\nchapter one underground debugging with first response";
+        }
+        if (purpose === "novel_summary") {
+          return "# Summary\n\nsummary of chapter one";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# Snapshot\n\nsnapshot-lin-yi: basement\nsnapshot-fanxing: first-response";
+        }
+        if (purpose === "novel_setting_world") {
+          worldPrompt = String(userPrompt || "");
+          return "# 世界观\n\nreconciled world";
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "single-setting-reconcile-test",
+      genre: "sci-fi",
+      autoGenerateSettings: false,
+    });
+
+    await novelModule.generateChapter(detail.project.id);
+    const reconciled = await novelModule.generateSingleSetting(detail.project.id, "world", {
+      overwrite: true,
+      alignToWrittenChapters: true,
+    });
+
+    assert.equal(reconciled.key, "world");
+    assert.equal(reconciled.content.includes("reconciled world"), true);
+    assert.equal(worldPrompt.includes("chapter one underground debugging with first response"), true);
+    assert.equal(worldPrompt.includes("snapshot-lin-yi: basement"), true);
+    assert.equal(worldPrompt.includes("snapshot-fanxing: first-response"), true);
   });
 
   await runTest("novel module prioritizes the current chapter outline in generation prompts", async () => {

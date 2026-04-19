@@ -2084,6 +2084,7 @@ async function callLocalModelWithTools({
   singleUseToolNames = [],
   temperature = 0.7,
   maxRounds = 6,
+  timeoutMs,
 }) {
   const targetUrl = buildModelServiceUrl("chat");
   const { authHeaders } = getResolvedModelServiceConfig();
@@ -2133,6 +2134,7 @@ async function callLocalModelWithTools({
         ...authHeaders,
       },
       body: requestBody,
+      timeoutMs,
     });
 
     const message = data?.choices?.[0]?.message;
@@ -2201,6 +2203,7 @@ async function generateNovelText({
   systemPrompt,
   userPrompt,
   temperature = 0.7,
+  timeoutMs = 120_000,
 } = {}) {
   const model = String(getSharedConnectionConfig()?.model || "").trim();
   if (!model) {
@@ -2223,6 +2226,7 @@ async function generateNovelText({
     tools: [],
     temperature,
     maxRounds: 1,
+    timeoutMs,
   });
 }
 

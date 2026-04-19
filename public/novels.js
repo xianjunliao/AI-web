@@ -79,6 +79,8 @@ const els = {
   projectInfoPanel: $("#project-info-panel"),
   projectInfoBody: $("#project-info-body"),
   saveSetting: $("#save-setting"),
+  generateCurrentSetting: $("#generate-current-setting"),
+  reconcileCurrentSetting: $("#reconcile-current-setting"),
   toggleSettings: $("#toggle-settings"),
   settingsPanel: $("#settings-panel"),
   settingsBody: $("#settings-body"),
@@ -496,6 +498,40 @@ const OPERATION_CONFIGS = {
       { progress: 74, hint: "正在同步项目状态..." },
     ],
   },
+  generateCurrentSetting: {
+    title: "姝ｅ湪鐢熸垚褰撳墠璁惧畾",
+    buttonText: "鐢熸垚涓?..",
+    successTitle: "褰撳墠璁惧畾宸茬敓鎴?",
+    successHint: "褰撳墠閫変腑鐨勮瀹氭枃浠跺凡鏇存柊涓烘渶鏂扮敓鎴愮粨鏋溿€?",
+    errorTitle: "鐢熸垚褰撳墠璁惧畾澶辫触",
+    initialProgress: 12,
+    stepMs: 320,
+    stepValue: 7,
+    ceiling: 88,
+    releaseDelayMs: 320,
+    stages: [
+      { progress: 12, hint: "姝ｅ湪鍒嗘瀽褰撳墠閫変腑璁惧畾..." },
+      { progress: 44, hint: "姝ｅ湪鐢熸垚褰撳墠璁惧畾鍐呭..." },
+      { progress: 74, hint: "姝ｅ湪鍒锋柊璁惧畾缂栬緫鍖?.." },
+    ],
+  },
+  reconcileCurrentSetting: {
+    title: "姝ｅ湪鎸夋鏂囨暣鐞嗗綋鍓嶈瀹?",
+    buttonText: "鏁寸悊涓?..",
+    successTitle: "褰撳墠璁惧畾宸叉寜姝ｆ枃鏁寸悊",
+    successHint: "褰撳墠閫変腑鐨勮瀹氭枃浠跺凡灏介噺鍚戞棦鎴愭鏂囧榻愩€?",
+    errorTitle: "鎸夋鏂囨暣鐞嗗綋鍓嶈瀹氬け璐?",
+    initialProgress: 12,
+    stepMs: 320,
+    stepValue: 7,
+    ceiling: 88,
+    releaseDelayMs: 320,
+    stages: [
+      { progress: 12, hint: "姝ｅ湪璇诲彇宸插啓绔犺妭涓庡綋鍓嶈瀹?.." },
+      { progress: 44, hint: "姝ｅ湪鎸夋鏂囧弽鍚戞暣鐞嗗綋鍓嶈瀹?.." },
+      { progress: 74, hint: "姝ｅ湪鍒锋柊璁惧畾缂栬緫鍖?.." },
+    ],
+  },
   generateSettings: {
     title: "正在重新生成设定",
     buttonText: "生成中...",
@@ -693,6 +729,8 @@ const actionButtons = [
   els.saveProject,
   els.deleteProject,
   els.saveSetting,
+  els.generateCurrentSetting,
+  els.reconcileCurrentSetting,
   els.generateSettings,
   els.reconcileSettings,
   els.batchGenerate,
@@ -1140,6 +1178,29 @@ function renderProjectList() {
   });
 }
 
+function syncSettingActionButtons() {
+  if (!els.generateCurrentSetting && !els.reconcileCurrentSetting) return;
+  if (!els.generateCurrentSetting.dataset.defaultText) {
+    els.generateCurrentSetting.dataset.defaultText = els.generateCurrentSetting.textContent || "鐢熸垚褰撳墠璁惧畾";
+  }
+  if (els.reconcileCurrentSetting && !els.reconcileCurrentSetting.dataset.defaultText) {
+    els.reconcileCurrentSetting.dataset.defaultText = els.reconcileCurrentSetting.textContent || "鎸夋鏂囨暣鐞嗗綋鍓嶈瀹?";
+  }
+  if (!uiState.busy) {
+    els.generateCurrentSetting.textContent = els.generateCurrentSetting.dataset.defaultText;
+    if (els.reconcileCurrentSetting) {
+      els.reconcileCurrentSetting.textContent = els.reconcileCurrentSetting.dataset.defaultText;
+    }
+  }
+  const isBaseInfo = String(state.activeSetting || "").trim() === "base-info";
+  els.generateCurrentSetting.disabled = isBaseInfo;
+  els.generateCurrentSetting.title = isBaseInfo ? "鍩虹淇℃伅璇烽€氳繃淇濆瓨椤圭洰淇℃伅鏇存柊" : "";
+  if (els.reconcileCurrentSetting) {
+    els.reconcileCurrentSetting.disabled = isBaseInfo;
+    els.reconcileCurrentSetting.title = isBaseInfo ? "鍩虹淇℃伅璇烽€氳繃淇濆瓨椤圭洰淇℃伅鏇存柊" : "";
+  }
+}
+
 function renderWorkspaceState(config = WORKSPACE_STATES.empty) {
   state.activeId = "";
   state.detail = null;
@@ -1151,6 +1212,7 @@ function renderWorkspaceState(config = WORKSPACE_STATES.empty) {
   els.emptyBody.textContent = config.emptyBody;
   setStatusBar(config.status, config.tone || "");
   clearProjectFields();
+  syncSettingActionButtons();
   setElementHidden(els.projectActions, true);
   setElementHidden(els.projectContent, true);
   setElementHidden(els.emptyState, false);
@@ -1363,6 +1425,7 @@ function renderProjectDetail(detail) {
     state.activeSetting = settingItems[0]?.key || "base-info";
   }
   els.settingSelect.value = state.activeSetting;
+  syncSettingActionButtons();
   loadSetting(state.activeSetting).catch((error) => {
     setStatusBar(error.message, "error");
     els.settingEditor.value = "";
@@ -1412,8 +1475,10 @@ async function loadProject(projectId) {
 async function loadSetting(key) {
   const projectId = requireActiveProject("查看设定");
   state.activeSetting = key;
+  syncSettingActionButtons();
   const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/settings/${encodeURIComponent(key)}`);
   els.settingEditor.value = data.content || "";
+  syncSettingActionButtons();
 }
 
 async function loadChapter(chapterNo) {
@@ -1577,6 +1642,7 @@ async function finishOperation(resultState, error) {
     await wait(900);
   }
   setInteractiveState(false);
+  syncSettingActionButtons();
   if (els.readerDialog?.open && state.readerChapterNo) {
     renderChapterReader();
   }
@@ -1740,6 +1806,38 @@ async function saveSetting() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: els.settingEditor.value }),
+    });
+    await loadProject(projectId);
+  });
+}
+
+async function generateCurrentSetting() {
+  const projectId = requireActiveProject("鐢熸垚褰撳墠璁惧畾");
+  const key = String(state.activeSetting || "").trim() || "base-info";
+  if (key === "base-info") {
+    throw new Error("鍩虹淇℃伅鐢遍」鐩瓧娈佃嚜鍔ㄧ敓鎴愶紝璇蜂慨鏀归」鐩俊鎭悗鐐瑰嚮鈥滀繚瀛樷€濄€?");
+  }
+  await runWithOperation(OPERATION_CONFIGS.generateCurrentSetting, els.generateCurrentSetting, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/settings/${encodeURIComponent(key)}/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    await loadProject(projectId);
+  });
+}
+
+async function reconcileCurrentSetting() {
+  const projectId = requireActiveProject("鎸夋鏂囨暣鐞嗗綋鍓嶈瀹?");
+  const key = String(state.activeSetting || "").trim() || "base-info";
+  if (key === "base-info") {
+    throw new Error("閸╄櫣顢呮穱鈩冧紖閻㈤亶銆嶉惄顔肩摟濞堜絻鍤滈崝銊ф晸閹存劧绱濈拠铚傛叏閺€褰掋€嶉惄顔讳繆閹垰鎮楅悙鐟板毊閳ユ粈绻氱€涙ǚ鈧縿鈧?");
+  }
+  await runWithOperation(OPERATION_CONFIGS.reconcileCurrentSetting, els.reconcileCurrentSetting, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/settings/${encodeURIComponent(key)}/reconcile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
     });
     await loadProject(projectId);
   });
@@ -1942,6 +2040,516 @@ els.emptyCreateProject.onclick = openCreateDialog;
 els.closeCreateDialog.onclick = requestCloseCreateDialog;
 els.cancelCreate.onclick = requestCloseCreateDialog;
 els.dialog.oncancel = requestCloseCreateDialog;
+Object.assign(WORKSPACE_STATES.empty, {
+  meta: "请先新建项目，创建后点击左侧项目查看详情。",
+  status: "请先新建项目。创建完成后，从左侧点击项目开始编辑。",
+  emptyTitle: "请新建项目",
+  emptyBody: "当前还没有小说项目。先点击左侧“新建项目”，创建完成后再从左侧选择项目，右侧才会显示项目信息、设定文件和章节内容。",
+});
+Object.assign(WORKSPACE_STATES.idle, {
+  meta: "请选择左侧项目查看详情。",
+  status: "请点击左侧项目查看详情，右侧将显示项目信息、设定文件和章节内容。",
+  emptyTitle: "请选择左侧项目",
+  emptyBody: "项目已经创建完成。点击左侧项目卡片后，右侧才会显示项目信息、设定文件和章节内容。",
+});
+Object.assign(WORKSPACE_STATES.created, {
+  meta: "项目已创建，请点击左侧项目查看详情。",
+  status: "项目已创建。现在请从左侧点击项目，右侧才会展示完整内容。",
+  emptyTitle: "项目已创建",
+  emptyBody: "新项目已经准备好了。请从左侧点击刚创建的项目卡片，继续编辑项目信息、设定文件和章节内容。",
+});
+Object.assign(WORKSPACE_STATES.draftCreated, {
+  meta: "草稿已保存，请从左侧选择项目继续完善。",
+  status: "草稿项目已经保存。请从左侧点击该项目，继续补充项目信息、设定和章节规划。",
+  emptyTitle: "草稿已保存",
+  emptyBody: "草稿项目已经保存成功。你可以从左侧点击这个项目，继续填写资料、保存设定或开始生成内容。",
+});
+Object.assign(WORKSPACE_STATES.deleted, {
+  meta: "项目已删除，请重新从左侧选择项目。",
+  status: "项目已删除。请从左侧选择其他项目，或新建项目继续。",
+  emptyTitle: "项目已删除",
+  emptyBody: "当前工作区已回到初始状态。你可以从左侧选择其他项目，或点击“新建项目”继续创建新的小说项目。",
+});
+
+Object.assign(OPERATION_CONFIGS.create, {
+  title: "正在创建项目",
+  buttonText: "创建中...",
+  successTitle: "创建完成",
+  successHint: "项目已创建，请点击左侧项目查看详情。",
+  errorTitle: "创建失败",
+  stages: [
+    { progress: 8, hint: "正在保存项目信息..." },
+    { progress: 38, hint: "正在生成基础设定，这一步可能需要一点时间..." },
+    { progress: 72, hint: "正在整理项目列表..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.saveDraft, {
+  title: "正在保存草稿项目",
+  buttonText: "保存中...",
+  successTitle: "草稿已保存",
+  successHint: "草稿项目已保存，可以稍后继续完善。",
+  errorTitle: "保存草稿失败",
+  stages: [
+    { progress: 8, hint: "正在保存草稿项目信息..." },
+    { progress: 42, hint: "正在整理草稿内容..." },
+    { progress: 72, hint: "正在刷新项目列表..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.save, {
+  title: "正在保存项目",
+  buttonText: "保存中...",
+  successTitle: "保存完成",
+  successHint: "已刷新为最新的项目内容。",
+  errorTitle: "保存失败",
+  stages: [
+    { progress: 14, hint: "正在提交最新修改..." },
+    { progress: 52, hint: "正在刷新项目详情..." },
+    { progress: 76, hint: "马上就好..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.saveSetting, {
+  title: "正在保存设定",
+  buttonText: "保存中...",
+  successTitle: "设定已保存",
+  successHint: "当前设定内容已经刷新为最新版本。",
+  errorTitle: "保存设定失败",
+  stages: [
+    { progress: 16, hint: "正在提交当前设定..." },
+    { progress: 48, hint: "正在刷新设定内容..." },
+    { progress: 74, hint: "正在同步项目状态..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.generateCurrentSetting, {
+  title: "正在生成当前设定",
+  buttonText: "生成中...",
+  successTitle: "当前设定已生成",
+  successHint: "当前设定文件已经刷新为最新生成结果。",
+  errorTitle: "生成当前设定失败",
+  stages: [
+    { progress: 12, hint: "正在分析当前选中的设定..." },
+    { progress: 44, hint: "正在生成当前设定内容..." },
+    { progress: 74, hint: "正在刷新设定编辑区..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.reconcileCurrentSetting, {
+  title: "正在按正文整理当前设定",
+  buttonText: "整理中...",
+  successTitle: "当前设定已按正文整理",
+  successHint: "当前设定文件已经根据正文内容完成整理。",
+  errorTitle: "按正文整理当前设定失败",
+  stages: [
+    { progress: 12, hint: "正在读取已写章节与当前设定..." },
+    { progress: 44, hint: "正在按正文整理当前设定..." },
+    { progress: 74, hint: "正在刷新设定编辑区..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.generateSettings, {
+  title: "正在重新生成设定",
+  buttonText: "生成中...",
+  successTitle: "设定生成完成",
+  successHint: "设定文件已经更新为最新生成结果。",
+  errorTitle: "生成设定失败",
+  stages: [
+    { progress: 10, hint: "正在分析当前项目信息..." },
+    { progress: 36, hint: "正在生成新的设定文件..." },
+    { progress: 68, hint: "正在整理并刷新设定列表..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.reconcileSettings, {
+  title: "正在按已写章节整理设定",
+  buttonText: "整理中...",
+  successTitle: "设定整理完成",
+  successHint: "设定文件已根据已写章节重新对齐。",
+  errorTitle: "整理设定失败",
+  stages: [
+    { progress: 10, hint: "正在读取已写章节与当前设定..." },
+    { progress: 36, hint: "正在根据既成正文整理设定文件..." },
+    { progress: 68, hint: "正在刷新设定内容..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.batchGenerate, {
+  title: "正在连续写作",
+  buttonText: "写作中...",
+  successTitle: "连续写作完成",
+  successHint: "章节结果已刷新，可以继续查看最新草稿。",
+  errorTitle: "连续写作失败",
+  stages: [
+    { progress: 12, hint: "正在提交连续写作请求..." },
+    { progress: 34, hint: "正在按顺序生成章节内容..." },
+    { progress: 66, hint: "正在整理最新章节与草稿..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.generateChapter, {
+  title: "正在生成下一章",
+  buttonText: "生成中...",
+  successTitle: "下一章已生成",
+  successHint: "最新草稿已载入到右侧章节区。",
+  errorTitle: "生成章节失败",
+  stages: [
+    { progress: 12, hint: "正在准备章节上下文..." },
+    { progress: 44, hint: "正在生成下一章草稿..." },
+    { progress: 72, hint: "正在刷新章节列表..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.approveChapter, {
+  title: "正在通过待审章节",
+  buttonText: "处理中...",
+  successTitle: "章节已通过",
+  successHint: "待审章节已经转为正式章节。",
+  errorTitle: "通过章节失败",
+  stages: [
+    { progress: 18, hint: "正在提交通过操作..." },
+    { progress: 54, hint: "正在刷新章节状态..." },
+    { progress: 78, hint: "马上完成..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.rewriteChapter, {
+  title: "正在重写章节",
+  buttonText: "重写中...",
+  successTitle: "章节已重写",
+  successHint: "新的待审草稿已经准备好。",
+  errorTitle: "重写章节失败",
+  stages: [
+    { progress: 14, hint: "正在提交重写意见..." },
+    { progress: 42, hint: "正在重新生成章节内容..." },
+    { progress: 74, hint: "正在刷新待审草稿..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.deleteChapter, {
+  title: "正在删除章节并回退进度",
+  buttonText: "删除中...",
+  successTitle: "章节已删除",
+  successHint: "已删除当前章节及后续内容，并同步回退写作进度。",
+  errorTitle: "删除章节失败",
+  stages: [
+    { progress: 16, hint: "正在删除当前章节及后续文件..." },
+    { progress: 48, hint: "正在回退章节进度与审阅状态..." },
+    { progress: 76, hint: "正在刷新章节列表..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.readerGenerateNext, {
+  title: "正在继续生成下一章",
+  buttonText: "生成中...",
+  successTitle: "下一章已生成",
+  successHint: "新的章节草稿已经载入阅读器。",
+  errorTitle: "继续生成失败",
+  stages: [
+    { progress: 10, hint: "正在检查待审章节状态..." },
+    { progress: 36, hint: "正在自动通过上一章待审..." },
+    { progress: 64, hint: "正在生成下一章草稿..." },
+    { progress: 82, hint: "正在刷新阅读器内容..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.readerRegenerateChapter, {
+  title: "正在重新生成当前章",
+  buttonText: "重生成中...",
+  successTitle: "当前章已重生成",
+  successHint: "新的草稿已经载入阅读器。",
+  errorTitle: "重新生成失败",
+  stages: [
+    { progress: 12, hint: "正在准备当前章节上下文..." },
+    { progress: 46, hint: "正在重新生成当前章节..." },
+    { progress: 76, hint: "正在刷新阅读器内容..." },
+  ],
+});
+
+function syncSettingActionButtons() {
+  if (!els.generateCurrentSetting && !els.reconcileCurrentSetting) return;
+  if (!els.generateCurrentSetting.dataset.defaultText) {
+    els.generateCurrentSetting.dataset.defaultText = els.generateCurrentSetting.textContent || "生成当前设定";
+  }
+  if (els.reconcileCurrentSetting && !els.reconcileCurrentSetting.dataset.defaultText) {
+    els.reconcileCurrentSetting.dataset.defaultText = els.reconcileCurrentSetting.textContent || "按正文整理当前设定";
+  }
+  if (!uiState.busy) {
+    els.generateCurrentSetting.textContent = els.generateCurrentSetting.dataset.defaultText;
+    if (els.reconcileCurrentSetting) {
+      els.reconcileCurrentSetting.textContent = els.reconcileCurrentSetting.dataset.defaultText;
+    }
+  }
+  const isBaseInfo = String(state.activeSetting || "").trim() === "base-info";
+  const disabledTitle = "基础信息请通过项目信息保存，不支持单独生成或整理。";
+  els.generateCurrentSetting.disabled = isBaseInfo;
+  els.generateCurrentSetting.title = isBaseInfo ? disabledTitle : "";
+  if (els.reconcileCurrentSetting) {
+    els.reconcileCurrentSetting.disabled = isBaseInfo;
+    els.reconcileCurrentSetting.title = isBaseInfo ? disabledTitle : "";
+  }
+}
+
+function renderWorkspaceState(config = WORKSPACE_STATES.empty) {
+  state.activeId = "";
+  state.detail = null;
+  state.settings = {};
+  state.activeSetting = "base-info";
+  els.title.textContent = "小说项目工坊";
+  els.meta.textContent = config.meta;
+  els.emptyTitle.textContent = config.emptyTitle;
+  els.emptyBody.textContent = config.emptyBody;
+  setStatusBar(config.status, config.tone || "");
+  clearProjectFields();
+  syncSettingActionButtons();
+  setElementHidden(els.projectActions, true);
+  setElementHidden(els.projectContent, true);
+  setElementHidden(els.emptyState, false);
+}
+
+function getProjectStatusLabel(project = {}) {
+  return String(project?.status || "").trim().toLowerCase() === "draft" ? "草稿" : "已创建";
+}
+
+function renderProjectHeader(detail = state.detail) {
+  if (!detail?.project) return;
+  const project = detail.project;
+  const projectState = detail.state || {};
+  const metaParts = [
+    `状态：${getProjectStatusLabel(project)}`,
+    project.genre || "未设题材",
+    project.theme ? `主题：${project.theme}` : "",
+    `已通过 ${projectState.lastApprovedChapter || 0} 章`,
+    `待审 ${projectState.pendingDraftChapter || 0}`,
+  ].filter(Boolean);
+  const currentModel = getCurrentModelLabel();
+  if (currentModel) {
+    metaParts.push(`当前模型 ${currentModel}`);
+  }
+  els.title.textContent = getProjectDisplayName(project);
+  els.meta.textContent = metaParts.join(" · ");
+}
+
+function renderProjectList() {
+  els.list.innerHTML = "";
+  renderCurrentModelMeta();
+
+  if (!state.projects.length) {
+    els.listMeta.textContent = "当前还没有小说项目。";
+    els.list.innerHTML = '<div class="file-empty">还没有小说项目。</div>';
+    return;
+  }
+
+  const activeProject = state.projects.find((project) => project.id === state.activeId);
+  els.listMeta.textContent = activeProject
+    ? `共 ${state.projects.length} 个项目，当前选中：《${getProjectDisplayName(activeProject)}》`
+    : `共 ${state.projects.length} 个项目。点击左侧项目卡片查看详情。`;
+
+  state.projects.forEach((project) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `project-item ${project.id === state.activeId ? "active" : ""}`;
+    item.innerHTML = [
+      `<strong>${escapeHtml(getProjectDisplayName(project))}</strong>`,
+      `<div class="muted">状态：${escapeHtml(getProjectStatusLabel(project))}</div>`,
+      `<div class="muted">${escapeHtml(project.genre || "未设题材")}</div>`,
+      `<div class="muted">${escapeHtml(project.theme || "未设主题")}</div>`,
+      `<div class="muted">已通过 ${project.lastApprovedChapter || 0} 章 / 待审 ${project.pendingDraftChapter || 0}</div>`,
+    ].join("");
+    item.onclick = () => loadProject(project.id);
+    els.list.append(item);
+  });
+}
+
+function requireActiveProject(actionText = "执行此操作") {
+  if (state.activeId) {
+    return state.activeId;
+  }
+  throw new Error(`请先从左侧选择项目，再${actionText}`);
+}
+
+function resolveActiveChapterNo(preferredChapterNo = 0, actionText = "删除章节") {
+  const chapterNo = Number(preferredChapterNo) || Number(state.readerChapterNo || state.activeChapterNo || 0);
+  if (chapterNo > 0) {
+    return chapterNo;
+  }
+  throw new Error(`请先选择一个章节，再${actionText}`);
+}
+
+async function saveProject() {
+  const projectId = requireActiveProject("保存项目");
+  const payload = projectPayloadFromFields(els.fields);
+  return await runWithOperation(OPERATION_CONFIGS.save, els.saveProject, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await refreshProjects({ preferredId: projectId, autoSelect: true });
+  });
+}
+
+async function deleteProject() {
+  const projectId = requireActiveProject("删除项目");
+  if (!confirm("确认删除当前小说项目吗？")) return;
+  await j(`/novels/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+  state.activeId = "";
+  await refreshProjects({ autoSelect: false, idleState: WORKSPACE_STATES.deleted });
+}
+
+async function saveSetting() {
+  const projectId = requireActiveProject("保存设定");
+  await runWithOperation(OPERATION_CONFIGS.saveSetting, els.saveSetting, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/settings/${encodeURIComponent(state.activeSetting)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: els.settingEditor.value }),
+    });
+    await loadProject(projectId);
+  });
+}
+
+async function generateCurrentSetting() {
+  const projectId = requireActiveProject("生成当前设定");
+  const key = String(state.activeSetting || "").trim() || "base-info";
+  if (key === "base-info") {
+    throw new Error("基础信息由项目信息生成，请修改项目信息后保存项目。");
+  }
+  await runWithOperation(OPERATION_CONFIGS.generateCurrentSetting, els.generateCurrentSetting, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/settings/${encodeURIComponent(key)}/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    await loadProject(projectId);
+  });
+}
+
+async function reconcileCurrentSetting() {
+  const projectId = requireActiveProject("按正文整理当前设定");
+  const key = String(state.activeSetting || "").trim() || "base-info";
+  if (key === "base-info") {
+    throw new Error("基础信息由项目信息生成，请修改项目信息后保存项目。");
+  }
+  await runWithOperation(OPERATION_CONFIGS.reconcileCurrentSetting, els.reconcileCurrentSetting, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/settings/${encodeURIComponent(key)}/reconcile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    await loadProject(projectId);
+  });
+}
+
+async function generateSettings() {
+  const projectId = requireActiveProject("生成设定");
+  await runWithOperation(OPERATION_CONFIGS.generateSettings, els.generateSettings, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/generate-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    await loadProject(projectId);
+  });
+}
+
+async function reconcileSettings() {
+  const projectId = requireActiveProject("按正文整理设定");
+  if (!confirm("确认根据已写章节反向整理设定吗？这会覆盖现有设定文件，让它们尽量向既成正文对齐。")) return;
+  await runWithOperation(OPERATION_CONFIGS.reconcileSettings, els.reconcileSettings, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/reconcile-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    await loadProject(projectId);
+  });
+}
+
+async function generateChapter() {
+  const projectId = requireActiveProject("生成章节");
+  await runWithOperation(OPERATION_CONFIGS.generateChapter, els.generateChapter, async () => {
+    const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/chapters/generate-next`, { method: "POST" });
+    await loadProject(projectId);
+    setActiveChapterState({
+      chapterNo: data.chapterNo,
+      status: "draft",
+      title: data.title,
+      content: data.draft || "",
+    });
+  });
+}
+
+async function deleteChapterAndProgress(options = {}) {
+  const projectId = requireActiveProject("删除章节");
+  const chapterNo = resolveActiveChapterNo(options.chapterNo, "删除章节");
+  const resetToChapter = Math.max(0, chapterNo - 1);
+  const confirmationMessage = resetToChapter > 0
+    ? `确认删除第 ${chapterNo} 章及之后的所有章节、草稿、摘要、快照，并把进度回退到第 ${resetToChapter} 章吗？`
+    : `确认删除第 ${chapterNo} 章及之后的所有章节、草稿、摘要、快照，并把项目进度恢复到初始状态吗？`;
+  if (!confirm(confirmationMessage)) {
+    return;
+  }
+  const config = options.feedbackTarget ? { ...OPERATION_CONFIGS.deleteChapter, feedbackTarget: options.feedbackTarget } : OPERATION_CONFIGS.deleteChapter;
+  await runWithOperation(config, options.triggerButton || els.deleteChapter, async () => {
+    const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/chapters/${chapterNo}`, { method: "DELETE" });
+    await loadProject(projectId);
+    const nextChapterNo = Number(data.resetToChapter || 0);
+    if (nextChapterNo > 0) {
+      await loadChapter(nextChapterNo);
+      if (options.keepReaderOpen) {
+        openChapterReader();
+      }
+      return;
+    }
+    resetChapterState();
+    els.chapterViewer.value = "";
+    closeReader();
+  });
+}
+
+async function batchGenerate() {
+  const projectId = requireActiveProject("连续写作");
+  const rawCount = window.prompt("连续写作多少章？建议 1-5 章。", "3");
+  if (rawCount == null) return;
+  const count = Number(rawCount);
+  if (!Number.isFinite(count) || count <= 0) {
+    throw new Error("请输入有效的章节数量");
+  }
+  const autoApprove = window.confirm("是否自动通过每章并继续写下一章？\n选择“确定”会直接把生成的章节转正；选择“取消”则生成一章草稿后等待审阅。");
+  const data = await runWithOperation(OPERATION_CONFIGS.batchGenerate, els.batchGenerate, async () => {
+    const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/chapters/batch-generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ count, autoApprove }),
+    });
+    await loadProject(projectId);
+    if (data.generated?.length) {
+      const last = data.generated[data.generated.length - 1];
+      await loadChapter(last.chapterNo);
+    }
+    return data;
+  });
+  if (data) {
+    window.alert(`已处理 ${data.generated?.length || 0} 章。${data.haltedReason ? `\n停止原因：${data.haltedReason}` : ""}`);
+  }
+}
+
+async function approveChapter(options = {}) {
+  const projectId = requireActiveProject("审批章节");
+  const chapterNo = resolveReviewChapterNo(options.chapterNo, "审批章节");
+  const config = options.feedbackTarget ? { ...OPERATION_CONFIGS.approveChapter, feedbackTarget: options.feedbackTarget } : OPERATION_CONFIGS.approveChapter;
+  await runWithOperation(config, options.triggerButton || els.approveChapter, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/chapters/${chapterNo}/approve`, { method: "POST" });
+    await loadProject(projectId);
+    await loadChapter(chapterNo);
+  });
+}
+
+async function rewriteChapter(options = {}) {
+  const projectId = requireActiveProject("重写章节");
+  const chapterNo = resolveReviewChapterNo(options.chapterNo, "重写章节");
+  const feedback = String(options.feedback ?? els.reviewFeedback.value).trim();
+  const config = options.feedbackTarget ? { ...OPERATION_CONFIGS.rewriteChapter, feedbackTarget: options.feedbackTarget } : OPERATION_CONFIGS.rewriteChapter;
+  setReviewFeedbackValue(feedback);
+  await runWithOperation(config, options.triggerButton || els.rewriteChapter, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/chapters/${chapterNo}/rewrite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback }),
+    });
+    await loadProject(projectId);
+    await loadChapter(chapterNo);
+  });
+}
+
 els.openNovelBackgroundDialog?.addEventListener("click", () => {
   if (isOperationBusy()) return;
   openNovelBackgroundDialog();
@@ -2033,6 +2641,8 @@ els.novelBackgroundShellOpacity?.addEventListener("input", () => {
 bindAsyncAction(els.saveProject, () => saveProject());
 bindAsyncAction(els.deleteProject, () => deleteProject());
 bindAsyncAction(els.saveSetting, () => saveSetting());
+bindAsyncAction(els.generateCurrentSetting, () => generateCurrentSetting());
+bindAsyncAction(els.reconcileCurrentSetting, () => reconcileCurrentSetting());
 els.settingSelect.onchange = () => loadSetting(els.settingSelect.value).catch((error) => alert(error.message));
 bindAsyncAction(els.generateSettings, () => generateSettings());
 bindAsyncAction(els.reconcileSettings, () => reconcileSettings());
