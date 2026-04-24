@@ -467,9 +467,9 @@ async function handleToolRequest(req, res) {
   }
 }
 
-const COMMAND_TOOL_DEFAULT_TIMEOUT_MS = 120000;
-const COMMAND_TOOL_MAX_TIMEOUT_MS = 300000;
-const COMMAND_TOOL_OUTPUT_LIMIT = 20000;
+const COMMAND_TOOL_DEFAULT_TIMEOUT_MS = 360000;
+const COMMAND_TOOL_MAX_TIMEOUT_MS = 720000;
+const COMMAND_TOOL_OUTPUT_LIMIT = 30000;
 
 function clampCommandTimeout(timeoutMs) {
   const numeric = Number(timeoutMs);

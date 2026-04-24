@@ -1,0 +1,48 @@
+{
+  "baseUrl": "https://skrbtso.cc",
+  "searchPath": "/search",
+  "keywordParam": "keyword",
+  "extraQuery": {
+    "source": "site"
+  },
+  "waitUntil": "domcontentloaded",
+  "waitForSelector": ".search-result",
+  "postGotoDelayMs": 500,
+  "resultListSelector": ".search-result",
+  "emptyStateSelector": ".empty-state",
+  "fieldRules": {
+    "title": {
+      "selector": ".result-title",
+      "type": "text"
+    },
+    "detailUrl": {
+      "selector": ".result-title a",
+      "type": "attr",
+      "attr": "href",
+      "resolveUrl": true
+    },
+    "summary": {
+      "selector": ".result-summary",
+      "type": "text"
+    },
+    "date": {
+      "selector": ".result-date",
+      "type": "text"
+    },
+    "tags": {
+      "selector": ".result-tag",
+      "type": "text",
+      "multiple": true
+    }
+  },
+  "pageFieldRules": {
+    "keywordEcho": {
+      "selector": "#keyword-echo",
+      "type": "text"
+    },
+    "totalText": {
+      "selector": ".total-count",
+      "type": "text"
+    }
+  }
+}
