@@ -1,179 +1,160 @@
-# 当前项目重构结果总结 + 后续路线图
+# 当前项目结构说明
 
-## 一、当前状态
+## 项目定位
 
-项目核心定位：
+当前项目是一个本地模型 Web 工作台，包含两条主要功能线：
+- 聊天工作台
+- 小说项目工坊
 
-- 本地 AI Web 工作台
-- 本地模型代理层
+配套能力包括：
+- 模型连接配置
+- Persona / 人设管理
 - QQ 机器人接入
 - 定时任务
-- 工具调用与少量自动化能力
+- 工具调用
 
-当前项目已经从“单个超大入口文件”开始向模块化过渡。
+## 页面与入口
 
----
+### 聊天工作台
+- 页面：`public/index.html`
+- 前端逻辑：`public/app.js`
+- 页面样式：`public/styles.css`
 
-## 二、这轮重构已经完成的内容
+主要能力：
+- 对话与会话历史
+- 文件上传
+- HTML 预览
+- 模型选择
+- 人设配置
+- QQ 配置
+- 定时任务配置
 
-### 已拆出的模块
+### 小说项目工坊
+- 页面：`public/novels.html`
+- 前端逻辑：`public/novels.js`
+- 页面样式：`public/novels.css`
 
-- `server/server-cleanup.js`
-  - 启动时清理日志、临时文件、浏览器 profile、失效 pid
+主要能力：
+- 小说项目管理
+- 设定生成与整理
+- 章节写作与阅读
+- 草稿审核
+- QQ 审阅指令
+
+## 服务端模块
+
+### 主入口
+- `server.js`
+
+负责：
+- 启动 HTTP 服务
+- 挂载页面与接口
+- 组合各服务端模块
+
+### 已拆分模块
 
 - `server/server-bootstrap.js`
-  - 数据初始化
-  - 服务启动流程
+  - 启动流程与数据初始化
+
+- `server/server-cleanup.js`
+  - 启动时清理日志、临时目录、失效 pid 文件
 
 - `server/server-connection-config.js`
-  - 共享连接配置读取 / 保存 / 路由处理
+  - 共享连接配置读写
 
 - `server/server-http.js`
   - 静态资源服务
-  - `/api/*` 代理转发
+  - `/api/*` 模型代理
 
-### 已完成的工程清理
+- `server/server-live-web-search.js`
+  - 实时联网搜索
 
-- 删除大量运行日志与临时文件
-- 清理 `data/*.tmp`
-- 清理 `data/temp/`
-- 清理浏览器 profile 缓存目录
-- 修复 `README.md` 乱码，重写为可维护版本
-- 清理 `server.js` 中 skills 上传 / 下载函数里 `return` 之后的死代码
+- `server/server-personas.js`
+  - 人设读取、保存、删除
 
-### 已做的验证
+- `server/server-scheduler.js`
+  - 定时任务调度与执行
 
-- `node --check server.js`
-- `node --check server/server-*.js`
-- `npm test`
-- 手动启动服务验证通过
+- `server/server-schedule-intent.js`
+  - 定时任务意图识别
 
-当前结论：
+- `server/server-task-model.js`
+  - 任务模型调用
 
-> 本轮重构后，未发现明显功能回归。
+- `server/server-tool-dispatcher.js`
+  - 工具分发与执行
 
----
+- `server/server-qq.js`
+  - QQ webhook
+  - QQ 对象配置
+  - QQ 回复与任务推送
 
-## 三、当前仍然存在的问题
+- `server/server-novel-projects.js`
+  - 小说项目
+  - 设定生成
+  - 章节与草稿
+  - 审阅与状态管理
 
-### 1. `server.js` 仍然偏大
+- `server/server-utils.js`
+  - 通用工具函数
+  - 原子文件写入
+  - 路径与文件辅助能力
 
-虽然已经拆出基础设施层，但主文件依然承担了很多“业务胶水”职责。
+## 工具能力
 
-### 2. `public/app.js` 体积很大
+当前工具分发器支持：
+- `list_dir`
+- `read_file`
+- `write_file`
+- `delete_file`
+- `get_weather`
+- `web_search`
+- `run_shell_command`
+- `run_cli_command`
+- `list_scheduled_tasks`
+- `create_scheduled_task`
+- `update_scheduled_task`
+- `delete_scheduled_task`
+- `run_scheduled_task`
+- `send_qq_message`
 
-前端逻辑几乎集中在一个文件里，后续维护成本较高。
+## 运行数据
 
-### 3. `server-qq.js` 过大
+### 主要配置文件
+- `data/connection-config.json`
+- `data/qq-bot-config.json`
+- `data/qq-bot-sessions.json`
+- `data/scheduled-tasks.json`
 
-QQ 模块目前仍然是一个体量很大的核心文件，后续是重点拆分对象。
+### 人设目录
+- `data/personas/`
 
-### 4. skills 历史运行链路已下线
+### 小说项目目录
+- `data/novels/`
 
-当前状态已经从“部分停用 + 部分保留”调整为“运行链路已下线，仓库主体不再维护 skills 功能”：
-
-- `server.js` 中 skills / ClawHub / skill-runner helper 已清理
-- `scripts/skill-runner.ps1` 已删除
-- `skills/` 目录已删除
-- README 与相关人设引用已同步更新
-- `public/app.js` 仍保留少量兼容 / 清理逻辑，后续可继续删掉残留死代码
-
-后续维护不再围绕 skills 体系展开，应直接聚焦聊天、QQ、定时任务、工具调用和小说模块。
-
-### 5. 项目中仍可能有少量历史乱码文案
-
-这次已经修复 README，并清理了一轮 skills 旧提示文案，但代码里仍可能残留部分历史乱码文本。
-
----
-
-## 四、后续维护建议
-
-### 优先级 A：只做低风险高收益整理
-
-适合“先稳定使用”的路线。
-
-建议顺序：
-
-1. 增加日志轮转 / 大小上限控制
-2. 清点并修复剩余乱码文案
-3. 补充 README 和维护文档
-
-### 优先级 B：按功能开发路径拆模块
-
-适合“后面还要继续开发”的路线。
-
-原则：
-
-> 不再为了拆而拆，而是在改某个功能前，先拆那个功能相关的代码。
-
-例如：
-
-- 要改聊天 → 先拆 chat/model glue
-- 要改 QQ → 先拆 `server-qq.js`
-- 要改定时任务 → 先拆 scheduler 周边 glue
-
----
-
-## 五、推荐路线图
-
-### 阶段 1：稳定维护期
-
-目标：保证可用、降低脏数据和理解成本。
-
-- [ ] 加日志轮转
-- [ ] 给 `logs/` / `data/` 增加更明确的目录说明
-- [ ] 清理 `public/app.js` 中剩余的 skills 兼容逻辑
-
-### 阶段 2：结构优化期
-
-目标：继续降低主文件复杂度。
-
-- [ ] 抽离聊天 / 模型调用胶水逻辑
-- [ ] 抽离通用响应 / 序列化辅助函数
-- [ ] 逐步收缩 `server.js`
-
-### 阶段 3：重点模块治理
-
-目标：处理真正复杂的大块模块。
-
-- [ ] 拆 `server-qq.js`
-- [ ] 评估 `public/app.js` 前端模块化
-
----
-
-## 六、对以后维护者的建议
-
-### 改动前
-
-- 先备份关键文件到 `.history/`
-- 先跑：
-
-```powershell
-npm test
+结构示例：
+```text
+data/novels/<projectId>/
+├─ project.json
+├─ state.json
+├─ review.json
+├─ settings/
+├─ chapters/
+├─ drafts/
+├─ summaries/
+├─ snapshots/
+└─ logs/
 ```
 
-### 改动后
+## 测试入口
 
-- 运行：
+- `tests/run-tests.js`
 
-```powershell
-node --check server.js
-npm test
-```
-
-- 再手动验证：
-  - 页面能打开
-  - 聊天能发消息
-  - 模型列表能读取
-  - 定时任务能执行
-  - QQ 配置页能打开
-
----
-
-## 七、当前结论
-
-这个项目已经从“能跑但偏乱”的状态，进入了“可以逐步维护”的状态。
-
-当前最合理的策略是：
-
-> 先稳住、先文档化、先清理废弃物；后续按功能需求继续拆，而不是一次性大重构。
+覆盖范围包括：
+- 工具调用
+- 路径与文件安全
+- 启动流程
+- 代理能力
+- QQ 模块
+- 定时任务
+- 小说项目模块
