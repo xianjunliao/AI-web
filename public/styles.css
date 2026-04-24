@@ -1153,7 +1153,6 @@ label span,
 }
 
 .sub-config-fold[data-config-group="qq-profile-behavior"],
-.sub-config-fold[data-config-group="qq-skills-settings"],
 .sub-config-fold[data-config-group="qq-profile-permissions"],
 .sub-config-fold[data-config-group="qq-profile-trigger"],
 .sub-config-fold[data-config-group="qq-profile-tools"],
@@ -1164,7 +1163,6 @@ label span,
 }
 
 .sub-config-fold[data-config-group="qq-profile-behavior"] > .sub-config-summary,
-.sub-config-fold[data-config-group="qq-skills-settings"] > .sub-config-summary,
 .sub-config-fold[data-config-group="qq-profile-permissions"] > .sub-config-summary,
 .sub-config-fold[data-config-group="qq-profile-trigger"] > .sub-config-summary,
 .sub-config-fold[data-config-group="qq-profile-tools"] > .sub-config-summary,
@@ -1731,7 +1729,6 @@ button:disabled {
   gap: 10px;
 }
 
-.skills-list,
 .tool-activity-list {
   display: flex;
   flex-direction: column;
@@ -2468,7 +2465,6 @@ button:disabled {
   border-color: rgba(79, 140, 255, 0.24);
 }
 
-.skill-item,
 .tool-activity-item {
   display: flex;
   flex-direction: column;
@@ -2479,18 +2475,6 @@ button:disabled {
   border: 1px solid rgba(104, 136, 173, 0.12);
 }
 
-.skill-item.is-selected {
-  border-color: rgba(79, 140, 255, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.06);
-}
-
-.skill-item.is-active {
-  border-color: rgba(105, 189, 171, 0.26);
-  background: linear-gradient(180deg, rgba(240, 250, 247, 1), rgba(231, 245, 241, 0.94));
-  box-shadow: inset 0 0 0 1px rgba(105, 189, 171, 0.06), 0 10px 18px rgba(107, 128, 156, 0.12);
-}
-
-.skill-item-head,
 .tool-activity-head {
   display: flex;
   align-items: center;
@@ -2498,7 +2482,6 @@ button:disabled {
   gap: 10px;
 }
 
-.skill-summary,
 .tool-activity-text {
   margin: 0;
   font-size: 12px;
@@ -2538,19 +2521,6 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.skill-preview {
-  min-height: 140px;
-  max-height: 260px;
-  overflow: auto;
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(104, 136, 173, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 248, 255, 0.88));
-  white-space: pre-wrap;
-  line-height: 1.7;
-  color: #425974;
 }
 
 .tool-activity-panel {

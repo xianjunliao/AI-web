@@ -40,7 +40,7 @@ function createStartupCleanup({
       if (!entry.isFile()) {
         continue;
       }
-      if (entry.name === "server.pid" || entry.name === "skill-runner.pid") {
+      if (entry.name === "server.pid") {
         continue;
       }
       const fullPath = path.join(logsDir, entry.name);
@@ -74,7 +74,7 @@ function createStartupCleanup({
 
   async function cleanupStalePidFiles() {
     await fs.promises.mkdir(logsDir, { recursive: true });
-    const pidFiles = ["server.pid", "skill-runner.pid"];
+    const pidFiles = ["server.pid"];
     for (const pidFile of pidFiles) {
       const pidPath = path.join(logsDir, pidFile);
       if (!(await pathExists(pidPath))) {

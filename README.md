@@ -7,7 +7,6 @@
 - QQ 机器人接入
 - 定时任务与自动化工具调用
 - 独立的小说项目工坊（Novel Projects）
-- 脚本型 skill-runner 链路
 
 ## 当前定位
 
@@ -115,13 +114,6 @@
 - `-n 通过 <项目名> 第N章`
 - `-n 退回 <项目名> 第N章：意见`
 
-### 8. 脚本型技能执行链路
-- 保留 `skill-runner.ps1` 作为脚本型能力执行入口
-- `skills/` 目录仍保留历史与本地能力相关内容
-- 当前项目重点仍是聊天、QQ、定时任务、工具调用和小说项目主链路
-
----
-
 ## 技术栈与运行方式
 
 ### 运行环境
@@ -206,7 +198,6 @@ npm install
 ### 常用命令
 ```powershell
 npm start
-npm run skill-runner
 npm test
 ```
 
@@ -225,13 +216,6 @@ scripts\start-local-ai-chat.bat
 - `scripts/start-local-ai-chat.bat`
 - `scripts/start-local-ai-chat.vbs`
 
-如果需要脚本型技能执行器，再额外启动：
-```powershell
-npm run skill-runner
-```
-
----
-
 ## 当前项目结构
 
 ```text
@@ -243,7 +227,6 @@ AI-web/
 ├─ logs/                      日志与 pid 文件
 ├─ tests/                     本地测试脚本
 ├─ docs/                      项目文档
-├─ skills/                    本地 skills / 脚本能力
 ├─ server.js                  主入口
 ├─ package.json               NPM 配置
 └─ README.md
@@ -281,7 +264,6 @@ AI-web/
 - `data/qq-bot-config.json`：QQ 机器人配置
 - `data/qq-bot-sessions.json`：QQ 会话数据
 - `data/scheduled-tasks.json`：定时任务数据
-- `data/skill-runner-config.json`：skill-runner 配置
 - `data/novels/`：小说项目目录
 
 > 说明：`logs/`、`data/temp/`、`data/novels/`、浏览器 profile、个人临时 persona、`.history/` 等均属于本地运行数据或历史文件，不建议提交到 git。
@@ -320,7 +302,6 @@ data/novels/<projectId>/
 - `logs/server.log`
 - `logs/server-debug.log`
 - `logs/command-audit.log`
-- `logs/skill-runner.log`
 
 ---
 
@@ -347,14 +328,22 @@ node --check server.js
 - QQ 通过额外命令钩子接入小说项目能力
 - 不影响原有聊天、工具、定时任务主链路
 
-### 关于 skills
-项目历史上存在过更多 Web 端 skills 管理 / 安装相关能力；目前仓库中仍保留 `skills/` 目录和 `skill-runner.ps1` 链路，但主维护重点已经收敛到：
+### 关于历史 skills 链路
+项目历史上存在过 `skills/`、ClawHub 与 `skill-runner` 相关能力；当前仓库已经完成这条运行链路的下线：
+- `skills/` 目录已删除
+- `scripts/skill-runner.ps1` 已删除
+- `npm run skill-runner` 已移除
+- 服务端不再提供 skills 安装、下载、执行主链路
+
+当前维护重点已经收敛到：
 - 本地聊天
 - 模型连接配置
 - QQ 机器人
 - 定时任务
 - 工具调用
 - 小说项目工坊
+
+前端 `public/app.js` 里仍保留少量历史兼容清理逻辑，后续可以继续删除，但不再作为独立功能维护。
 
 ### 关于代码状态
 当前项目已经完成一轮服务端模块拆分，并新增了小说项目子系统，但仍然存在一些后续优化空间：
@@ -375,3 +364,4 @@ node --check server.js
 - 小说项目页面与服务端模块位置
 - QQ 小说检阅指令
 - 当前项目双主线：聊天工作台 + 小说项目工坊
+- 历史 skills / ClawHub / skill-runner 运行链路已下线

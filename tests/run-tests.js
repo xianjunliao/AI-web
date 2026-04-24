@@ -474,6 +474,23 @@ async function runTest(name, fn) {
 }
 
 async function main() {
+  await runTest("skills runtime entrypoints are removed", async () => {
+    const projectRoot = path.join(__dirname, "..");
+    assert.equal(fs.existsSync(path.join(projectRoot, "skills")), false);
+    assert.equal(fs.existsSync(path.join(projectRoot, "scripts", "skill-runner.ps1")), false);
+    assert.equal(fs.existsSync(path.join(projectRoot, "data", "skill-runner-config.json")), false);
+
+    const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+    assert.equal(Object.prototype.hasOwnProperty.call(packageJson.scripts || {}, "skill-runner"), false);
+
+    const serverEntry = fs.readFileSync(path.join(projectRoot, "server.js"), "utf8");
+    assert.equal(serverEntry.includes("/skills/"), false);
+    assert.equal(serverEntry.includes("skill-runner"), false);
+
+    const cleanupModule = fs.readFileSync(path.join(projectRoot, "server", "server-cleanup.js"), "utf8");
+    assert.equal(cleanupModule.includes("skill-runner.pid"), false);
+  });
+
   await runTest("resolveWorkspacePath keeps access inside workspace root", async () => {
     const root = createTempDir();
     const inside = resolveWorkspacePath(root, "notes/file.txt");

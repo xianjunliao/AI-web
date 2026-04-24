@@ -400,49 +400,6 @@ function createQqModule(deps) {
     },
   ];
 
-  function sanitizeSkillRecord(skill = {}) {
-    if (!skill || typeof skill !== "object") return null;
-    const name = String(skill.name || "").trim();
-    if (!name) return null;
-    return {
-      name,
-      source: String(skill.source || "workspace").trim() || "workspace",
-      summary: String(skill.summary || "").trim(),
-      content: String(skill.content || "").trim(),
-      files: Array.isArray(skill.files)
-        ? skill.files.map((file) => ({
-          path: String(file?.path || "").trim(),
-          content: String(file?.content || "").trim(),
-        })).filter((file) => file.path || file.content)
-        : [],
-    };
-  }
-
-  function sanitizeSkillList(skills = []) {
-    const output = [];
-    for (const skill of Array.isArray(skills) ? skills : []) {
-      const record = sanitizeSkillRecord(skill);
-      if (!record) continue;
-      if (output.some((item) => item.name === record.name && item.source === record.source)) continue;
-      output.push(record);
-    }
-    return output;
-  }
-
-  function listWorkspaceSkillNames() {
-    try {
-      const skillsDir = path.join(root, "skills");
-      const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
-      return entries
-        .filter((entry) => entry.isDirectory())
-        .filter((entry) => fs.existsSync(path.join(skillsDir, entry.name, "SKILL.md")))
-        .map((entry) => entry.name)
-        .sort((left, right) => left.localeCompare(right));
-    } catch {
-      return [];
-    }
-  }
-
   function parseQqIdList(value) {
     if (Array.isArray(value)) {
       return value.map((item) => String(item || "").trim()).filter(Boolean);
@@ -1866,49 +1823,13 @@ function createQqModule(deps) {
   }
 
   function buildQqSkillSystemPrompt(config = {}) {
+    void config;
     return "";
-    const activeSkills = sanitizeSkillList(config.activeSkills);
-    if (!activeSkills.length) return "";
-    return [
-      `当前已启用 ${activeSkills.length} 个 QQ 技能。`,
-      "这些技能只作用于 QQ 回复，不影响网页聊天。",
-      "技能只是执行说明，不是可调用工具名。不要把技能名当作 tool name 发起调用，应根据 SKILL.md 内容组织回复或选择系统已提供的真实工具。",
-      "",
-      ...activeSkills.map((skill, index) => {
-        const content = String(skill.content || "").trim()
-          || (Array.isArray(skill.files) ? skill.files.map((file) => `# ${file.path}\n\n${file.content}`).join("\n\n") : "");
-        return `技能 ${index + 1}：${skill.name}\n来源：${skill.source}${content ? `\nSKILL.md:\n${content}` : ""}`;
-      }),
-    ].join("\n");
   }
 
   buildQqSkillSystemPrompt = function buildQqSkillSystemPromptWithWorkspaceSkills(config = {}) {
+    void config;
     return "";
-    const activeSkills = sanitizeSkillList(config.activeSkills);
-    const workspaceSkillNames = listWorkspaceSkillNames();
-    const lines = [];
-
-    if (workspaceSkillNames.length) {
-      lines.push(`当前工作区已安装的本地技能有：${workspaceSkillNames.join("、")}。`);
-    } else {
-      lines.push("当前工作区没有检测到可用的本地技能目录。");
-    }
-
-    if (!activeSkills.length) {
-      lines.push("当前没有启用 QQ 专属技能。若用户明确要求执行某个本地技能，且该技能已安装并且当前对象已开启技能执行权限，应直接调用 run_workspace_skill，而不是声称不认识该技能。");
-      return lines.join("\n");
-    }
-
-    lines.push(`当前已启用 ${activeSkills.length} 个 QQ 技能。`);
-    lines.push("这些技能只作用于 QQ 回复，不影响网页聊天。");
-    lines.push("技能只是执行说明，不是可调用工具名。不要把技能名当作 tool name 发起调用，应根据 SKILL.md 内容组织回复或调用系统已提供的真实工具。");
-    lines.push("");
-    lines.push(...activeSkills.map((skill, index) => {
-      const content = String(skill.content || "").trim()
-        || (Array.isArray(skill.files) ? skill.files.map((file) => `# ${file.path}\n\n${file.content}`).join("\n\n") : "");
-      return `技能 ${index + 1}：${skill.name}\n来源：${skill.source}${content ? `\nSKILL.md:\n${content}` : ""}`;
-    }));
-    return lines.join("\n");
   };
 
   function getCurrentTimeCalibrationText() {
