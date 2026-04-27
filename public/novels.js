@@ -1,12 +1,14 @@
 const $ = (selector) => document.querySelector(selector);
 const SETTINGS_KEY = "local-ai-chat-settings";
 const SHARED_CONNECTION_CONFIG_ENDPOINT = "/connection-config";
+const MODELS_ENDPOINT = "/api/v1/models";
 const MAX_BACKGROUND_SIZE = 8 * 1024 * 1024;
 
 const els = {
   list: $("#project-list"),
   listMeta: $("#project-list-meta"),
   modelMeta: $("#current-model-meta"),
+  modelOptions: $("#novel-model-options"),
   openNovelBackgroundDialog: $("#open-novel-background-dialog-top"),
   novelBackgroundDialog: $("#novel-background-dialog"),
   novelBackgroundDialogBody: $("#novel-background-dialog-body"),
@@ -66,6 +68,7 @@ const els = {
   closeCreateDialog: $("#close-create-dialog"),
   cancelCreate: $("#cancel-create"),
   saveCreateDraft: $("#save-create-draft"),
+  inferProject: $("#infer-project"),
   confirmCreate: $("#confirm-create"),
   createOperationBox: $("#create-operation-feedback"),
   createOperationTitle: $("#create-operation-title"),
@@ -88,6 +91,7 @@ const els = {
   reconcileSettings: $("#reconcile-settings"),
   batchGenerate: $("#batch-generate"),
   generateChapter: $("#generate-chapter"),
+  exportChapters: $("#export-chapters"),
   deleteChapter: $("#delete-chapter"),
   approveChapter: $("#approve-chapter"),
   rewriteChapter: $("#rewrite-chapter"),
@@ -97,6 +101,7 @@ const els = {
     theme: $("#project-theme"),
     targetChapters: $("#project-target"),
     chapterWordTarget: $("#project-chapter-word-target"),
+    model: $("#project-model"),
     stylePreference: $("#project-style"),
     audience: $("#project-audience"),
     protagonist: $("#project-protagonist"),
@@ -109,6 +114,7 @@ const els = {
   },
   newFields: {
     name: $("#new-name"),
+    brief: $("#new-brief"),
     genre: $("#new-genre"),
     theme: $("#new-theme"),
     premise: $("#new-premise"),
@@ -117,6 +123,7 @@ const els = {
     audience: $("#new-audience"),
     targetChapters: $("#new-target"),
     chapterWordTarget: $("#new-chapter-word-target"),
+    model: $("#new-model"),
     keywords: $("#new-keywords"),
     notes: $("#new-notes"),
     qqReviewEnabled: $("#new-qq-enabled"),
@@ -129,6 +136,7 @@ const state = {
   projects: [],
   activeId: "",
   currentModel: "",
+  availableModels: [],
   settings: {},
   activeSetting: "base-info",
   detail: null,
@@ -197,7 +205,15 @@ function scheduleNovelPageBackgroundSettingSave(patch = {}) {
 
 function getSavedModelForNovelPage() {
   const saved = readSavedNovelSettings();
-  return String(saved?.model || "").trim();
+  return String(saved?.novelModel || "").trim();
+}
+
+function saveModelForNovelPage(modelName = "") {
+  const current = readSavedNovelSettings();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...current,
+    novelModel: String(modelName || "").trim(),
+  }));
 }
 
 function toggleClassName(element, className, enabled) {
@@ -374,6 +390,11 @@ async function syncCurrentModel(options = {}) {
       renderProjectHeader();
     }
   }
+  if (!quiet && !state.currentModel) {
+    setStatusBar("请先为小说项目选择模型。小说模型不会跟随聊天页模型。", "error");
+  }
+  renderCurrentModelMeta();
+  return state.currentModel;
   try {
     const response = await j(SHARED_CONNECTION_CONFIG_ENDPOINT);
     const nextModel = String(response?.config?.model || "").trim() || fallbackModel;
@@ -391,6 +412,48 @@ async function syncCurrentModel(options = {}) {
     }
     renderCurrentModelMeta();
     return state.currentModel;
+  }
+}
+
+function renderNovelModelOptions() {
+  if (els.modelOptions) {
+    els.modelOptions.replaceChildren(...(state.availableModels || []).map((modelName) => {
+      const option = document.createElement("option");
+      option.value = modelName;
+      return option;
+    }));
+  }
+  if (els.newFields.model?.tagName === "SELECT") {
+    const currentValue = String(els.newFields.model.value || "").trim();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = state.availableModels.length ? "请选择项目模型" : "正在读取模型列表...";
+    const options = (state.availableModels || []).map((modelName) => {
+      const option = document.createElement("option");
+      option.value = modelName;
+      option.textContent = modelName;
+      return option;
+    });
+    els.newFields.model.replaceChildren(placeholder, ...options);
+    if (currentValue && state.availableModels.includes(currentValue)) {
+      els.newFields.model.value = currentValue;
+    }
+  }
+}
+
+async function loadAvailableModelsForNovelPage(options = {}) {
+  const { force = false } = options;
+  try {
+    const data = await j(force ? `${MODELS_ENDPOINT}?_=${Date.now()}` : MODELS_ENDPOINT, {
+      cache: force ? "no-store" : "default",
+    });
+    state.availableModels = (data.data || []).map((item) => item?.id).filter(Boolean);
+    renderNovelModelOptions();
+    return state.availableModels;
+  } catch {
+    state.availableModels = [];
+    renderNovelModelOptions();
+    return state.availableModels;
   }
 }
 
@@ -724,6 +787,7 @@ const actionButtons = [
   els.closeCreateDialog,
   els.cancelCreate,
   els.saveCreateDraft,
+  els.inferProject,
   els.confirmCreate,
   els.openChat,
   els.saveProject,
@@ -735,6 +799,7 @@ const actionButtons = [
   els.reconcileSettings,
   els.batchGenerate,
   els.generateChapter,
+  els.exportChapters,
   els.deleteChapter,
   els.approveChapter,
   els.rewriteChapter,
@@ -771,6 +836,18 @@ function wait(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function downloadTextFile(fileName = "download.md", content = "") {
+  const blob = new Blob([String(content || "")], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName || "download.md";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function setElementHidden(element, hidden) {
@@ -853,6 +930,63 @@ function clearCreateProjectFields() {
 function formatChineseCharacterCount(value) {
   const normalized = Math.max(0, Number(value) || 0);
   return `${normalized} 汉字`;
+}
+
+function formatChapterStatusLabel(status = "") {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "approved") return "已通过";
+  if (normalized === "draft") return "待审草稿";
+  if (normalized === "pending") return "待审";
+  if (normalized === "archived") return "已归档";
+  return String(status || "").trim() || "未标记";
+}
+
+function getChapterDisplayTitle(chapter = {}) {
+  const title = String(chapter?.title || "").trim();
+  const chapterNo = Number(chapter?.chapterNo) || 0;
+  if (title && chapterNo > 0) {
+    const normalized = title.replace(new RegExp(`^第\\s*${chapterNo}\\s*章[：:、.\\-—\\s]*`), "").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return title || "未命名章节";
+}
+
+function buildChapterCardMarkup(chapter = {}) {
+  const chapterNo = Number(chapter?.chapterNo) || 0;
+  const statusLabel = formatChapterStatusLabel(chapter?.status);
+  const title = getChapterDisplayTitle(chapter);
+  const countLabel = formatChineseCharacterCount(chapter?.characterCount);
+  return [
+    `<span class="chapter-item-number">第 ${chapterNo} 章</span>`,
+    `<strong class="chapter-item-title">${escapeHtml(title)}</strong>`,
+    '<div class="chapter-item-meta">',
+    `<span class="chapter-item-badge chapter-item-status">${escapeHtml(statusLabel)}</span>`,
+    `<span class="chapter-item-badge chapter-item-count">${escapeHtml(countLabel)}</span>`,
+    "</div>",
+  ].join("");
+}
+
+function renderChapterList(chapters = []) {
+  if (!els.chapterList) return;
+  els.chapterList.innerHTML = "";
+  (chapters || []).forEach((chapter) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chapter-item";
+    button.dataset.chapterNo = String(chapter.chapterNo || "");
+    button.dataset.status = String(chapter.status || "");
+    button.title = [
+      `第 ${chapter.chapterNo || 0} 章`,
+      getChapterDisplayTitle(chapter),
+      formatChapterStatusLabel(chapter.status),
+      formatChineseCharacterCount(chapter.characterCount),
+    ].join(" · ");
+    button.innerHTML = buildChapterCardMarkup(chapter);
+    button.onclick = () => loadChapter(chapter.chapterNo);
+    els.chapterList.append(button);
+  });
 }
 
 function setReviewFeedbackValue(value = "") {
@@ -1067,6 +1201,7 @@ function projectPayloadFromFields(source) {
     theme: source.theme.value.trim(),
     premise: source.premise.value.trim(),
     protagonist: source.protagonist.value.trim(),
+    model: source.model ? source.model.value.trim() : "",
     stylePreference: source.stylePreference.value.trim(),
     audience: source.audience.value.trim(),
     targetChapters: Number(source.targetChapters.value || 0),
@@ -1092,10 +1227,14 @@ function getCurrentModelLabel() {
   return String(state.currentModel || getSavedModelForNovelPage() || "").trim();
 }
 
+function getActiveProjectModelLabel(project = state.detail?.project) {
+  return String(project?.model || getCurrentModelLabel()).trim();
+}
+
 function renderCurrentModelMeta() {
   if (!els.modelMeta) return;
   const modelName = getCurrentModelLabel();
-  els.modelMeta.textContent = modelName ? `当前模型：${modelName}` : "当前模型：未选择";
+  els.modelMeta.textContent = modelName ? `小说默认模型：${modelName}` : "小说默认模型：未选择";
 }
 
 function getProjectDisplayName(project = {}) {
@@ -1112,9 +1251,9 @@ function renderProjectHeader(detail = state.detail) {
     `已通过 ${projectState.lastApprovedChapter || 0} 章`,
     `待审 ${projectState.pendingDraftChapter || 0}`,
   ].filter(Boolean);
-  const currentModel = getCurrentModelLabel();
+  const currentModel = getActiveProjectModelLabel(project);
   if (currentModel) {
-    metaParts.push(`当前模型 ${currentModel}`);
+    metaParts.push(`${project.model ? "项目模型" : "基础模型"} ${currentModel}`);
   }
   els.title.textContent = getProjectDisplayName(project);
   els.meta.textContent = metaParts.join(" · ");
@@ -1233,9 +1372,9 @@ function renderProjectHeader(detail = state.detail) {
     `已通过 ${projectState.lastApprovedChapter || 0} 章`,
     `待审 ${projectState.pendingDraftChapter || 0}`,
   ].filter(Boolean);
-  const currentModel = getCurrentModelLabel();
+  const currentModel = getActiveProjectModelLabel(project);
   if (currentModel) {
-    metaParts.push(`当前模型 ${currentModel}`);
+    metaParts.push(`${project.model ? "项目模型" : "基础模型"} ${currentModel}`);
   }
   els.title.textContent = getProjectDisplayName(project);
   els.meta.textContent = metaParts.join(" · ");
@@ -1319,17 +1458,7 @@ function renderProjectDetail(detail) {
     els.settingEditor.value = "";
   });
 
-  els.chapterList.innerHTML = "";
-  (chapters || []).forEach((chapter) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "chapter-item";
-    button.dataset.chapterNo = String(chapter.chapterNo || "");
-    button.dataset.status = String(chapter.status || "");
-    button.innerHTML = `<strong>第 ${chapter.chapterNo} 章</strong><div class="muted">${chapter.status} · ${chapter.title}</div><div class="muted">${formatChineseCharacterCount(chapter.characterCount)}</div>`;
-    button.onclick = () => loadChapter(chapter.chapterNo);
-    els.chapterList.append(button);
-  });
+  renderChapterList(chapters || []);
   if (!chapters?.length) {
     els.chapterList.innerHTML = '<div class="file-empty">暂无章节。</div>';
     els.chapterViewer.value = "";
@@ -1431,17 +1560,7 @@ function renderProjectDetail(detail) {
     els.settingEditor.value = "";
   });
 
-  els.chapterList.innerHTML = "";
-  (chapters || []).forEach((chapter) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "chapter-item";
-    button.dataset.chapterNo = String(chapter.chapterNo || "");
-    button.dataset.status = String(chapter.status || "");
-    button.innerHTML = `<strong>第${chapter.chapterNo} 章</strong><div class="muted">${chapter.status} · ${chapter.title}</div><div class="muted">${formatChineseCharacterCount(chapter.characterCount)}</div>`;
-    button.onclick = () => loadChapter(chapter.chapterNo);
-    els.chapterList.append(button);
-  });
+  renderChapterList(chapters || []);
   if (!chapters?.length) {
     els.chapterList.innerHTML = '<div class="file-empty">暂无章节。</div>';
     els.chapterViewer.value = "";
@@ -1722,6 +1841,9 @@ async function createProjectFromPayload(payload, options = {}) {
   if (options.closeDialog !== false) {
     closeCreateDialog("created");
   }
+  saveModelForNovelPage(payload.model);
+  state.currentModel = payload.model;
+  renderCurrentModelMeta();
   return data;
 }
 
@@ -1736,6 +1858,10 @@ async function createProject() {
 async function createProjectFromPayload(payload, options = {}) {
   if (!payload.name) {
     throw new Error("请填写项目名称");
+  }
+
+  if (!payload.model) {
+    throw new Error("请先为小说项目选择模型。小说项目不会使用聊天页模型。");
   }
 
   const operationConfig = options.operationConfig || OPERATION_CONFIGS.create;
@@ -1778,15 +1904,95 @@ async function createDraftProject() {
   });
 }
 
+function applyProjectFields(source, fields = {}) {
+  if (!source || !fields) return;
+  const fieldText = (value) => {
+    if (value == null) return "";
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => fieldText(item)).filter(Boolean).join("\n");
+    }
+    if (typeof value === "object") {
+      return Object.entries(value)
+        .map(([key, item]) => {
+          const text = fieldText(item);
+          return text ? `${key}：${text}` : "";
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+    return "";
+  };
+  Object.entries(fields).forEach(([key, value]) => {
+    const input = source[key];
+    if (!input) return;
+    if (key === "keywords" && Array.isArray(value)) {
+      input.value = value.join(", ");
+      return;
+    }
+    if (key === "qqReviewEnabled") {
+      input.value = value ? "true" : "false";
+      return;
+    }
+    input.value = fieldText(value);
+  });
+}
+
+function preserveBriefInNotes(notesInput, brief = "") {
+  if (!notesInput) return;
+  const normalizedBrief = String(brief || "").trim();
+  if (!normalizedBrief) return;
+  const currentNotes = String(notesInput.value || "").trim();
+  if (currentNotes.includes(normalizedBrief)) return;
+  const originalSection = `原始构想：\n${normalizedBrief}`;
+  notesInput.value = currentNotes ? `${currentNotes}\n\n${originalSection}` : originalSection;
+}
+
+async function inferProjectFromBrief() {
+  const brief = String(els.newFields.brief?.value || "").trim();
+  if (!brief) {
+    throw new Error("请先填写一句话或一段话构想");
+  }
+  const model = els.newFields.model?.value?.trim() || state.currentModel || "";
+  if (!model) {
+    throw new Error("请先选择小说项目模型。拆解项目信息不会使用聊天页模型。");
+  }
+  const data = await runWithOperation(OPERATION_CONFIGS.saveDraft, els.inferProject, async () => {
+    return await j("/novels/infer-project", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        brief,
+        model,
+      }),
+    });
+  });
+  applyProjectFields(els.newFields, data.fields || {});
+  saveModelForNovelPage(model);
+  state.currentModel = model;
+  renderCurrentModelMeta();
+  preserveBriefInNotes(els.newFields.notes, brief);
+  setStatusBar("已根据构想拆解项目信息，可以继续微调后创建。", "success");
+  return data;
+}
+
 async function saveProject() {
   const projectId = requireActiveProject("保存项目");
   const payload = projectPayloadFromFields(els.fields);
+  if (!payload.model) {
+    throw new Error("请先为小说项目选择模型。小说项目不会使用聊天页模型。");
+  }
   return await runWithOperation(OPERATION_CONFIGS.save, els.saveProject, async () => {
     await j(`/novels/projects/${encodeURIComponent(projectId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    saveModelForNovelPage(payload.model);
+    state.currentModel = payload.model;
+    renderCurrentModelMeta();
     await refreshProjects({ preferredId: projectId, autoSelect: true });
   });
 }
@@ -1937,6 +2143,16 @@ async function batchGenerate() {
   }
 }
 
+async function exportChaptersMarkdown() {
+  const projectId = requireActiveProject("导出正文合集");
+  return await runWithOperation(OPERATION_CONFIGS.saveDraft, els.exportChapters, async () => {
+    const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/export/markdown`);
+    downloadTextFile(data.fileName || "正文合集.md", data.content || "");
+    setStatusBar(`已导出 ${data.chapterCount || 0} 章正文合集`, "success");
+    return data;
+  });
+}
+
 async function approveChapter(options = {}) {
   const projectId = requireActiveProject("审批章节");
   const chapterNo = resolveReviewChapterNo(options.chapterNo, "审批章节");
@@ -2009,9 +2225,20 @@ function closeNovelBackgroundDialog() {
   return true;
 }
 
-function openCreateDialog() {
+async function openCreateDialog() {
   if (isOperationBusy() || els.dialog?.open) return;
+  if (els.newFields.model) {
+    els.newFields.model.value = "";
+    els.newFields.model.disabled = true;
+  }
   els.dialog.showModal();
+  await loadAvailableModelsForNovelPage({ force: true });
+  if (els.newFields.model) {
+    els.newFields.model.disabled = false;
+    if (els.newFields.model.tagName !== "SELECT" && !els.newFields.model.value.trim()) {
+      els.newFields.model.value = state.currentModel || getSavedModelForNovelPage();
+    }
+  }
 }
 
 function closeCreateDialog(returnValue = "cancel") {
@@ -2035,8 +2262,12 @@ function requestCloseCreateDialog(event) {
   return closeCreateDialog("cancel");
 }
 
-els.createProject.onclick = openCreateDialog;
-els.emptyCreateProject.onclick = openCreateDialog;
+els.createProject.onclick = () => openCreateDialog().catch((error) => {
+  setStatusBar(error?.message || "读取模型列表失败", "error");
+});
+els.emptyCreateProject.onclick = () => openCreateDialog().catch((error) => {
+  setStatusBar(error?.message || "读取模型列表失败", "error");
+});
 els.closeCreateDialog.onclick = requestCloseCreateDialog;
 els.cancelCreate.onclick = requestCloseCreateDialog;
 els.dialog.oncancel = requestCloseCreateDialog;
@@ -2309,9 +2540,9 @@ function renderProjectHeader(detail = state.detail) {
     `已通过 ${projectState.lastApprovedChapter || 0} 章`,
     `待审 ${projectState.pendingDraftChapter || 0}`,
   ].filter(Boolean);
-  const currentModel = getCurrentModelLabel();
+  const currentModel = getActiveProjectModelLabel(project);
   if (currentModel) {
-    metaParts.push(`当前模型 ${currentModel}`);
+    metaParts.push(`${project.model ? "项目模型" : "基础模型"} ${currentModel}`);
   }
   els.title.textContent = getProjectDisplayName(project);
   els.meta.textContent = metaParts.join(" · ");
@@ -2597,6 +2828,7 @@ els.readerDialog.oncancel = (event) => {
 };
 bindAsyncAction(els.confirmCreate, () => createProject(), { preventDefault: true });
 bindAsyncAction(els.saveCreateDraft, () => createDraftProject(), { preventDefault: true });
+bindAsyncAction(els.inferProject, () => inferProjectFromBrief(), { preventDefault: true });
 els.openChat.onclick = () => {
   if (isOperationBusy()) return;
   window.location.href = "/";
@@ -2648,6 +2880,7 @@ bindAsyncAction(els.generateSettings, () => generateSettings());
 bindAsyncAction(els.reconcileSettings, () => reconcileSettings());
 bindAsyncAction(els.batchGenerate, () => batchGenerate());
 bindAsyncAction(els.generateChapter, () => generateChapter());
+bindAsyncAction(els.exportChapters, () => exportChaptersMarkdown());
 bindAsyncAction(els.deleteChapter, () => deleteChapterAndProgress({
   triggerButton: els.deleteChapter,
 }));
@@ -2662,6 +2895,7 @@ hideOperationFeedback("reader");
 mountNovelBackgroundDialogContent();
 renderCurrentModelMeta();
 renderNovelBackgroundControls();
+loadAvailableModelsForNovelPage().catch(() => {});
 syncCurrentModel({ quiet: true }).catch(() => {});
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {

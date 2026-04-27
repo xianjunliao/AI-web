@@ -10,6 +10,7 @@ const {
   readTextFile,
   readRequestBody,
   resolveWorkspacePath,
+  stripModelThinkingContent,
   writeFileAtomic,
   writeJsonFileAtomic,
 } = require("./server/server-utils");
@@ -21,6 +22,7 @@ const { createScheduler } = require("./server/server-scheduler");
 const { createStartupCleanup } = require("./server/server-cleanup");
 const { createDataInitializer, createServerBootstrap } = require("./server/server-bootstrap");
 const { createSharedConnectionConfigModule } = require("./server/server-connection-config");
+const { createMysqlStorage } = require("./server/server-mysql-storage");
 const {
   createStaticServer,
   createApiProxy,
@@ -40,6 +42,7 @@ const PORT = 8000;
 const TARGET_ORIGIN = "http://127.0.0.1:1234";
 const DEFAULT_CHAT_API_PATH = "/v1/chat/completions";
 const DEFAULT_MODELS_API_PATH = "/v1/models";
+const NOVEL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
@@ -54,6 +57,7 @@ const SCHEDULED_TASKS_FILE = path.join(DATA_DIR, "scheduled-tasks.json");
 const QQ_BOT_CONFIG_FILE = path.join(DATA_DIR, "qq-bot-config.json");
 const QQ_BOT_SESSIONS_FILE = path.join(DATA_DIR, "qq-bot-sessions.json");
 const CONNECTION_CONFIG_FILE = path.join(DATA_DIR, "connection-config.json");
+const MYSQL_CONFIG_FILE = path.join(DATA_DIR, "mysql-config.json");
 const PERSONA_PRESETS_DIR = path.join(DATA_DIR, "personas");
 const SCHEDULER_TICK_MS = 30 * 1000;
 const PUBLIC_STATIC_PATHS = new Set(["/"]);
@@ -70,6 +74,21 @@ let handleSharedConnectionConfigGet;
 let handleSharedConnectionConfigPost;
 let serveStatic;
 let proxyRequest;
+let initMysqlStorage;
+let handleMysqlStorageStatus;
+let handleChatRecordsList;
+let handleChatRecordsSync;
+let handleStorageConfigGet;
+let handleStorageConfigSave;
+let logChatApiRequest;
+let saveStorageConfig;
+let getMysqlStorageConfig;
+let claimPendingChatJob;
+let completeChatJob;
+let failChatJob;
+let claimPendingNovelJob;
+let completeNovelJob;
+let failNovelJob;
 
 function appendServerDebugLog(message) {
   try {
@@ -123,6 +142,30 @@ const initializeDataFiles = createDataInitializer({
   writeJsonFileAtomic,
   readRequestBody,
   sendJson,
+}));
+
+({
+  initMysqlStorage,
+  handleMysqlStorageStatus,
+  handleChatRecordsList,
+  handleChatRecordsSync,
+  handleConfigGet: handleStorageConfigGet,
+  handleConfigSave: handleStorageConfigSave,
+  saveConfig: saveStorageConfig,
+  logChatApiRequest,
+  getMysqlStorageConfig,
+  claimPendingChatJob,
+  completeChatJob,
+  failChatJob,
+  claimPendingNovelJob,
+  completeNovelJob,
+  failNovelJob,
+} = createMysqlStorage({
+  mysqlConfigFile: MYSQL_CONFIG_FILE,
+  readJsonFile,
+  readRequestBody,
+  sendJson,
+  logDebug: appendServerDebugLog,
 }));
 
 let scheduledTasks = [];
@@ -198,7 +241,7 @@ proxyRequest = createApiProxy({
       chatPath: resolved.chatPath,
       modelsPath: resolved.modelsPath,
       extraHeaders: resolved.authHeaders,
-      timeoutMs: 20_000,
+      timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
       retryCount: 1,
       retryDelayMs: 750,
     };
@@ -316,11 +359,534 @@ async function requestBuffer(targetUrl, options = {}) {
   return response.body;
 }
 
+function getRequestHeader(req, name) {
+  const value = req.headers[String(name || "").toLowerCase()];
+  return Array.isArray(value) ? value[0] : String(value || "");
+}
+
+function createMonitoredRequestId() {
+  return `webchat-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveMonitoredRequestSource(req) {
+  return (
+    getRequestHeader(req, "x-ai-web-source") ||
+    getRequestHeader(req, "origin") ||
+    getRequestHeader(req, "referer") ||
+    getRequestHeader(req, "host") ||
+    "unknown"
+  ).slice(0, 128);
+}
+
+function normalizeChatCompletionPayload(payload = {}) {
+  const nextPayload = payload && typeof payload === "object" ? { ...payload } : {};
+  if (nextPayload.stream === true) {
+    nextPayload.stream = false;
+  }
+  if (!String(nextPayload.model || "").trim()) {
+    const fallbackModel = String(getSharedConnectionConfig()?.model || "").trim();
+    if (fallbackModel) {
+      nextPayload.model = fallbackModel;
+    }
+  }
+  return nextPayload;
+}
+
+function formatErrorForStorage(error) {
+  if (error == null) {
+    return "Unknown error";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error instanceof Error) {
+    return error.message || String(error);
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+async function callConfiguredChatCompletion(payload = {}) {
+  const resolved = getResolvedModelServiceConfig();
+  const targetUrl = new URL(resolved.chatPath, resolved.targetOrigin);
+  return await requestJson(targetUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      ...resolved.authHeaders,
+    },
+    body: JSON.stringify(normalizeChatCompletionPayload(payload)),
+    timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
+    retryCount: 1,
+    retryDelayMs: 750,
+  });
+}
+
+const BRIDGE_WEB_SEARCH_INTENT_RE = /(?:\bweb_search\b|\u8054\u7f51|\u4e0a\u7f51|\u7f51\u9875|\u7f51\u7edc\u641c\u7d22|\u641c\u7d22|\u6700\u65b0|\u5b9e\u65f6|\u65b0\u95fb|\u8d44\u8baf|\u70ed\u641c|\u4ef7\u683c|\u80a1\u4ef7|\u6c47\u7387|web search|latest|news|search)/i;
+const BRIDGE_WEATHER_INTENT_RE = /(?:\u5929\u6c14|\u6e29\u5ea6|\u964d\u96e8|\u4e0b\u96e8|\u6e7f\u5ea6|\u98ce\u901f|weather|temperature|rain)/i;
+const BRIDGE_SCHEDULER_INTENT_RE = /(?:\u5b9a\u65f6\u4efb\u52a1|\u5b9a\u65f6|\u8ba1\u5212\u4efb\u52a1|\u63d0\u9192|\u6bcf\u5929|\u6bcf\u65e5|\u6bcf\u5468|\u6bcf\u6708|\u81ea\u52a8\u6267\u884c|\u5468\u671f\u6267\u884c|cron|schedule|scheduled task|every day|every week)/i;
+
+function extractLastUserTextFromPayload(payload = {}) {
+  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") {
+      const content = message?.content;
+      if (typeof content === "string") {
+        return content.trim();
+      }
+      if (Array.isArray(content)) {
+        const text = content.map((item) => item?.text || "").join("\n").trim();
+        if (text) return text;
+      }
+    }
+  }
+  return String(payload?.question || payload?.user_text || "").trim();
+}
+
+function createBridgeChatTools({ allowScheduler = false } = {}) {
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "get_weather",
+        description: "Get current weather for a city or location when the user asks about weather.",
+        parameters: {
+          type: "object",
+          properties: {
+            location: { type: "string" },
+          },
+          required: ["location"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description: "Search the live web for current information, news, prices, releases, or webpage findings.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "number" },
+          },
+          required: ["query"],
+        },
+      },
+    },
+  ];
+
+  if (allowScheduler) {
+    tools.push(
+      {
+        type: "function",
+        function: {
+          name: "create_scheduled_task",
+          description: "Create a scheduled task only when the user explicitly asks to schedule an automatic recurring task.",
+          parameters: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              prompt: { type: "string" },
+              scheduleType: { type: "string", enum: ["cron"] },
+              cronExpression: { type: "string" },
+              enabled: { type: "boolean" },
+            },
+            required: ["name", "prompt", "cronExpression"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "list_scheduled_tasks",
+          description: "List existing scheduled tasks.",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "update_scheduled_task",
+          description: "Update, pause, resume, or change an existing scheduled task only when explicitly requested.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              name: { type: "string" },
+              prompt: { type: "string" },
+              scheduleType: { type: "string", enum: ["cron"] },
+              cronExpression: { type: "string" },
+              enabled: { type: "boolean" },
+            },
+            required: ["id"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "delete_scheduled_task",
+          description: "Delete a scheduled task only when explicitly requested.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+            },
+            required: ["id"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "run_scheduled_task",
+          description: "Run a scheduled task immediately when explicitly requested.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+            },
+            required: ["id"],
+          },
+        },
+      }
+    );
+  }
+
+  return tools;
+}
+
+function createBridgeTextResponse(text = "", model = "") {
+  return {
+    id: `bridge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: String(model || ""),
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: String(text || ""),
+        },
+        finish_reason: "stop",
+      },
+    ],
+  };
+}
+
+async function callBridgeChatCompletion(payload = {}) {
+  const requestPayload = normalizeChatCompletionPayload(payload);
+  if (requestPayload.toolsEnabled === false) {
+    return await callConfiguredChatCompletion(requestPayload);
+  }
+
+  const model = String(requestPayload.model || getSharedConnectionConfig()?.model || "").trim();
+  if (!model) {
+    return await callConfiguredChatCompletion(requestPayload);
+  }
+
+  const userText = extractLastUserTextFromPayload(requestPayload);
+  const allowScheduler = BRIDGE_SCHEDULER_INTENT_RE.test(userText);
+  const hasWeatherIntent = BRIDGE_WEATHER_INTENT_RE.test(userText);
+  const hasWebSearchIntent = BRIDGE_WEB_SEARCH_INTENT_RE.test(userText) && !hasWeatherIntent;
+
+  if (allowScheduler) {
+    try {
+      const handled = await executeScheduledTaskIntent(userText, model);
+      return createBridgeTextResponse(handled.message, model);
+    } catch (error) {
+      appendServerDebugLog(`bridge_scheduler_intent_fallback ${formatErrorForStorage(error)}`);
+    }
+  }
+
+  const messages = Array.isArray(requestPayload.messages) && requestPayload.messages.length
+    ? requestPayload.messages
+    : [{ role: "user", content: userText }];
+  const bridgeSystemPrompt = [
+    "You are handling a website chat request through the AI-web bridge.",
+    "Use get_weather for weather questions.",
+    "Use web_search for live or current information instead of guessing.",
+    allowScheduler
+      ? "The user explicitly mentioned scheduled tasks. You may manage scheduled tasks with the scheduler tools."
+      : "Do not create, update, delete, or run scheduled tasks unless the user explicitly asks.",
+    "After tool use, answer directly and concisely in the user's language.",
+  ].join("\n");
+  const text = await callLocalModelWithTools({
+    model,
+    messages: [{ role: "system", content: bridgeSystemPrompt }, ...messages],
+    tools: createBridgeChatTools({ allowScheduler }),
+    requiredToolName: hasWebSearchIntent ? "web_search" : (hasWeatherIntent ? "get_weather" : ""),
+    singleUseToolNames: hasWebSearchIntent ? ["web_search"] : [],
+    temperature: requestPayload.temperature,
+    timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
+  });
+  return createBridgeTextResponse(text, model);
+}
+
+async function processOneChatJob(workerId = "ai-web-worker") {
+  const job = await claimPendingChatJob(workerId);
+  if (!job) {
+    return false;
+  }
+
+  const startedAt = Date.now();
+  const requestPayload = normalizeChatCompletionPayload(job.requestPayload || {});
+  try {
+    const responsePayload = await callBridgeChatCompletion(requestPayload);
+    await completeChatJob(job.id, {
+      responsePayload,
+      statusCode: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    await logChatApiRequest({
+      requestId: job.requestId,
+      source: job.source || "mysql-job",
+      requestPayload,
+      responsePayload,
+      statusCode: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+  } catch (error) {
+    const errorText = formatErrorForStorage(error.message || error);
+    await failChatJob(job.id, {
+      errorText,
+      statusCode: error.statusCode || 500,
+      latencyMs: Date.now() - startedAt,
+    });
+    await logChatApiRequest({
+      requestId: job.requestId,
+      source: job.source || "mysql-job",
+      requestPayload,
+      statusCode: error.statusCode || 500,
+      errorText,
+      latencyMs: Date.now() - startedAt,
+    });
+  }
+  return true;
+}
+
+function startMysqlChatJobWorker() {
+  const config = typeof getMysqlStorageConfig === "function" ? getMysqlStorageConfig() : {};
+  if (config.chatJobWorkerEnabled !== true) {
+    return;
+  }
+
+  const workerId = `ai-web-${process.pid}`;
+  const pollMs = Math.max(1000, Number(config.chatJobPollMs || 3000));
+  const batchSize = Math.max(1, Math.min(5, Number(config.chatJobBatchSize || 1)));
+  let running = false;
+
+  const tick = async () => {
+    if (running) {
+      return;
+    }
+    running = true;
+    try {
+      for (let index = 0; index < batchSize; index += 1) {
+        const processed = await processOneChatJob(workerId);
+        if (!processed) {
+          break;
+        }
+      }
+    } catch (error) {
+      appendServerDebugLog(`mysql_chat_job_worker_failed ${String(error?.message || error)}`);
+    } finally {
+      running = false;
+    }
+  };
+
+  setInterval(() => {
+    tick().catch(() => {});
+  }, pollMs);
+  tick().catch(() => {});
+  appendServerDebugLog(`mysql_chat_job_worker_started pollMs=${pollMs} batchSize=${batchSize}`);
+}
+
+async function callLocalNovelEndpoint(job = {}) {
+  const method = String(job.method || "GET").toUpperCase();
+  const pathValue = String(job.path || "/").trim();
+  if (!pathValue.startsWith("/novels/") && pathValue !== "/novels/projects" && pathValue !== "/novels/infer-project") {
+    const error = new Error("Unsupported novel bridge path");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const targetUrl = new URL(pathValue, `http://${HOST}:${PORT}`);
+  const bodyPayload = job.requestPayload && typeof job.requestPayload === "object" ? job.requestPayload : {};
+  const hasBody = !["GET", "HEAD"].includes(method);
+  return await requestJson(targetUrl, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "x-ai-web-source": job.source || "mysql-novel-job",
+      "x-request-id": job.requestId,
+    },
+    body: hasBody ? JSON.stringify(bodyPayload) : undefined,
+    timeoutMs: NOVEL_MODEL_TIMEOUT_MS + 30_000,
+    retryCount: 0,
+  });
+}
+
+async function processOneNovelJob(workerId = "ai-web-novel-worker") {
+  const job = await claimPendingNovelJob(workerId);
+  if (!job) {
+    return false;
+  }
+
+  const startedAt = Date.now();
+  try {
+    const responsePayload = await callLocalNovelEndpoint(job);
+    await completeNovelJob(job.id, {
+      responsePayload,
+      responseText: JSON.stringify(responsePayload || {}),
+      contentType: "application/json; charset=utf-8",
+      statusCode: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+  } catch (error) {
+    const errorText = formatErrorForStorage(error.message || error);
+    await failNovelJob(job.id, {
+      errorText,
+      statusCode: error.statusCode || 500,
+      latencyMs: Date.now() - startedAt,
+    });
+  }
+  return true;
+}
+
+function startMysqlNovelJobWorker() {
+  const config = typeof getMysqlStorageConfig === "function" ? getMysqlStorageConfig() : {};
+  if (config.novelJobWorkerEnabled === false) {
+    return;
+  }
+
+  const workerId = `ai-web-novel-${process.pid}`;
+  const pollMs = Math.max(1000, Number(config.novelJobPollMs || config.chatJobPollMs || 3000));
+  const batchSize = Math.max(1, Math.min(3, Number(config.novelJobBatchSize || 1)));
+  let running = false;
+
+  const tick = async () => {
+    if (running) {
+      return;
+    }
+    running = true;
+    try {
+      for (let index = 0; index < batchSize; index += 1) {
+        const processed = await processOneNovelJob(workerId);
+        if (!processed) {
+          break;
+        }
+      }
+    } catch (error) {
+      appendServerDebugLog(`mysql_novel_job_worker_failed ${String(error?.message || error)}`);
+    } finally {
+      running = false;
+    }
+  };
+
+  setInterval(() => {
+    tick().catch(() => {});
+  }, pollMs);
+  tick().catch(() => {});
+  appendServerDebugLog(`mysql_novel_job_worker_started pollMs=${pollMs} batchSize=${batchSize}`);
+}
+
+async function refreshMysqlAvailableModels() {
+  if (typeof saveStorageConfig !== "function") {
+    return false;
+  }
+  const modelsUrl = buildModelServiceUrl("models");
+  const { authHeaders } = getResolvedModelServiceConfig();
+  const data = await requestJson(modelsUrl, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      ...authHeaders,
+    },
+    timeoutMs: 10_000,
+    retryCount: 1,
+    retryDelayMs: 750,
+  });
+  const models = Array.isArray(data?.data)
+    ? data.data.map((item) => String(item?.id || item?.name || "").trim()).filter(Boolean)
+    : [];
+  await saveStorageConfig("available-models", {
+    models: Array.from(new Set(models)),
+    updatedAt: Date.now(),
+  });
+  return true;
+}
+
+function startMysqlModelListSync() {
+  const run = () => {
+    refreshMysqlAvailableModels().catch((error) => {
+      appendServerDebugLog(`mysql_model_list_sync_failed ${formatErrorForStorage(error)}`);
+    });
+  };
+  setInterval(run, 60 * 1000);
+  run();
+}
+
+async function handleMonitoredChatCompletion(req, res) {
+  const startedAt = Date.now();
+  const requestId = getRequestHeader(req, "x-request-id") || createMonitoredRequestId();
+  const source = resolveMonitoredRequestSource(req);
+  let payload = {};
+  let statusCode = 500;
+  let responsePayload = null;
+
+  try {
+    const rawBody = await readRequestBody(req, { limitBytes: 20 * 1024 * 1024 });
+    payload = rawBody ? JSON.parse(rawBody) : {};
+    payload = normalizeChatCompletionPayload(payload);
+    responsePayload = await callConfiguredChatCompletion(payload);
+    statusCode = 200;
+
+    await logChatApiRequest({
+      requestId,
+      source,
+      requestPayload: payload,
+      responsePayload,
+      statusCode,
+      latencyMs: Date.now() - startedAt,
+    });
+    sendJson(res, statusCode, responsePayload);
+  } catch (error) {
+    const errorText = formatErrorForStorage(error.message || error);
+    statusCode = error.statusCode || 500;
+    try {
+      await logChatApiRequest({
+        requestId,
+        source,
+        requestPayload: payload,
+        responsePayload,
+        statusCode,
+        errorText,
+        latencyMs: Date.now() - startedAt,
+      });
+    } catch (logError) {
+      appendServerDebugLog(`monitored_chat_log_failed ${String(logError?.message || logError)}`);
+    }
+    sendJson(res, statusCode, {
+      error: errorText,
+      requestId,
+    });
+  }
+}
+
 async function legacySendQqMessageV1(args = {}) {
   const bridgeUrl = String(args.bridgeUrl || "").trim();
   const targetType = String(args.targetType || "private").trim().toLowerCase();
   const targetId = String(args.targetId || "").trim();
-  const message = String(args.message || "").trim();
+  const message = stripModelThinkingContent(String(args.message || "").trim());
   const accessToken = String(args.accessToken || "").trim();
 
   if (!bridgeUrl) {
@@ -894,7 +1460,7 @@ async function legacyCallLocalModelForTaskV2(task) {
               data?.choices?.[0]?.message?.content ||
               data?.choices?.[0]?.text ||
               "";
-            resolve(String(text));
+            resolve(stripModelThinkingContent(String(text)));
           } catch (error) {
             reject(error);
           }
@@ -1610,7 +2176,7 @@ async function callLocalModelWithTools({
           : "";
 
     if (text) {
-      finalText = text;
+      finalText = stripModelThinkingContent(text);
     }
 
     workingMessages.push({
@@ -1656,18 +2222,19 @@ async function callLocalModelWithTools({
   if (!finalText) {
     throw new Error("Model completed without final text");
   }
-  return finalText;
+  return stripModelThinkingContent(finalText);
 }
 
 async function generateNovelText({
   systemPrompt,
   userPrompt,
+  model: preferredModel,
   temperature = 0.7,
-  timeoutMs = 120_000,
+  timeoutMs = NOVEL_MODEL_TIMEOUT_MS,
 } = {}) {
-  const model = String(getSharedConnectionConfig()?.model || "").trim();
+  const model = String(preferredModel || "").trim();
   if (!model) {
-    const error = new Error("Base connection model is not configured");
+    const error = new Error("Novel project model is not configured");
     error.statusCode = 400;
     throw error;
   }
@@ -2011,6 +2578,40 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (pathname === "/storage/status" && req.method === "GET") {
+    handleMysqlStorageStatus(res);
+    return;
+  }
+
+  if (pathname === "/storage/chat-records" && req.method === "GET") {
+    handleChatRecordsList(res);
+    return;
+  }
+
+  if (pathname === "/storage/chat-records/sync" && req.method === "POST") {
+    handleChatRecordsSync(req, res);
+    return;
+  }
+
+  if (
+    (pathname === "/monitored/v1/chat/completions" || pathname === "/api/monitored/v1/chat/completions")
+    && req.method === "POST"
+  ) {
+    handleMonitoredChatCompletion(req, res);
+    return;
+  }
+
+  const storageConfigMatch = pathname.match(/^\/storage\/config\/([^/]+)$/);
+  if (storageConfigMatch && req.method === "GET") {
+    handleStorageConfigGet(res, decodeURIComponent(storageConfigMatch[1]));
+    return;
+  }
+
+  if (storageConfigMatch && req.method === "POST") {
+    handleStorageConfigSave(req, res, decodeURIComponent(storageConfigMatch[1]));
+    return;
+  }
+
   if (pathname === "/qq/webhook" && req.method === "POST") {
     handleQqWebhook(req, res);
     return;
@@ -2087,7 +2688,7 @@ async function legacySendQqMessageFinalV1(args = {}) {
   const bridgeUrl = String(args.bridgeUrl || "").trim();
   const targetType = String(args.targetType || "private").trim().toLowerCase();
   const targetId = String(args.targetId || "").trim();
-  const message = String(args.message || "").trim();
+  const message = stripModelThinkingContent(String(args.message || "").trim());
   const accessToken = String(args.accessToken || "").trim();
 
   if (!bridgeUrl) {
@@ -2256,12 +2857,13 @@ async function legacyGenerateQqBotReplyV1(event = {}) {
   });
 
   const message = data?.choices?.[0]?.message;
-  const reply =
+  const reply = stripModelThinkingContent(
     typeof message?.content === "string"
       ? message.content.trim()
       : Array.isArray(message?.content)
         ? message.content.map((item) => item?.text || "").join("\n").trim()
-        : "";
+        : ""
+  );
 
   if (!reply) {
     return "";
@@ -2379,6 +2981,7 @@ const bootstrapServer = createServerBootstrap({
   initializeDataFiles: async () => {
     await initializeDataFiles();
     await novelModule.ensureNovelsDir();
+    await initMysqlStorage();
   },
   runStartupCleanup,
   loadScheduledTasks,
@@ -2394,6 +2997,9 @@ const bootstrapServer = createServerBootstrap({
 
 bootstrapServer()
   .then(() => {
+    startMysqlChatJobWorker();
+    startMysqlNovelJobWorker();
+    startMysqlModelListSync();
     warmupModelServiceConnection({ reason: "startup" }).catch(() => {});
   })
   .catch((error) => {

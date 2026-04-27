@@ -13,6 +13,7 @@ const {
   readTextFile,
   readRequestBody,
   resolveWorkspacePath,
+  stripModelThinkingContent,
   writeFileAtomic,
   writeJsonFileAtomic,
 } = require("../server/server-utils");
@@ -145,6 +146,9 @@ function createDomElement(tagName = "div") {
     },
     appendChild(child) {
       this.children.push(child);
+    },
+    replaceChildren(...children) {
+      this.children = children;
     },
     addEventListener() {},
     removeEventListener() {},
@@ -496,6 +500,21 @@ async function main() {
     const inside = resolveWorkspacePath(root, "notes/file.txt");
     assert.equal(inside, path.join(root, "notes", "file.txt"));
     assert.throws(() => resolveWorkspacePath(root, "../outside.txt"), /Path escapes workspace/);
+  });
+
+  await runTest("stripModelThinkingContent removes model thought blocks", async () => {
+    assert.equal(
+      stripModelThinkingContent("<think>I should plan this.</think>\n\n正式回复"),
+      "正式回复"
+    );
+    assert.equal(
+      stripModelThinkingContent("I should plan this.\n\nPlan:\n1. Draft\n</think>\n正式回复"),
+      "正式回复"
+    );
+    assert.equal(
+      stripModelThinkingContent("<think>I should not erase the answer.\n正式回复"),
+      "I should not erase the answer.\n正式回复"
+    );
   });
 
   await runTest("writeJsonFileAtomic writes complete json content", async () => {
@@ -1367,6 +1386,36 @@ async function main() {
     assert.equal(capturedTools.some((tool) => tool?.function?.name === "web_search"), true);
     assert.equal(sentMessages.length, 1);
     assert.equal(sentMessages[0].message, "search-ready");
+  });
+
+  await runTest("qq replies hide model thinking content", async () => {
+    const { qqModule, sentMessages } = createQqModuleHarness({
+      enabled: true,
+      groupMentionOnly: false,
+      bridgeUrl: "http://127.0.0.1:3000/",
+      defaultTargetType: "private",
+      defaultTargetId: "1036986718",
+      model: "model-alpha",
+      toolReadEnabled: true,
+    }, {
+      callLocalModelWithTools: async () => "<think>I should not be sent.</think>\n\nQQ 正式回复",
+    });
+    await qqModule.loadQqBotConfig();
+    await qqModule.loadQqBotSessions();
+
+    const res = {};
+    await qqModule.handleQqWebhook(createWebhookRequest({
+      post_type: "message",
+      message_type: "private",
+      user_id: "55555555",
+      self_id: "999999",
+      message: "你好",
+    }), res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.payload?.ok, true);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].message, "QQ 正式回复");
   });
 
   await runTest("qq live web query uses lean web search mode", async () => {
@@ -2471,6 +2520,13 @@ async function main() {
         });
       }
 
+      if (String(url).startsWith("/api/v1/models") && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          data: [{ id: "novel-model-a" }, { id: "novel-model-b" }],
+        });
+      }
+
       if (url === "/novels/projects" && method === "POST") {
         const payload = JSON.parse(String(options.body || "{}"));
         createdProject = {
@@ -2481,6 +2537,7 @@ async function main() {
           premise: payload.premise,
           targetChapters: payload.targetChapters,
           chapterWordTarget: payload.chapterWordTarget,
+          model: payload.model,
           stylePreference: payload.stylePreference,
           audience: payload.audience,
           protagonist: payload.protagonist,
@@ -2538,6 +2595,7 @@ async function main() {
     harness.getElement("#new-name").value = "new-project";
     harness.getElement("#new-genre").value = "ai-sci-fi";
     harness.getElement("#new-chapter-word-target").value = "2800";
+    harness.getElement("#new-model").value = "novel-model-b";
     harness.getElement("#new-notes").value = "create dialog notes";
     harness.getElement("#new-qq-enabled").value = "true";
     harness.getElement("#new-qq-type").value = "group";
@@ -2561,6 +2619,7 @@ async function main() {
 
     assert.equal(JSON.parse(String(postCalls[0].options.body || "{}")).name, "new-project");
     assert.equal(JSON.parse(String(postCalls[0].options.body || "{}")).chapterWordTarget, 2800);
+    assert.equal(JSON.parse(String(postCalls[0].options.body || "{}")).model, "novel-model-b");
     assert.equal(JSON.parse(String(postCalls[0].options.body || "{}")).notes, "create dialog notes");
     assert.equal(JSON.parse(String(postCalls[0].options.body || "{}")).qqReviewEnabled, true);
     assert.equal(JSON.parse(String(postCalls[0].options.body || "{}")).qqTargetType, "group");
@@ -2590,6 +2649,12 @@ async function main() {
         return createMockJsonResponse({
           ok: true,
           projects: [],
+        });
+      }
+      if (String(url).startsWith("/api/v1/models") && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          data: [{ id: "novel-model-a" }],
         });
       }
       throw new Error(`Unexpected novels page request: ${method} ${url}`);
@@ -2623,6 +2688,46 @@ async function main() {
     assert.equal(harness.confirms.length, 3);
     assert.equal(Boolean(harness.getElement("#project-dialog").open), false);
     assert.equal(harness.getElement("#new-name").value, "");
+  });
+
+  await runTest("novels page refreshes model list every time the create dialog opens", async () => {
+    const fetchCalls = [];
+    const harness = createNovelsPageHarness(async (url, options = {}) => {
+      const method = String(options.method || "GET").toUpperCase();
+      fetchCalls.push({ url: String(url), method });
+      if (url === "/novels/projects" && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          projects: [],
+        });
+      }
+      if (String(url).startsWith("/api/v1/models") && method === "GET") {
+        return createMockJsonResponse({
+          ok: true,
+          data: [{ id: `novel-model-${fetchCalls.length}` }],
+        });
+      }
+      throw new Error(`Unexpected novels page request: ${method} ${url}`);
+    });
+
+    seedNovelsPageButtonText(harness);
+    harness.getElement("#new-model").tagName = "SELECT";
+    await harness.flush(8);
+    fetchCalls.length = 0;
+
+    await harness.getElement("#create-project").onclick();
+    await harness.flush(4);
+    assert.equal(Boolean(harness.getElement("#project-dialog").open), true);
+    assert.equal(harness.getElement("#new-model").disabled, false);
+    assert.equal(harness.getElement("#new-model").value, "");
+    harness.getElement("#project-dialog").close();
+
+    await harness.getElement("#create-project").onclick();
+    await harness.flush(4);
+
+    const modelCalls = fetchCalls.filter((call) => call.url.startsWith("/api/v1/models"));
+    assert.equal(modelCalls.length, 2);
+    assert.equal(modelCalls.every((call) => call.url.includes("_=")), true);
   });
 
   await runTest("novels page project info and settings support collapsing", async () => {
@@ -3926,6 +4031,64 @@ async function main() {
     assert.equal(updated.project.chapterWordTarget, 3600);
   });
 
+  await runTest("novel module infers project fields from a brief", async () => {
+    let capturedModel = "";
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ model }) => {
+        capturedModel = model;
+        return JSON.stringify({
+          name: "星海回声",
+          genre: "科幻悬疑",
+          theme: "记忆与身份",
+          premise: "失忆主角追查一段来自星海的回声。",
+          protagonist: {
+            name: "林岚",
+            identity: "前深空译员",
+            conflict: "失忆后追查星海回声。",
+          },
+          stylePreference: "冷峻、细腻",
+          audience: "科幻读者",
+          targetChapters: 12,
+          chapterWordTarget: 3000,
+          keywords: ["失忆", "星海", "悬疑"],
+          notes: "保留慢热感。",
+        });
+      },
+    });
+
+    const result = await novelModule.inferProjectFromBrief({
+      brief: "写一个女主失忆后追查星海回声的科幻悬疑故事，12章，每章3000字。",
+      model: "novel-planner-model",
+    });
+
+    assert.equal(capturedModel, "novel-planner-model");
+    assert.equal(result.fields.name, "星海回声");
+    assert.equal(result.fields.protagonist.includes("name：林岚"), true);
+    assert.equal(result.fields.protagonist.includes("identity：前深空译员"), true);
+    assert.equal(result.fields.targetChapters, 12);
+    assert.deepEqual(result.fields.keywords, ["失忆", "星海", "悬疑"]);
+  });
+
+  await runTest("novel module uses project-specific model for generation", async () => {
+    const capturedModels = [];
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose, model, timeoutMs }) => {
+        capturedModels.push({ purpose, model, timeoutMs });
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "project-model-test",
+      model: "novel-only-model",
+      autoGenerateSettings: false,
+    });
+    await novelModule.generateSingleSetting(detail.project.id, "world", { overwrite: true });
+
+    assert.equal(capturedModels.some((item) => item.purpose === "novel_setting_world" && item.model === "novel-only-model"), true);
+    assert.equal(capturedModels.some((item) => item.purpose === "novel_setting_world" && item.timeoutMs === 1_800_000), true);
+  });
+
   await runTest("novel module overwrite regeneration ignores stale long-range settings and follows updated chapter target", async () => {
     let worldPrompt = "";
     let chapterPlanPrompt = "";
@@ -4135,13 +4298,13 @@ async function main() {
     const { novelModule } = createNovelModuleHarness({
       generateText: async ({ purpose }) => {
         if (purpose === "novel_chapter") {
-          return "# 绗?绔?鏄熺伀\n\n杩欐槸涓枃ABC娴嬭瘯";
+          return "# 章\n\n一二三四五六七八九";
         }
         if (purpose === "novel_summary") {
-          return "# 鎽樿\n\n鎽樿";
+          return "# 摘要\n\n摘要";
         }
         if (purpose === "novel_snapshot") {
-          return "# 鐘舵€乗n\n鐘舵€";
+          return "# 状态\n\n状态";
         }
         return `# ${purpose}\n\ncontent`;
       },
@@ -4160,6 +4323,90 @@ async function main() {
 
     assert.equal(draftMeta?.characterCount, 10);
     assert.equal(chapter.characterCount, 10);
+  });
+
+  await runTest("novel module expands short generated chapters to the configured minimum", async () => {
+    const calls = [];
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        calls.push({ purpose, userPrompt: String(userPrompt || "") });
+        if (purpose === "novel_chapter") {
+          return `# Chapter 1\n\n${"汉".repeat(10)}`;
+        }
+        if (purpose === "novel_chapter_expand") {
+          return "补".repeat(10);
+        }
+        if (purpose === "novel_summary") {
+          return "# Summary\n\nsummary";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# Snapshot\n\nsnapshot";
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "chapter-target-expand-test",
+      genre: "fantasy",
+      chapterWordTarget: 20,
+      autoGenerateSettings: false,
+    });
+
+    await novelModule.generateChapter(detail.project.id);
+    const chapter = await novelModule.getChapterContent(detail.project.id, 1, { preferDraft: true });
+    const expandCall = calls.find((call) => call.purpose === "novel_chapter_expand");
+    const chapterCall = calls.find((call) => call.purpose === "novel_chapter");
+
+    assert.equal(Boolean(expandCall), true);
+    assert.equal(chapterCall.userPrompt.includes("最低不得少于 18 个"), true);
+    assert.equal(expandCall.userPrompt.includes("当前中文汉字数为 10"), true);
+    assert.equal(chapter.characterCount >= 18, true);
+  });
+
+  await runTest("novel module expands short rewritten chapters to the configured minimum", async () => {
+    const calls = [];
+    let chapterCallCount = 0;
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        calls.push({ purpose, userPrompt: String(userPrompt || "") });
+        if (purpose === "novel_chapter") {
+          chapterCallCount += 1;
+          return `# Chapter 1\n\n${"初".repeat(20)}`;
+        }
+        if (purpose === "novel_rewrite") {
+          return `# Chapter 1 Rewrite\n\n${"改".repeat(10)}`;
+        }
+        if (purpose === "novel_chapter_expand") {
+          return "补".repeat(10);
+        }
+        if (purpose === "novel_summary") {
+          return "# Summary\n\nsummary";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# Snapshot\n\nsnapshot";
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "rewrite-target-expand-test",
+      genre: "fantasy",
+      chapterWordTarget: 20,
+      autoGenerateSettings: false,
+    });
+
+    await novelModule.generateChapter(detail.project.id);
+    await novelModule.rewriteChapter(detail.project.id, 1, "make it stronger");
+    const chapter = await novelModule.getChapterContent(detail.project.id, 1, { preferDraft: true });
+    const rewriteCall = calls.find((call) => call.purpose === "novel_rewrite");
+    const expandCalls = calls.filter((call) => call.purpose === "novel_chapter_expand");
+
+    assert.equal(chapterCallCount, 1);
+    assert.equal(rewriteCall.userPrompt.includes("最低不得少于 18 个"), true);
+    assert.equal(expandCalls.some((call) => call.userPrompt.includes("当前中文汉字数为 10")), true);
+    assert.equal(chapter.characterCount >= 18, true);
   });
 
   await runTest("novel module generates draft chapter and supports approval", async () => {
@@ -4311,6 +4558,43 @@ async function main() {
     assert.equal(result.generated.length, 2);
     assert.equal(finalDetail.state.lastApprovedChapter, 2);
     assert.equal(finalDetail.state.pendingDraftChapter, null);
+  });
+
+  await runTest("novel module exports all chapter bodies into one markdown file", async () => {
+    let chapterCallCount = 0;
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose }) => {
+        if (purpose === "novel_chapter") {
+          chapterCallCount += 1;
+          return `# Chapter ${chapterCallCount}\n\nchapter ${chapterCallCount} body`;
+        }
+        if (purpose === "novel_summary") {
+          return "# Summary\n\nsummary";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# Snapshot\n\nsnapshot";
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "export-chapters-test",
+      genre: "sci-fi",
+      autoGenerateSettings: false,
+    });
+
+    await novelModule.generateChapter(detail.project.id);
+    await novelModule.approveChapter(detail.project.id, 1);
+    await novelModule.generateChapter(detail.project.id);
+
+    const exported = await novelModule.exportProjectMarkdown(detail.project.id);
+
+    assert.equal(exported.fileName, "export-chapters-test-正文合集.md");
+    assert.equal(exported.chapterCount, 1);
+    assert.equal(exported.content.includes("# export-chapters-test"), true);
+    assert.equal(exported.content.includes("# Chapter 1\n\nchapter 1 body"), true);
+    assert.equal(exported.content.includes("# Chapter 2\n\nchapter 2 body"), false);
   });
 
   await runTest("qq external handler can process novel review commands", async () => {

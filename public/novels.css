@@ -194,6 +194,10 @@ body.novel-page textarea::placeholder {
   gap: 10px;
 }
 
+.chapter-list {
+  align-content: start;
+}
+
 .project-list {
   margin-top: 2px;
 }
@@ -215,10 +219,71 @@ body.novel-page textarea::placeholder {
   text-align: left;
 }
 
+.chapter-item {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 115px;
+  padding: 14px 16px;
+  border-radius: 22px;
+}
+
+.chapter-item-number {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(79, 140, 255, 0.14);
+  background: rgba(79, 140, 255, 0.07);
+  color: #5a7193;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
 .project-item strong,
 .chapter-item strong {
   display: block;
   margin-bottom: 5px;
+}
+
+.chapter-item strong.chapter-item-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #223654;
+}
+
+.chapter-item-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chapter-item-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(104, 136, 173, 0.16);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  line-height: 1;
+  color: #55708f;
+}
+
+.chapter-item-status {
+  color: #2f5f9b;
+  border-color: rgba(79, 140, 255, 0.18);
+  background: rgba(79, 140, 255, 0.08);
+}
+
+.chapter-item-count {
+  color: #536c88;
 }
 
 .project-item .muted,
@@ -269,7 +334,7 @@ body.novel-page textarea::placeholder {
 
 .novel-chapter-layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
   gap: 12px;
   margin-top: 4px;
   min-height: 420px;
@@ -280,7 +345,27 @@ body.novel-page textarea::placeholder {
   min-height: 0;
   max-height: 100%;
   overflow: auto;
-  padding-right: 4px;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(119, 158, 210, 0.72) rgba(227, 236, 248, 0.48);
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.novel-chapter-panel #chapter-list::-webkit-scrollbar {
+  width: 10px;
+  display: block;
+}
+
+.novel-chapter-panel #chapter-list::-webkit-scrollbar-track {
+  background: rgba(227, 236, 248, 0.46);
+  border-radius: 999px;
+}
+
+.novel-chapter-panel #chapter-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(119, 158, 210, 0.72), rgba(145, 186, 238, 0.56));
+  border: 2px solid rgba(227, 236, 248, 0.3);
 }
 
 .novel-chapter-panel #chapter-viewer {
@@ -383,6 +468,53 @@ body.novel-page textarea::placeholder {
   display: grid;
   gap: 12px;
   padding: 22px;
+}
+
+.novel-dialog-form > .novel-dialog-head {
+  order: 0;
+}
+
+.novel-dialog-form > label:has(#new-model) {
+  order: 1;
+  padding: 16px 18px 6px;
+  border: 1px solid rgba(104, 136, 173, 0.16);
+  border-bottom: 0;
+  border-radius: 18px 18px 0 0;
+  background: linear-gradient(180deg, rgba(247, 251, 255, 0.92), rgba(239, 246, 255, 0.76));
+}
+
+.novel-dialog-form > label:has(#new-brief) {
+  order: 2;
+  padding: 6px 18px;
+  border-left: 1px solid rgba(104, 136, 173, 0.16);
+  border-right: 1px solid rgba(104, 136, 173, 0.16);
+  background: rgba(239, 246, 255, 0.68);
+}
+
+.novel-dialog-form > label:has(#new-brief) textarea {
+  min-height: 132px;
+}
+
+.novel-dialog-form > .button-row.left.wrap-row {
+  order: 3;
+  margin-bottom: 6px;
+  padding: 4px 18px 16px;
+  border: 1px solid rgba(104, 136, 173, 0.16);
+  border-top: 0;
+  border-radius: 0 0 18px 18px;
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.68), rgba(255, 255, 255, 0.7));
+}
+
+.novel-dialog-form > label {
+  order: 10;
+}
+
+.novel-dialog-form > .novel-dialog-operation {
+  order: 20;
+}
+
+.novel-dialog-form > .novel-dialog-actions {
+  order: 30;
 }
 
 .novel-dialog-head {
@@ -622,7 +754,6 @@ body.novel-page textarea::placeholder {
 }
 
 .novel-sidebar .sidebar-history-list,
-.novel-chapter-panel #chapter-list,
 .novel-reader-content {
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -630,7 +761,6 @@ body.novel-page textarea::placeholder {
 }
 
 .novel-sidebar .sidebar-history-list::-webkit-scrollbar,
-.novel-chapter-panel #chapter-list::-webkit-scrollbar,
 .novel-reader-content::-webkit-scrollbar {
   width: 0;
   height: 0;

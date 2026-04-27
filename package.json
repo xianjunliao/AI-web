@@ -7,6 +7,7 @@
     "test": "node tests/run-tests.js"
   },
   "dependencies": {
+    "mysql2": "^3.22.3",
     "playwright": "^1.59.1"
   }
 }

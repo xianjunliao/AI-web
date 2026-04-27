@@ -23,6 +23,30 @@ function resolveWorkspacePath(rootPath, targetPath = ".") {
   return resolvedPath;
 }
 
+function stripModelThinkingContent(value = "") {
+  let text = String(value || "").replace(/\r\n/g, "\n");
+  if (!text) {
+    return "";
+  }
+
+  text = text
+    .replace(/<\|begin_of_thought\|>[\s\S]*?<\|end_of_thought\|>/gi, "")
+    .replace(/<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?>/gi, "")
+    .replace(/<think(?:ing)?\b[^>]*>/gi, "");
+
+  const closeTagMatch = text.match(/<\/think(?:ing)?>/i);
+  if (closeTagMatch) {
+    const prefix = text.slice(0, closeTagMatch.index);
+    if (!/<think(?:ing)?\b/i.test(prefix)) {
+      text = text.slice(closeTagMatch.index + closeTagMatch[0].length);
+    }
+  }
+
+  return text
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 async function readRequestBody(req, options = {}) {
   const limitBytes = Number(options.limitBytes) || DEFAULT_REQUEST_BODY_LIMIT;
   return new Promise((resolve, reject) => {
@@ -214,6 +238,7 @@ module.exports = {
   readTextFile,
   readRequestBody,
   resolveWorkspacePath,
+  stripModelThinkingContent,
   writeFileAtomic,
   writeJsonFileAtomic,
 };

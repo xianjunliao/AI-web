@@ -123,6 +123,7 @@
                   <label><span>主题</span><input id="project-theme" type="text"></label>
                   <label><span>目标章节数</span><input id="project-target" type="number" min="0"></label>
                   <label><span>每章字数要求（汉字）</span><input id="project-chapter-word-target" type="number" min="0" step="100"></label>
+                  <label><span>项目模型</span><input id="project-model" type="text" list="novel-model-options" placeholder="留空则使用基础连接模型"></label>
                   <label><span>风格偏好</span><input id="project-style" type="text"></label>
                   <label><span>目标读者</span><input id="project-audience" type="text"></label>
                   <label class="full"><span>主角信息</span><textarea id="project-protagonist" rows="4"></textarea></label>
@@ -179,6 +180,7 @@
                   <p>点击左侧章节卡片查看当前正文或草稿内容，双击右侧正文可进入阅读器。</p>
                 </div>
                 <div class="button-row wrap-row">
+                  <button id="export-chapters" class="ghost-button" type="button">导出正文合集</button>
                   <button id="delete-chapter" class="ghost-button novel-danger-button" type="button">删除当前章及后续</button>
                 </div>
               </div>
@@ -203,10 +205,15 @@
         <button id="close-create-dialog" class="ghost-button icon-button novel-dialog-close" type="button" aria-label="关闭新建项目窗口" title="关闭">&times;</button>
       </div>
       <label><span>名称</span><input id="new-name" type="text" required></label>
+      <label><span>一句话/一段话构想</span><textarea id="new-brief" rows="5" placeholder="把你想到的小说设定、主角、世界观、风格、篇幅要求直接写在这里"></textarea></label>
+      <div class="button-row left wrap-row">
+        <button id="infer-project" class="ghost-button" type="button">拆解为项目信息</button>
+      </div>
       <label><span>题材</span><input id="new-genre" type="text"></label>
       <label><span>主题</span><input id="new-theme" type="text"></label>
       <label><span>目标章节数</span><input id="new-target" type="number" min="0"></label>
       <label><span>每章字数要求（汉字）</span><input id="new-chapter-word-target" type="number" min="0" step="100"></label>
+      <label><span>项目模型</span><select id="new-model"></select></label>
       <label><span>风格偏好</span><input id="new-style" type="text"></label>
       <label><span>目标读者</span><input id="new-audience" type="text"></label>
       <label><span>主角信息</span><textarea id="new-protagonist" rows="3"></textarea></label>
@@ -233,6 +240,8 @@
       </menu>
     </form>
   </dialog>
+
+  <datalist id="novel-model-options"></datalist>
 
   <dialog id="novel-background-dialog" class="novel-dialog novel-background-dialog">
     <form method="dialog" class="dialog-form novel-dialog-form novel-background-dialog-form">

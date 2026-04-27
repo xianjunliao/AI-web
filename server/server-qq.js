@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { stripModelThinkingContent } = require("./server-utils");
 const {
   inferScheduledTaskArgsFromText,
   inferScheduledTaskIntentFromText,
@@ -1514,7 +1515,7 @@ function createQqModule(deps) {
     const bridgeUrl = String(args.bridgeUrl || "").trim();
     const targetType = normalizeTargetType(args.targetType || "private");
     const targetId = String(args.targetId || "").trim();
-    const message = String(args.message || "").trim();
+    const message = stripModelThinkingContent(String(args.message || "").trim());
     const accessToken = String(args.accessToken || "").trim();
 
     if (!bridgeUrl) {
@@ -1815,11 +1816,11 @@ function createQqModule(deps) {
   }
 
   function normalizeModelReplyContent(content) {
-    return collectStructuredContentText(content, [])
+    return stripModelThinkingContent(collectStructuredContentText(content, [])
       .join("\n")
       .replace(/\r\n/g, "\n")
       .replace(/\n{3,}/g, "\n\n")
-      .trim();
+      .trim());
   }
 
   function buildQqSkillSystemPrompt(config = {}) {
@@ -1970,7 +1971,7 @@ function createQqModule(deps) {
     }
 
     const message = data?.choices?.[0]?.message;
-    const reply = normalizeModelReplyContent(message?.content) || String(message?.content || "").trim();
+    const reply = normalizeModelReplyContent(message?.content);
 
     if (!reply) {
       return "";
@@ -2162,9 +2163,9 @@ function createQqModule(deps) {
       if (!message) {
         throw new Error("QQ model reply missing assistant message");
       }
-      debug(`chat response target=${targetType}:${targetId} round=${i + 1} tool_calls=${Array.isArray(message.tool_calls) ? message.tool_calls.length : 0} content_length=${String(normalizeModelReplyContent(message?.content) || String(message?.content || "").trim()).length}`);
+      debug(`chat response target=${targetType}:${targetId} round=${i + 1} tool_calls=${Array.isArray(message.tool_calls) ? message.tool_calls.length : 0} content_length=${String(normalizeModelReplyContent(message?.content)).length}`);
 
-      const currentReply = normalizeModelReplyContent(message?.content) || String(message?.content || "").trim();
+      const currentReply = normalizeModelReplyContent(message?.content);
       if (currentReply) {
         reply = currentReply;
       }

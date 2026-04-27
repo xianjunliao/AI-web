@@ -1405,6 +1405,9 @@ async function appendAssistantMessageWithTyping(content, cls = "assistant", imag
 }
 
 function appendMessage(role, content, cls = role, images = [], timestamp = Date.now(), options = {}) {
+  if (role === "assistant") {
+    content = stripModelThinkingContent(content);
+  }
   if (role === "system") {
     setStatus(content, cls === "error" ? "error" : cls === "success" ? "success" : "default");
     return null;
@@ -1935,7 +1938,26 @@ async function j(url, options) {
   if (!r.ok) throw new Error(data.error || data.details || `请求失败：${r.status}`);
   return data;
 }
-function normalizeContent(content) { return typeof content === "string" ? content : Array.isArray(content) ? content.map((x) => x?.text || "").join("\n") : ""; }
+function stripModelThinkingContent(value = "") {
+  let text = String(value || "").replace(/\r\n/g, "\n");
+  if (!text) return "";
+  text = text
+    .replace(/<\|begin_of_thought\|>[\s\S]*?<\|end_of_thought\|>/gi, "")
+    .replace(/<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?>/gi, "")
+    .replace(/<think(?:ing)?\b[^>]*>/gi, "");
+  const closeTagMatch = text.match(/<\/think(?:ing)?>/i);
+  if (closeTagMatch) {
+    const prefix = text.slice(0, closeTagMatch.index);
+    if (!/<think(?:ing)?\b/i.test(prefix)) {
+      text = text.slice(closeTagMatch.index + closeTagMatch[0].length);
+    }
+  }
+  return text.replace(/\n{3,}/g, "\n\n").trim();
+}
+function normalizeContent(content) {
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((x) => x?.text || "").join("\n") : "";
+  return stripModelThinkingContent(text);
+}
 function systemMessages() {
   const list = [];
   if (els.systemPrompt?.value.trim()) list.push({ role: "system", content: els.systemPrompt.value.trim() });
@@ -6619,6 +6641,143 @@ renderScheduledTasks = function renderScheduledTasksCronOnly(tasks) {
 };
 
 loadScheduledTasksUI().catch(() => {});
+
+const MYSQL_STORAGE_CONFIG_KEY = "app-settings";
+const mysqlStorageRuntime = {
+  loading: false,
+  syncing: false,
+  pendingRecords: null,
+  ready: false,
+  lastSyncAt: 0,
+};
+
+async function mysqlStorageRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {}
+  if (!response.ok) {
+    const error = new Error(data.error || data.details || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+async function loadChatHistoryFromMysql() {
+  if (mysqlStorageRuntime.loading) return;
+  mysqlStorageRuntime.loading = true;
+  try {
+    const data = await mysqlStorageRequest("/storage/chat-records");
+    const remoteRecords = Array.isArray(data.records)
+      ? data.records.map((record) => sanitizeChatHistoryRecord(record)).filter(Boolean)
+      : [];
+    const localRecords = readChatHistoryRecords();
+    const byId = new Map();
+    [...localRecords, ...remoteRecords].forEach((record) => {
+      const existing = byId.get(record.id);
+      if (!existing || Number(record.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+        byId.set(record.id, record);
+      }
+    });
+    const merged = Array.from(byId.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(merged));
+    mysqlStorageRuntime.ready = true;
+    mysqlStorageRuntime.lastSyncAt = Date.now();
+    renderChatHistoryList();
+    updateChatHistoryMeta();
+    updateCurrentChatTitle();
+    const currentId = chatHistoryRuntime.currentId || localStorage.getItem(CURRENT_CHAT_KEY);
+    if (!state.messages.length && currentId) {
+      const current = merged.find((record) => record.id === currentId);
+      if (current) {
+        renderConversationFromMessages(current.messages || []);
+      }
+    }
+  } catch (error) {
+    setStatus(`MySQL 聊天记录同步失败：${String(error.message || error)}`, "error");
+  } finally {
+    mysqlStorageRuntime.loading = false;
+  }
+}
+
+async function syncChatHistoryToMysql(records = readChatHistoryRecords()) {
+  mysqlStorageRuntime.pendingRecords = records;
+  if (mysqlStorageRuntime.syncing) return;
+  mysqlStorageRuntime.syncing = true;
+  try {
+    while (mysqlStorageRuntime.pendingRecords) {
+      const nextRecords = mysqlStorageRuntime.pendingRecords;
+      mysqlStorageRuntime.pendingRecords = null;
+      await mysqlStorageRequest("/storage/chat-records/sync", {
+        method: "POST",
+        body: JSON.stringify({ records: nextRecords }),
+      });
+      mysqlStorageRuntime.ready = true;
+      mysqlStorageRuntime.lastSyncAt = Date.now();
+    }
+  } catch (error) {
+    setStatus(`MySQL 聊天记录保存失败：${String(error.message || error)}`, "error");
+  } finally {
+    mysqlStorageRuntime.syncing = false;
+  }
+}
+
+async function loadSettingsFromMysql() {
+  try {
+    const data = await mysqlStorageRequest(`/storage/config/${encodeURIComponent(MYSQL_STORAGE_CONFIG_KEY)}`);
+    const remoteSettings = data?.config?.value;
+    if (!remoteSettings || typeof remoteSettings !== "object") return;
+    const localSettings = saved();
+    const merged = {
+      ...remoteSettings,
+      ...localSettings,
+    };
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+    load();
+    renderWorkspaceBranding();
+    renderModelMeta();
+    refreshMetrics();
+  } catch (error) {
+    if (error.status !== 404) {
+      setStatus(`MySQL 配置读取失败：${String(error.message || error)}`, "error");
+    }
+  }
+}
+
+async function syncSettingsToMysql() {
+  try {
+    await mysqlStorageRequest(`/storage/config/${encodeURIComponent(MYSQL_STORAGE_CONFIG_KEY)}`, {
+      method: "POST",
+      body: JSON.stringify({ value: saved() }),
+    });
+  } catch (error) {
+    setStatus(`MySQL 配置保存失败：${String(error.message || error)}`, "error");
+  }
+}
+
+const writeChatHistoryRecordsBeforeMysql = writeChatHistoryRecords;
+writeChatHistoryRecords = function writeChatHistoryRecordsWithMysql(records) {
+  writeChatHistoryRecordsBeforeMysql(records);
+  syncChatHistoryToMysql(records).catch(() => {});
+};
+
+const saveBeforeMysql = save;
+save = function saveWithMysql() {
+  saveBeforeMysql();
+  syncSettingsToMysql().catch(() => {});
+};
+
+loadSettingsFromMysql()
+  .then(() => loadChatHistoryFromMysql())
+  .catch(() => {});
 
 deleteChatRecord = function deleteChatRecordWithUndo(recordId) {
   const records = readChatHistoryRecords();
