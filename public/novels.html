@@ -155,6 +155,22 @@
                 <textarea id="setting-editor" class="editor novel-editor" rows="16"></textarea>
               </div>
             </section>
+
+            <section id="materials-panel" class="panel-block novel-collapsible-panel">
+              <div class="novel-card-head novel-collapsible-head">
+                <div class="section-head">
+                  <h3>素材库</h3>
+                  <p>挂载对话、心理、环境、类型规则和能力等级素材，生成与润色时会自动参考。</p>
+                </div>
+                <div class="button-row wrap-row">
+                  <select id="material-select"></select>
+                  <button id="save-material" class="ghost-button" type="button">保存素材</button>
+                  <button id="generate-material" class="ghost-button" type="button">AI整理素材</button>
+                </div>
+              </div>
+              <textarea id="material-source" class="editor novel-editor" rows="4" placeholder="可选：填入素材来源、整理要求，或直接写你想让 AI 补充的方向。"></textarea>
+              <textarea id="material-editor" class="editor novel-editor" rows="10" placeholder="这里可以手动维护素材库内容。"></textarea>
+            </section>
           </div>
 
           <div class="novel-secondary-column">
@@ -188,6 +204,21 @@
                 <div id="chapter-list" class="chapter-list"></div>
                 <textarea id="chapter-viewer" class="editor novel-editor" rows="18" readonly title="双击打开阅读器"></textarea>
               </div>
+            </section>
+
+            <section class="panel-block novel-manual-polish-panel">
+              <div class="novel-card-head">
+                <div class="section-head">
+                  <h3>手写章节润色</h3>
+                  <p>粘贴手写章节，AI 会结合设定和素材库润色，并保存为待审草稿。</p>
+                </div>
+                <div class="button-row wrap-row">
+                  <input id="manual-chapter-no" type="number" min="1" placeholder="章节号">
+                  <button id="polish-manual-chapter" class="primary-button" type="button">润色并入库</button>
+                </div>
+              </div>
+              <textarea id="manual-polish-instruction" class="editor novel-editor" rows="3" placeholder="可选：润色要求，例如加强人物对话、心理描写、环境氛围，保持剧情不变。"></textarea>
+              <textarea id="manual-chapter-content" class="editor novel-editor" rows="12" placeholder="把你手写的章节正文粘贴到这里。"></textarea>
             </section>
           </div>
         </section>

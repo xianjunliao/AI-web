@@ -79,6 +79,16 @@ body.novel-page textarea::placeholder {
   gap: 8px;
 }
 
+.novel-manual-polish-panel,
+#materials-panel {
+  gap: 12px;
+}
+
+.novel-manual-polish-panel input[type="number"] {
+  width: 120px;
+  min-width: 0;
+}
+
 .novel-body {
   display: block;
   overflow: auto;

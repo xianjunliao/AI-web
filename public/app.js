@@ -7151,6 +7151,50 @@ function buildLeanWebSearchSystemMessages() {
   return list;
 }
 
+function estimateToolSchemaChars(tools = []) {
+  try {
+    return JSON.stringify(Array.isArray(tools) ? tools : []).length;
+  } catch {
+    return 0;
+  }
+}
+
+function getContextBudgetChars(tools = []) {
+  const contextTokens = Math.max(2048, Number(els.contextLimit?.value || 32768) || 32768);
+  const responseReserveChars = 6000;
+  const protocolReserveChars = 2000;
+  const toolReserveChars = estimateToolSchemaChars(tools);
+  return Math.max(4000, Math.floor(contextTokens * 4) - responseReserveChars - protocolReserveChars - toolReserveChars);
+}
+
+function trimMessagesToContextBudget(systemList = [], historyList = [], currentMessage = null, tools = []) {
+  const budgetChars = getContextBudgetChars(tools);
+  const systemMessagesForApi = toApiMessages(systemList);
+  const currentMessageForApi = currentMessage ? toApiMessage(currentMessage) : null;
+  const fixedChars =
+    systemMessagesForApi.reduce((sum, message) => sum + estimateContentChars(message?.content), 0)
+    + (currentMessageForApi ? estimateContentChars(currentMessageForApi.content) : 0);
+  let remainingChars = Math.max(0, budgetChars - fixedChars);
+  const keptHistory = [];
+  const historyMessages = toApiMessages(historyList);
+
+  for (let index = historyMessages.length - 1; index >= 0; index -= 1) {
+    const message = historyMessages[index];
+    const messageChars = estimateContentChars(message?.content);
+    if (keptHistory.length && messageChars > remainingChars) {
+      break;
+    }
+    if (!keptHistory.length || messageChars <= remainingChars) {
+      keptHistory.unshift(message);
+      remainingChars -= messageChars;
+    }
+  }
+
+  return currentMessageForApi
+    ? [...systemMessagesForApi, ...keptHistory, currentMessageForApi]
+    : [...systemMessagesForApi, ...keptHistory];
+}
+
 const askModelBeforeToolOnlyFallback = askModel;
 askModel = async function askModelWithToolOnlyFallback(userText) {
   if (!selectedModel()) throw new Error("请先选择模型。");
@@ -7196,7 +7240,8 @@ askModel = async function askModelWithToolOnlyFallback(userText) {
     : allowedTools;
   const toolRounds = leanWebSearchMode ? 2 : MAX_TOOL_ROUNDS;
   const baseSystemMessages = leanWebSearchMode ? buildLeanWebSearchSystemMessages() : systemMessages();
-  let messages = [...baseSystemMessages, ...baseHistory, { role: "user", content: userPayload(userText) }];
+  const currentUserMessage = { role: "user", content: userPayload(userText) };
+  let messages = trimMessagesToContextBudget(baseSystemMessages, baseHistory, currentUserMessage, leanWebSearchTools);
   let final = "";
 
   for (let i = 0; i < toolRounds; i++) {

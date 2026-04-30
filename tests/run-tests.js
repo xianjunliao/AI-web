@@ -4031,6 +4031,77 @@ async function main() {
     assert.equal(updated.project.chapterWordTarget, 3600);
   });
 
+  await runTest("novel module manages mounted materials", async () => {
+    const purposes = [];
+    const { novelModule, novelsDir } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        purposes.push(purpose);
+        assert.equal(userPrompt.includes("用户补充素材或要求"), true);
+        assert.equal(userPrompt.includes("项目基础信息"), false);
+        assert.equal(userPrompt.includes("现有设定参考"), false);
+        return `# ${purpose}\n\n整理后的素材`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "material-test",
+      model: "novel-model",
+      autoGenerateSettings: false,
+    });
+    assert.equal(detail.materials.dialogue.hasContent, true);
+
+    await novelModule.writeMaterial(detail.project.id, "dialogue", "# 人物对话\n\n主角说话短促。");
+    const saved = await novelModule.readMaterial(detail.project.id, "dialogue");
+    assert.equal(saved.includes("主角说话短促"), true);
+
+    const generated = await novelModule.generateMaterial(detail.project.id, "ability-registry", {
+      source: "炼气、筑基、金丹。",
+    });
+    assert.equal(generated.content.includes("整理后的素材"), true);
+    assert.equal(purposes.includes("novel_material_ability-registry"), true);
+    const materialFile = await readTextFile(path.join(novelsDir, detail.project.id, "materials", "ability-registry.md"), "");
+    assert.equal(materialFile.includes("整理后的素材"), true);
+  });
+
+  await runTest("novel module polishes manual chapter into review draft with materials", async () => {
+    const calls = [];
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        calls.push({ purpose, userPrompt });
+        if (purpose === "novel_manual_chapter_polish") {
+          assert.equal(userPrompt.includes("挂载素材库"), true);
+          assert.equal(userPrompt.includes("主角说话短促"), true);
+          return "# 第1章 手写稿\n\n润色后的正文。";
+        }
+        if (purpose === "novel_summary") return "# 摘要\n\n事件推进。";
+        if (purpose === "novel_snapshot") return "# 快照\n\n状态稳定。";
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "manual-polish-test",
+      model: "novel-model",
+      autoGenerateSettings: false,
+    });
+    await novelModule.writeMaterial(detail.project.id, "dialogue", "# 人物对话\n\n主角说话短促。");
+    const result = await novelModule.polishManualChapter(detail.project.id, {
+      chapterNo: 1,
+      content: "# 第1章 草稿\n\n我自己写的一段正文。",
+      instruction: "加强对话。",
+    });
+    assert.equal(result.chapterNo, 1);
+    assert.equal(result.savedAsDraft, true);
+    assert.equal(calls.some((call) => call.purpose === "novel_manual_chapter_polish"), true);
+
+    const nextDetail = await novelModule.getProjectDetail(detail.project.id);
+    assert.equal(nextDetail.state.pendingDraftChapter, 1);
+    assert.equal(nextDetail.review.pending[0].source, "manual_polish");
+    const chapter = await novelModule.getChapterContent(detail.project.id, 1, { preferDraft: true });
+    assert.equal(chapter.status, "draft");
+    assert.equal(chapter.content.includes("润色后的正文"), true);
+  });
+
   await runTest("novel module infers project fields from a brief", async () => {
     let capturedModel = "";
     const { novelModule } = createNovelModuleHarness({

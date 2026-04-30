@@ -73,8 +73,12 @@
 - 题材 / 主题 / 梗概 / 主角等基础信息生成设定
 - 每章目标字数配置
 - 设定 Markdown 保存
+- 设定项单独生成与整体生成
 - 根据已写正文整理设定
-- 生成下一章草稿
+- 素材库管理（人物对话、心理描写、环境描写、修真素材、能力等级、自定义）
+- 素材库 AI 整理与生成
+- 生成下一章草稿（自动挂载素材库内容）
+- 手写章节 AI 润色（保留剧情骨架，增强表现力）
 - 阅读器中查看章节正文、字数与上下章切换
 - 重生成当前待审草稿
 - 删除指定章节并回退写作进度
@@ -169,7 +173,8 @@ AI-web/
 - `server-connection-config.js`：共享连接配置
 - `server-http.js`：静态资源服务与 API 代理
 - `server-live-web-search.js`：实时联网搜索
-- `server-novel-projects.js`：小说项目、设定、章节、QQ 审阅
+- `server-mysql-storage.js`：MySQL 持久化存储、任务队列与作业 Worker
+- `server-novel-projects.js`：小说项目、设定、素材库、章节、润色、QQ 审阅
 - `server-personas.js`：人设管理
 - `server-qq.js`：QQ 机器人能力
 - `server-schedule-intent.js`：定时任务意图识别
@@ -195,6 +200,7 @@ data/novels/<projectId>/
 ├─ state.json
 ├─ review.json
 ├─ settings/
+├─ materials/
 ├─ chapters/
 ├─ drafts/
 ├─ summaries/

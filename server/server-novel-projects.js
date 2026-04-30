@@ -15,7 +15,17 @@ const SETTING_DEFINITIONS = [
   { key: "taboo", title: "禁忌规则" },
 ];
 
+const MATERIAL_DEFINITIONS = [
+  { key: "dialogue", title: "人物对话" },
+  { key: "psychology", title: "心理描写" },
+  { key: "environment", title: "环境描写" },
+  { key: "genre-xiuzhen", title: "修真小说素材" },
+  { key: "ability-registry", title: "能力等级" },
+  { key: "custom", title: "自定义素材" },
+];
+
 const SETTING_KEY_SET = new Set(SETTING_DEFINITIONS.map((item) => item.key));
+const MATERIAL_KEY_SET = new Set(MATERIAL_DEFINITIONS.map((item) => item.key));
 const PLANNING_SETTING_KEY_SET = new Set(["outline", "volume-plan", "chapter-plan"]);
 const NOVEL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -121,6 +131,10 @@ function createSettingFileName(key = "") {
   return `${key}.md`;
 }
 
+function createMaterialFileName(key = "") {
+  return `${key}.md`;
+}
+
 function createSettingGenerationContext(currentSettings = {}, generated = {}, options = {}) {
   const key = String(options.key || "").trim();
   const overwrite = options.overwrite === true;
@@ -160,6 +174,7 @@ function getProjectPaths(novelsDir, projectId) {
     stateFile: path.join(projectDir, "state.json"),
     reviewFile: path.join(projectDir, "review.json"),
     settingsDir: path.join(projectDir, "settings"),
+    materialsDir: path.join(projectDir, "materials"),
     chaptersDir: path.join(projectDir, "chapters"),
     draftsDir: path.join(projectDir, "drafts"),
     summariesDir: path.join(projectDir, "summaries"),
@@ -241,6 +256,16 @@ function createBaseInfoMarkdown(payload = {}) {
     "- 章节输出为 Markdown 正文，不要输出额外解释。",
   ];
   return lines.join("\n");
+}
+
+function createDefaultMaterialMarkdown(definition = {}) {
+  return [
+    `# ${definition.title || "素材库"}`,
+    "",
+    "可手动填入素材，也可以使用 AI 整理。",
+    "",
+    "建议记录可复用的表达、规则、样例、禁忌和连续性信息。",
+  ].join("\n");
 }
 
 function buildProjectPromptSummary(project = {}) {
@@ -591,6 +616,56 @@ function createNovelModule(deps = {}) {
     return await readTextFile(path.join(paths.settingsDir, createSettingFileName(key)), "");
   }
 
+  async function writeMaterial(projectId, key, content) {
+    const normalizedKey = String(key || "").trim();
+    if (!MATERIAL_KEY_SET.has(normalizedKey)) {
+      const error = new Error("Unsupported material key");
+      error.statusCode = 404;
+      throw error;
+    }
+    const paths = getProjectPaths(novelsDir, projectId);
+    await fs.promises.mkdir(paths.materialsDir, { recursive: true });
+    await writeFileAtomic(path.join(paths.materialsDir, createMaterialFileName(normalizedKey)), String(content || "").trim() + "\n");
+  }
+
+  async function readMaterial(projectId, key) {
+    const normalizedKey = String(key || "").trim();
+    if (!MATERIAL_KEY_SET.has(normalizedKey)) {
+      const error = new Error("Unsupported material key");
+      error.statusCode = 404;
+      throw error;
+    }
+    const paths = getProjectPaths(novelsDir, projectId);
+    return await readTextFile(path.join(paths.materialsDir, createMaterialFileName(normalizedKey)), "");
+  }
+
+  async function listMaterials(projectId) {
+    await ensureProjectExists(projectId);
+    const materials = {};
+    for (const definition of MATERIAL_DEFINITIONS) {
+      const content = await readMaterial(projectId, definition.key).catch(() => "");
+      materials[definition.key] = {
+        key: definition.key,
+        title: definition.title,
+        hasContent: Boolean(String(content || "").trim()),
+        preview: truncateText(content, 180),
+      };
+    }
+    return materials;
+  }
+
+  async function readMaterialsLibraryContext(projectId, options = {}) {
+    const maxPerMaterial = Math.max(300, Number(options.maxPerMaterial) || 1400);
+    const sections = [];
+    for (const definition of MATERIAL_DEFINITIONS) {
+      const content = await readMaterial(projectId, definition.key).catch(() => "");
+      const normalized = String(content || "").trim();
+      if (!normalized || /^# .+\n\s*可手动填入素材/.test(normalized)) continue;
+      sections.push(`## ${definition.title}\n${truncateText(normalized, maxPerMaterial)}`);
+    }
+    return sections.join("\n\n");
+  }
+
   async function listChaptersMeta(projectId) {
     const paths = getProjectPaths(novelsDir, projectId);
     const chapterEntries = [];
@@ -640,6 +715,7 @@ function createNovelModule(deps = {}) {
       state,
       review,
       settings,
+      materials: await listMaterials(projectId),
       chapters: await listChaptersMeta(projectId),
     };
   }
@@ -808,6 +884,7 @@ function createNovelModule(deps = {}) {
     await Promise.all([
       fs.promises.mkdir(paths.projectDir, { recursive: true }),
       fs.promises.mkdir(paths.settingsDir, { recursive: true }),
+      fs.promises.mkdir(paths.materialsDir, { recursive: true }),
       fs.promises.mkdir(paths.chaptersDir, { recursive: true }),
       fs.promises.mkdir(paths.draftsDir, { recursive: true }),
       fs.promises.mkdir(paths.summariesDir, { recursive: true }),
@@ -848,6 +925,10 @@ function createNovelModule(deps = {}) {
     for (const definition of SETTING_DEFINITIONS) {
       if (definition.key === "base-info") continue;
       await writeSetting(projectId, definition.key, `# ${definition.title}\n\n待自动生成。`);
+    }
+
+    for (const definition of MATERIAL_DEFINITIONS) {
+      await writeMaterial(projectId, definition.key, createDefaultMaterialMarkdown(definition));
     }
 
     if (payload.autoGenerateSettings !== false) {
@@ -1198,6 +1279,73 @@ function createNovelModule(deps = {}) {
     };
   }
 
+  async function generateMaterial(projectId, key, options = {}) {
+    const normalizedKey = String(key || "").trim();
+    if (!MATERIAL_KEY_SET.has(normalizedKey)) {
+      const error = new Error("Unsupported material key");
+      error.statusCode = 404;
+      throw error;
+    }
+    const { project } = await readProjectFileSet(projectId);
+    const title = MATERIAL_DEFINITIONS.find((item) => item.key === normalizedKey)?.title || normalizedKey;
+    const currentContent = await readMaterial(projectId, normalizedKey).catch(() => "");
+    const extraSource = String(options.source || options.brief || "").trim();
+    const includeProjectContext = options.includeProjectContext === true
+      || /结合.*(小说|项目|设定|正文|章节|人物|世界观)|参考.*(小说|项目|设定|正文|章节|人物|世界观)|按.*(小说|项目|设定|正文|章节|人物|世界观)/.test(extraSource);
+    const settings = {};
+    if (includeProjectContext) {
+      for (const definition of SETTING_DEFINITIONS) {
+        settings[definition.key] = await readSetting(projectId, definition.key);
+      }
+    }
+    const content = await generateNovelModelText({
+      purpose: `novel_material_${normalizedKey}`,
+      model: project.model,
+      systemPrompt: "你是中文小说素材库整理 Agent。输出纯 Markdown，不要使用代码块，不要解释过程。",
+      userPrompt: [
+        `请整理“${title}”素材库。`,
+        "",
+        "### 范围边界",
+        includeProjectContext
+          ? "用户要求结合当前小说项目内容，本次可以参考下方项目上下文。"
+          : "默认只整理素材库本身，不要引入、续写、改写或总结当前小说项目里的设定、正文、章节规划、人物关系和剧情内容。",
+        "",
+        ...(includeProjectContext ? [
+          "### 项目基础信息",
+          buildProjectPromptSummary(project),
+          "",
+          "### 现有设定参考",
+          Object.entries(settings).map(([settingKey, content]) => `## ${settingKey}\n${truncateText(content, 1200)}`).join("\n\n"),
+          "",
+        ] : []),
+        "",
+        "### 当前素材库内容",
+        currentContent.trim() || "暂无",
+        "",
+        "### 用户补充素材或要求",
+        extraSource || "暂无",
+        "",
+        "### 整理要求",
+        "1. 输出可以直接作为长期素材库使用的 Markdown。",
+        "2. 保留用户手写的有价值素材，并补全可复用表达、规则、样例和禁忌。",
+        "3. 若是人物对话，请整理不同人物/关系/情境下的语气样例。",
+        "4. 若是心理或环境描写，请整理可复用描写模板和适用场景。",
+        "5. 若是修真或能力等级，请整理境界、能力边界、升级条件、代价和禁忌。",
+      ].join("\n"),
+      temperature: 0.65,
+    });
+    await writeMaterial(projectId, normalizedKey, content);
+    await writeJsonFileAtomic(getProjectPaths(novelsDir, projectId).projectFile, {
+      ...project,
+      updatedAt: Date.now(),
+    });
+    return {
+      key: normalizedKey,
+      title,
+      content,
+    };
+  }
+
   async function reconcileSettingsFromChapters(projectId, options = {}) {
     const chapterCanonContext = await readWrittenChapterCanon(projectId, options);
     if (!chapterCanonContext.hasContent) {
@@ -1326,6 +1474,7 @@ function createNovelModule(deps = {}) {
     }
     const chapterContext = await readRecentChapterContext(projectId, chapterNo);
     const chapterPlanGuidance = buildChapterPlanGuidance(settings["chapter-plan"] || "", chapterNo);
+    const materialsContext = await readMaterialsLibraryContext(projectId);
     const systemPrompt = [
       "你是长篇中文网络小说自动写作 Agent。",
       "必须严格遵守给定设定、既有剧情和连续性要求。",
@@ -1360,6 +1509,9 @@ function createNovelModule(deps = {}) {
       "",
       "### 上一章状态快照",
       chapterContext.snapshot || "暂无",
+      "",
+      "### 挂载素材库",
+      materialsContext || "暂无素材库内容。",
       "",
       "### 写作要求",
       "1. 保持设定一致，不要吃书。",
@@ -1530,6 +1682,7 @@ function createNovelModule(deps = {}) {
     }
     const chapterContext = await readRecentChapterContext(projectId, normalizedChapterNo);
     const chapterPlanGuidance = buildChapterPlanGuidance(settings["chapter-plan"] || "", normalizedChapterNo);
+    const materialsContext = await readMaterialsLibraryContext(projectId);
     const systemPrompt = "你是中文小说修订 Agent。请根据反馈直接重写章节草稿，输出纯 Markdown，不要解释。";
     const initialRewritten = await generateNovelModelText({
       purpose: "novel_rewrite",
@@ -1552,6 +1705,9 @@ function createNovelModule(deps = {}) {
         "",
         "### 设定参考",
         Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, 2200)}`).join("\n\n"),
+        "",
+        "### 挂载素材库",
+        materialsContext || "暂无素材库内容。",
         "",
         "### 写作要求",
         createChapterWordTargetRequirement(project.chapterWordTarget),
@@ -1641,6 +1797,162 @@ function createNovelModule(deps = {}) {
       chapterNo: normalizedChapterNo,
       force: true,
     });
+  }
+
+  async function polishManualChapter(projectId, options = {}) {
+    const manualContent = String(options.content || options.chapterContent || "").trim();
+    if (!manualContent) {
+      const error = new Error("Manual chapter content is required");
+      error.statusCode = 400;
+      throw error;
+    }
+    const { project, state, review, paths } = await readProjectFileSet(projectId);
+    const requestedChapterNo = parseChapterNo(options.chapterNo);
+    const chapterNo = requestedChapterNo || (Number(state.lastApprovedChapter) || 0) + 1;
+    const pendingChapterNo = Number(state.pendingDraftChapter) || 0;
+    if (pendingChapterNo && pendingChapterNo !== chapterNo && options.force !== true) {
+      const error = new Error(`Chapter ${pendingChapterNo} is still waiting for review`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const settings = {};
+    for (const definition of SETTING_DEFINITIONS) {
+      settings[definition.key] = await readSetting(projectId, definition.key);
+    }
+    const chapterContext = await readRecentChapterContext(projectId, chapterNo);
+    const chapterPlanGuidance = buildChapterPlanGuidance(settings["chapter-plan"] || "", chapterNo);
+    const materialsContext = await readMaterialsLibraryContext(projectId);
+    const polishInstruction = String(options.instruction || options.feedback || "").trim();
+    const systemPrompt = [
+      "你是中文小说润色编辑。",
+      "你的任务是润色用户手写章节，而不是重写成完全不同的剧情。",
+      "必须保留原文核心事件、人物关系、叙事顺序和章节边界。",
+      "输出纯 Markdown 正文，不要解释，不要使用代码块。",
+    ].join("\n");
+    const polished = await generateNovelModelText({
+      purpose: "novel_manual_chapter_polish",
+      model: project.model,
+      systemPrompt,
+      userPrompt: [
+        `请润色小说《${project.name}》第 ${chapterNo} 章手写稿。`,
+        "",
+        "### 项目基础信息",
+        buildProjectPromptSummary(project),
+        "",
+        "### 当前章节细纲",
+        chapterPlanGuidance.current || `未从章节细纲中定位到第 ${chapterNo} 章条目，请以用户手写稿为准。`,
+        "",
+        "### 相邻章节边界",
+        chapterPlanGuidance.previous ? `上一章参考：\n${chapterPlanGuidance.previous}` : "上一章参考：暂无",
+        chapterPlanGuidance.next ? `下一章边界：\n${chapterPlanGuidance.next}` : "下一章边界：暂无",
+        "",
+        "### 最近章节上下文",
+        chapterContext.recentFullTexts.join("\n\n") || "暂无",
+        "",
+        "### 上一章状态快照",
+        chapterContext.snapshot || "暂无",
+        "",
+        "### 设定文件",
+        Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 3200 : 1600)}`).join("\n\n"),
+        "",
+        "### 挂载素材库",
+        materialsContext || "暂无素材库内容。",
+        "",
+        "### 用户润色要求",
+        polishInstruction || "在不改变剧情骨架的前提下，增强语言表现力、人物对话、心理描写、环境氛围和节奏衔接。",
+        "",
+        "### 手写章节原文",
+        manualContent,
+        "",
+        "### 输出要求",
+        `1. 标题格式使用“# 第${chapterNo}章 ...”。如果原文已有合适标题可以保留。`,
+        "2. 不要擅自新增颠覆性剧情、角色死亡、能力突破或关系跃迁。",
+        "3. 优先使用素材库中适合的对话、心理、环境、类型和能力等级素材。",
+        "4. 保留用户原文中有辨识度的表达，只做提升和补足。",
+      ].join("\n"),
+      temperature: 0.55,
+    });
+    const completed = await completeChapterToWordTarget({
+      project,
+      chapterNo,
+      chapterContent: polished,
+      settings,
+      chapterContext,
+      chapterPlanGuidance,
+      systemPrompt,
+    });
+
+    const summary = await generateNovelModelText({
+      purpose: "novel_summary",
+      model: project.model,
+      systemPrompt: "你是小说章节摘要助手。输出纯 Markdown，不要使用代码块。",
+      userPrompt: `请为《${project.name}》第 ${chapterNo} 章生成章节摘要，要求包含：本章事件、人物变化、伏笔推进。\n\n${completed}`,
+      temperature: 0.5,
+    });
+    const snapshot = await generateNovelModelText({
+      purpose: "novel_snapshot",
+      model: project.model,
+      systemPrompt: "你是小说连续性整理助手。输出纯 Markdown，不要使用代码块。",
+      userPrompt: `请为《${project.name}》第 ${chapterNo} 章生成状态快照，包含：人物状态、地点/时间线、伏笔状态、未解决冲突。\n\n${completed}`,
+      temperature: 0.4,
+    });
+
+    if (options.saveAsDraft !== false) {
+      await Promise.all([
+        writeFileAtomic(path.join(paths.draftsDir, formatChapterFileName(chapterNo, ".draft.md")), String(completed || "").trim() + "\n"),
+        writeFileAtomic(path.join(paths.summariesDir, formatChapterFileName(chapterNo, ".summary.md")), String(summary || "").trim() + "\n"),
+        writeFileAtomic(path.join(paths.snapshotsDir, formatChapterFileName(chapterNo, ".state.md")), String(snapshot || "").trim() + "\n"),
+      ]);
+      const nextReview = {
+        ...review,
+        pending: [
+          {
+            chapterNo,
+            status: "waiting_review",
+            title: extractChapterTitle(completed, chapterNo),
+            updatedAt: Date.now(),
+            feedback: polishInstruction,
+            source: "manual_polish",
+          },
+          ...review.pending.filter((item) => parseChapterNo(item.chapterNo) !== chapterNo),
+        ],
+        updatedAt: Date.now(),
+      };
+      const nextState = {
+        ...state,
+        phase: "review",
+        currentChapter: Math.max(Number(state.currentChapter) || 0, chapterNo),
+        pendingDraftChapter: chapterNo,
+        lastGeneratedChapter: Math.max(Number(state.lastGeneratedChapter) || 0, chapterNo),
+        updatedAt: Date.now(),
+      };
+      const nextProject = {
+        ...project,
+        updatedAt: Date.now(),
+      };
+      await Promise.all([
+        writeJsonFileAtomic(paths.reviewFile, nextReview),
+        writeJsonFileAtomic(paths.stateFile, nextState),
+        writeJsonFileAtomic(paths.projectFile, nextProject),
+      ]);
+      await pushReviewToQq(projectId, {
+        project: nextProject,
+        chapterNo,
+        title: extractChapterTitle(completed, chapterNo),
+        summary,
+        rewritten: true,
+      });
+    }
+
+    return {
+      chapterNo,
+      title: extractChapterTitle(completed, chapterNo),
+      draft: completed,
+      summary,
+      snapshot,
+      savedAsDraft: options.saveAsDraft !== false,
+    };
   }
 
   async function rejectChapter(projectId, chapterNo, feedback = "") {
@@ -1995,6 +2307,50 @@ function createNovelModule(deps = {}) {
       sendJson(res, 200, { ok: true, settings });
       return true;
     }
+
+    const materialsListMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/materials$/);
+    if (materialsListMatch && req.method === "GET") {
+      const projectId = decodeURIComponent(materialsListMatch[1]);
+      const materials = {};
+      for (const definition of MATERIAL_DEFINITIONS) {
+        materials[definition.key] = await readMaterial(projectId, definition.key);
+      }
+      sendJson(res, 200, { ok: true, materials });
+      return true;
+    }
+    const materialGenerateMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/materials\/([^/]+)\/generate$/);
+    if (materialGenerateMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(materialGenerateMatch[1]);
+      const key = decodeURIComponent(materialGenerateMatch[2]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, {
+        ok: true,
+        projectId,
+        generated: await generateMaterial(projectId, key, payload),
+      });
+      return true;
+    }
+    const materialItemMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/materials\/([^/]+)$/);
+    if (materialItemMatch) {
+      const projectId = decodeURIComponent(materialItemMatch[1]);
+      const key = decodeURIComponent(materialItemMatch[2]);
+      if (!MATERIAL_KEY_SET.has(key)) {
+        const error = new Error("Unsupported material key");
+        error.statusCode = 404;
+        throw error;
+      }
+      if (req.method === "GET") {
+        sendJson(res, 200, { ok: true, key, content: await readMaterial(projectId, key) });
+        return true;
+      }
+      if (req.method === "PUT") {
+        const payload = await parseJsonBody(req);
+        await writeMaterial(projectId, key, String(payload.content || ""));
+        sendJson(res, 200, { ok: true, key, content: await readMaterial(projectId, key) });
+        return true;
+      }
+    }
+
     const settingItemMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/settings\/([^/]+)$/);
     if (settingItemMatch) {
       const projectId = decodeURIComponent(settingItemMatch[1]);
@@ -2034,6 +2390,14 @@ function createNovelModule(deps = {}) {
     if (generateChapterMatch && req.method === "POST") {
       const projectId = decodeURIComponent(generateChapterMatch[1]);
       sendJson(res, 200, { ok: true, ...(await generateChapter(projectId)) });
+      return true;
+    }
+
+    const polishManualChapterMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/polish-manual$/);
+    if (polishManualChapterMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(polishManualChapterMatch[1]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, { ok: true, ...(await polishManualChapter(projectId, payload)) });
       return true;
     }
 
@@ -2116,8 +2480,13 @@ function createNovelModule(deps = {}) {
     deleteProject,
     generateSettings,
     generateSingleSetting,
+    generateMaterial,
+    listMaterials,
+    readMaterial,
+    writeMaterial,
     reconcileSettingsFromChapters,
     generateChapter,
+    polishManualChapter,
     batchGenerateChapters,
     approveChapter,
     deleteChapterAndProgress,
@@ -2131,5 +2500,6 @@ function createNovelModule(deps = {}) {
 
 module.exports = {
   SETTING_DEFINITIONS,
+  MATERIAL_DEFINITIONS,
   createNovelModule,
 };

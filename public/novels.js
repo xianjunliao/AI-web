@@ -87,6 +87,11 @@ const els = {
   toggleSettings: $("#toggle-settings"),
   settingsPanel: $("#settings-panel"),
   settingsBody: $("#settings-body"),
+  materialSelect: $("#material-select"),
+  materialSource: $("#material-source"),
+  materialEditor: $("#material-editor"),
+  saveMaterial: $("#save-material"),
+  generateMaterial: $("#generate-material"),
   generateSettings: $("#generate-settings"),
   reconcileSettings: $("#reconcile-settings"),
   batchGenerate: $("#batch-generate"),
@@ -95,6 +100,10 @@ const els = {
   deleteChapter: $("#delete-chapter"),
   approveChapter: $("#approve-chapter"),
   rewriteChapter: $("#rewrite-chapter"),
+  manualChapterNo: $("#manual-chapter-no"),
+  manualPolishInstruction: $("#manual-polish-instruction"),
+  manualChapterContent: $("#manual-chapter-content"),
+  polishManualChapter: $("#polish-manual-chapter"),
   fields: {
     name: $("#project-name"),
     genre: $("#project-genre"),
@@ -138,6 +147,8 @@ const state = {
   currentModel: "",
   availableModels: [],
   settings: {},
+  materials: {},
+  activeMaterial: "dialogue",
   activeSetting: "base-info",
   detail: null,
   activeChapterNo: 0,
@@ -561,6 +572,40 @@ const OPERATION_CONFIGS = {
       { progress: 74, hint: "正在同步项目状态..." },
     ],
   },
+  saveMaterial: {
+    title: "正在保存素材",
+    buttonText: "保存中...",
+    successTitle: "素材已保存",
+    successHint: "素材库内容已经更新，后续生成与润色会自动参考。",
+    errorTitle: "保存素材失败",
+    initialProgress: 16,
+    stepMs: 220,
+    stepValue: 10,
+    ceiling: 86,
+    releaseDelayMs: 280,
+    stages: [
+      { progress: 16, hint: "正在提交素材内容..." },
+      { progress: 52, hint: "正在刷新素材库..." },
+      { progress: 76, hint: "马上完成..." },
+    ],
+  },
+  generateMaterial: {
+    title: "正在整理素材",
+    buttonText: "整理中...",
+    successTitle: "素材整理完成",
+    successHint: "AI 已整理当前素材库。",
+    errorTitle: "整理素材失败",
+    initialProgress: 12,
+    stepMs: 320,
+    stepValue: 7,
+    ceiling: 90,
+    releaseDelayMs: 420,
+    stages: [
+      { progress: 12, hint: "正在读取项目设定..." },
+      { progress: 42, hint: "正在整理素材库内容..." },
+      { progress: 74, hint: "正在刷新素材编辑区..." },
+    ],
+  },
   generateCurrentSetting: {
     title: "姝ｅ湪鐢熸垚褰撳墠璁惧畾",
     buttonText: "鐢熸垚涓?..",
@@ -661,6 +706,24 @@ const OPERATION_CONFIGS = {
       { progress: 12, hint: "正在准备章节上下文..." },
       { progress: 44, hint: "正在生成下一章草稿..." },
       { progress: 72, hint: "正在刷新章节列表..." },
+    ],
+  },
+  polishManualChapter: {
+    title: "正在润色手写章节",
+    buttonText: "润色中...",
+    successTitle: "手写章节已润色",
+    successHint: "润色结果已保存为待审草稿。",
+    errorTitle: "润色章节失败",
+    initialProgress: 10,
+    stepMs: 360,
+    stepValue: 6,
+    ceiling: 92,
+    releaseDelayMs: 420,
+    stages: [
+      { progress: 10, hint: "正在读取设定和素材库..." },
+      { progress: 38, hint: "正在润色手写章节..." },
+      { progress: 68, hint: "正在生成摘要和状态快照..." },
+      { progress: 84, hint: "正在保存为待审草稿..." },
     ],
   },
   approveChapter: {
@@ -793,6 +856,8 @@ const actionButtons = [
   els.saveProject,
   els.deleteProject,
   els.saveSetting,
+  els.saveMaterial,
+  els.generateMaterial,
   els.generateCurrentSetting,
   els.reconcileCurrentSetting,
   els.generateSettings,
@@ -803,6 +868,7 @@ const actionButtons = [
   els.deleteChapter,
   els.approveChapter,
   els.rewriteChapter,
+  els.polishManualChapter,
   els.readerPrev,
   els.readerNext,
   els.readerGenerateNext,
@@ -819,6 +885,12 @@ const inputControls = [
   ...Object.values(els.newFields),
   els.settingSelect,
   els.settingEditor,
+  els.materialSelect,
+  els.materialSource,
+  els.materialEditor,
+  els.manualChapterNo,
+  els.manualPolishInstruction,
+  els.manualChapterContent,
   els.reviewFeedback,
   els.readerReviewFeedback,
 ].filter(Boolean);
@@ -909,6 +981,12 @@ function clearProjectFields() {
   els.progress.innerHTML = '<div class="file-empty">暂无项目进度。</div>';
   els.settingSelect.innerHTML = "";
   els.settingEditor.value = "";
+  if (els.materialSelect) els.materialSelect.innerHTML = "";
+  if (els.materialSource) els.materialSource.value = "";
+  if (els.materialEditor) els.materialEditor.value = "";
+  if (els.manualChapterNo) els.manualChapterNo.value = "";
+  if (els.manualPolishInstruction) els.manualPolishInstruction.value = "";
+  if (els.manualChapterContent) els.manualChapterContent.value = "";
   els.chapterList.innerHTML = '<div class="file-empty">暂无章节。</div>';
   els.chapterViewer.value = "";
   setReviewFeedbackValue("");
@@ -1344,7 +1422,9 @@ function renderWorkspaceState(config = WORKSPACE_STATES.empty) {
   state.activeId = "";
   state.detail = null;
   state.settings = {};
+  state.materials = {};
   state.activeSetting = "base-info";
+  state.activeMaterial = "dialogue";
   els.title.textContent = "小说项目工坊";
   els.meta.textContent = config.meta;
   els.emptyTitle.textContent = config.emptyTitle;
@@ -1414,8 +1494,9 @@ function renderProjectList() {
 function renderProjectDetail(detail) {
   state.detail = detail;
   state.activeId = detail.project.id;
-  const { project, state: projectState, review, chapters, settings } = detail;
+  const { project, state: projectState, review, chapters, settings, materials } = detail;
   state.settings = settings;
+  state.materials = materials || {};
 
   setElementHidden(els.emptyState, true);
   setElementHidden(els.projectContent, false);
@@ -1457,6 +1538,13 @@ function renderProjectDetail(detail) {
     setStatusBar(error.message, "error");
     els.settingEditor.value = "";
   });
+  renderMaterialOptions(materials || {});
+  if (Object.keys(materials || {}).length) {
+    loadMaterial(state.activeMaterial).catch((error) => {
+      setStatusBar(error.message, "error");
+      if (els.materialEditor) els.materialEditor.value = "";
+    });
+  }
 
   renderChapterList(chapters || []);
   if (!chapters?.length) {
@@ -1510,8 +1598,9 @@ async function refreshProjects(options = {}) {
 function renderProjectDetail(detail) {
   state.detail = detail;
   state.activeId = detail.project.id;
-  const { project, state: projectState, review, chapters, settings } = detail;
+  const { project, state: projectState, review, chapters, settings, materials } = detail;
   state.settings = settings;
+  state.materials = materials || {};
 
   setElementHidden(els.emptyState, true);
   setElementHidden(els.projectContent, false);
@@ -1559,6 +1648,13 @@ function renderProjectDetail(detail) {
     setStatusBar(error.message, "error");
     els.settingEditor.value = "";
   });
+  renderMaterialOptions(materials || {});
+  if (Object.keys(materials || {}).length) {
+    loadMaterial(state.activeMaterial).catch((error) => {
+      setStatusBar(error.message, "error");
+      if (els.materialEditor) els.materialEditor.value = "";
+    });
+  }
 
   renderChapterList(chapters || []);
   if (!chapters?.length) {
@@ -1598,6 +1694,56 @@ async function loadSetting(key) {
   const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/settings/${encodeURIComponent(key)}`);
   els.settingEditor.value = data.content || "";
   syncSettingActionButtons();
+}
+
+function renderMaterialOptions(materials = state.materials || {}) {
+  if (!els.materialSelect) return;
+  const materialItems = Object.values(materials || {});
+  els.materialSelect.innerHTML = materialItems.map((item) => `<option value="${item.key}">${item.title}</option>`).join("");
+  if (!materialItems.some((item) => item.key === state.activeMaterial)) {
+    state.activeMaterial = materialItems[0]?.key || "dialogue";
+  }
+  els.materialSelect.value = state.activeMaterial;
+}
+
+async function loadMaterial(key) {
+  const projectId = requireActiveProject("查看素材");
+  const materialKey = String(key || state.activeMaterial || "dialogue").trim();
+  state.activeMaterial = materialKey;
+  if (els.materialSelect) els.materialSelect.value = materialKey;
+  const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/materials/${encodeURIComponent(materialKey)}`);
+  if (els.materialEditor) els.materialEditor.value = data.content || "";
+}
+
+async function saveMaterial() {
+  const projectId = requireActiveProject("保存素材");
+  const materialKey = String(state.activeMaterial || els.materialSelect?.value || "dialogue").trim();
+  await runWithOperation(OPERATION_CONFIGS.saveMaterial, els.saveMaterial, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/materials/${encodeURIComponent(materialKey)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: els.materialEditor?.value || "" }),
+    });
+    await loadProject(projectId);
+    await loadMaterial(materialKey);
+  });
+}
+
+async function generateMaterial() {
+  const projectId = requireActiveProject("整理素材");
+  const materialKey = String(state.activeMaterial || els.materialSelect?.value || "dialogue").trim();
+  await runWithOperation(OPERATION_CONFIGS.generateMaterial, els.generateMaterial, async () => {
+    await j(`/novels/projects/${encodeURIComponent(projectId)}/materials/${encodeURIComponent(materialKey)}/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source: els.materialSource?.value || "",
+      }),
+    });
+    if (els.materialSource) els.materialSource.value = "";
+    await loadProject(projectId);
+    await loadMaterial(materialKey);
+  });
 }
 
 async function loadChapter(chapterNo) {
@@ -2088,6 +2234,31 @@ async function generateChapter() {
   });
 }
 
+async function polishManualChapter() {
+  const projectId = requireActiveProject("润色手写章节");
+  const content = String(els.manualChapterContent?.value || "").trim();
+  if (!content) {
+    throw new Error("请先粘贴手写章节正文");
+  }
+  await runWithOperation(OPERATION_CONFIGS.polishManualChapter, els.polishManualChapter, async () => {
+    const data = await j(`/novels/projects/${encodeURIComponent(projectId)}/chapters/polish-manual`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chapterNo: Number(els.manualChapterNo?.value || 0) || undefined,
+        instruction: els.manualPolishInstruction?.value || "",
+        content,
+        saveAsDraft: true,
+      }),
+    });
+    await loadProject(projectId);
+    await loadChapter(data.chapterNo);
+    if (els.manualChapterContent) els.manualChapterContent.value = "";
+    if (els.manualPolishInstruction) els.manualPolishInstruction.value = "";
+    if (els.manualChapterNo) els.manualChapterNo.value = "";
+  });
+}
+
 async function deleteChapterAndProgress(options = {}) {
   const projectId = requireActiveProject("删除章节");
   const chapterNo = resolveActiveChapterNo(options.chapterNo, "删除章节");
@@ -2350,6 +2521,30 @@ Object.assign(OPERATION_CONFIGS.saveSetting, {
     { progress: 74, hint: "正在同步项目状态..." },
   ],
 });
+Object.assign(OPERATION_CONFIGS.saveMaterial, {
+  title: "正在保存素材",
+  buttonText: "保存中...",
+  successTitle: "素材已保存",
+  successHint: "素材库内容已经更新，后续生成与润色会自动参考。",
+  errorTitle: "保存素材失败",
+  stages: [
+    { progress: 16, hint: "正在提交素材内容..." },
+    { progress: 52, hint: "正在刷新素材库..." },
+    { progress: 76, hint: "马上完成..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.generateMaterial, {
+  title: "正在整理素材",
+  buttonText: "整理中...",
+  successTitle: "素材整理完成",
+  successHint: "AI 已整理当前素材库。",
+  errorTitle: "整理素材失败",
+  stages: [
+    { progress: 12, hint: "正在读取项目设定..." },
+    { progress: 42, hint: "正在整理素材库内容..." },
+    { progress: 74, hint: "正在刷新素材编辑区..." },
+  ],
+});
 Object.assign(OPERATION_CONFIGS.generateCurrentSetting, {
   title: "正在生成当前设定",
   buttonText: "生成中...",
@@ -2420,6 +2615,19 @@ Object.assign(OPERATION_CONFIGS.generateChapter, {
     { progress: 12, hint: "正在准备章节上下文..." },
     { progress: 44, hint: "正在生成下一章草稿..." },
     { progress: 72, hint: "正在刷新章节列表..." },
+  ],
+});
+Object.assign(OPERATION_CONFIGS.polishManualChapter, {
+  title: "正在润色手写章节",
+  buttonText: "润色中...",
+  successTitle: "手写章节已润色",
+  successHint: "润色结果已保存为待审草稿。",
+  errorTitle: "润色章节失败",
+  stages: [
+    { progress: 10, hint: "正在读取设定和素材库..." },
+    { progress: 38, hint: "正在润色手写章节..." },
+    { progress: 68, hint: "正在生成摘要和状态快照..." },
+    { progress: 84, hint: "正在保存为待审草稿..." },
   ],
 });
 Object.assign(OPERATION_CONFIGS.approveChapter, {
@@ -2873,6 +3081,9 @@ els.novelBackgroundShellOpacity?.addEventListener("input", () => {
 bindAsyncAction(els.saveProject, () => saveProject());
 bindAsyncAction(els.deleteProject, () => deleteProject());
 bindAsyncAction(els.saveSetting, () => saveSetting());
+els.materialSelect?.addEventListener("change", () => loadMaterial(els.materialSelect.value).catch((error) => alert(error.message)));
+bindAsyncAction(els.saveMaterial, () => saveMaterial());
+bindAsyncAction(els.generateMaterial, () => generateMaterial());
 bindAsyncAction(els.generateCurrentSetting, () => generateCurrentSetting());
 bindAsyncAction(els.reconcileCurrentSetting, () => reconcileCurrentSetting());
 els.settingSelect.onchange = () => loadSetting(els.settingSelect.value).catch((error) => alert(error.message));
@@ -2880,6 +3091,7 @@ bindAsyncAction(els.generateSettings, () => generateSettings());
 bindAsyncAction(els.reconcileSettings, () => reconcileSettings());
 bindAsyncAction(els.batchGenerate, () => batchGenerate());
 bindAsyncAction(els.generateChapter, () => generateChapter());
+bindAsyncAction(els.polishManualChapter, () => polishManualChapter());
 bindAsyncAction(els.exportChapters, () => exportChaptersMarkdown());
 bindAsyncAction(els.deleteChapter, () => deleteChapterAndProgress({
   triggerButton: els.deleteChapter,
