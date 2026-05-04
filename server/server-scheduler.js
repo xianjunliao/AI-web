@@ -383,8 +383,14 @@ function createScheduler(deps) {
     if (typeof afterRunScheduledTask === "function") {
       try {
         await afterRunScheduledTask(task);
-      } catch {
-        // Ignore post-run side effects such as QQ notifications.
+      } catch (error) {
+        if (task.qqPushEnabled) {
+          task.lastStatus = "error";
+          task.lastError = `QQ push failed: ${error.message || "Unknown QQ push error"}`;
+          task.updatedAt = Date.now();
+          await saveScheduledTasks();
+          throw error;
+        }
       }
     }
 
@@ -798,8 +804,14 @@ function createScheduler(deps) {
     if (typeof afterRunScheduledTask === "function") {
       try {
         await afterRunScheduledTask(task);
-      } catch {
-        // Ignore post-run side effects such as QQ notifications.
+      } catch (error) {
+        if (task.qqPushEnabled) {
+          task.lastStatus = "error";
+          task.lastError = `QQ push failed: ${error.message || "Unknown QQ push error"}`;
+          task.updatedAt = Date.now();
+          await saveScheduledTasks();
+          throw error;
+        }
       }
     }
 

@@ -2450,6 +2450,26 @@ function createQqModule(deps) {
     };
   }
 
+  function formatScheduledTaskQqPushMessageSafe(task = {}) {
+    const taskName = String(task.name || "Scheduled task").trim() || "Scheduled task";
+    const runAt = Number(task.lastRunAt) || Date.now();
+    const runText = new Intl.DateTimeFormat("zh-CN", {
+      timeZone: BEIJING_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date(runAt)).replace(/\//g, "-");
+    const detail = String(task.lastStatus === "error" ? task.lastError : task.lastResult || "").trim();
+    if (task.lastStatus === "error") {
+      return [`Scheduled task: ${taskName}`, `Run time: ${runText}`, detail ? `Failed: ${detail}` : "Failed"].join("\n");
+    }
+    return [`Scheduled task: ${taskName}`, `Run time: ${runText}`, detail || "Task completed."].join("\n");
+  }
+
   async function pushScheduledTaskResultToQq(task) {
     if (
       !task ||
@@ -2469,7 +2489,7 @@ function createQqModule(deps) {
       accessToken: targetConfig.accessToken,
       targetType: normalizeTargetType(task.qqTargetType || "private"),
       targetId: String(task.qqTargetId || "").trim(),
-      message: formatScheduledTaskQqPushMessage(task),
+      message: formatScheduledTaskQqPushMessageSafe(task),
     });
     return task;
   }
