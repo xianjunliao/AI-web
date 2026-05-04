@@ -749,8 +749,13 @@ function startMysqlChatJobWorker() {
 async function callLocalNovelEndpoint(job = {}) {
   const method = String(job.method || "GET").toUpperCase();
   const pathValue = String(job.path || "/").trim();
-  if (!pathValue.startsWith("/novels/") && pathValue !== "/novels/projects" && pathValue !== "/novels/infer-project") {
-    const error = new Error("Unsupported novel bridge path");
+  if (
+    !pathValue.startsWith("/novels/") &&
+    pathValue !== "/novels/projects" &&
+    pathValue !== "/novels/infer-project" &&
+    !pathValue.startsWith("/scheduler/tasks")
+  ) {
+    const error = new Error("Unsupported MySQL bridge path");
     error.statusCode = 400;
     throw error;
   }
