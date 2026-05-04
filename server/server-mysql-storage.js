@@ -187,6 +187,44 @@ function createMysqlStorage({
     }
   }
 
+  function isRecoverableMysqlConnectionError(error) {
+    const code = String(error?.code || "");
+    const message = String(error?.message || "");
+    return [
+      "ECONNRESET",
+      "PROTOCOL_CONNECTION_LOST",
+      "ETIMEDOUT",
+      "EPIPE",
+      "ECONNREFUSED",
+    ].includes(code) || /ECONNRESET|connection lost|closed|timeout/i.test(message);
+  }
+
+  async function resetMysqlPool() {
+    const currentPool = pool;
+    pool = null;
+    if (!currentPool || typeof currentPool.end !== "function") return;
+    try {
+      await currentPool.end();
+    } catch {}
+  }
+
+  async function queryMysqlWithReconnect(sql, params = []) {
+    await ensureMysqlStorage();
+    try {
+      return await getPool().query(sql, params);
+    } catch (error) {
+      if (!isRecoverableMysqlConnectionError(error)) {
+        throw error;
+      }
+      if (typeof logDebug === "function") {
+        logDebug(`mysql_storage_reconnect_after ${error.code || error.message || "connection_error"}`);
+      }
+      await resetMysqlPool();
+      await ensureMysqlStorage();
+      return await getPool().query(sql, params);
+    }
+  }
+
   async function listChatRecords() {
     await ensureMysqlStorage();
     const [rows] = await getPool().query(
@@ -261,8 +299,7 @@ function createMysqlStorage({
   }
 
   async function getConfig(configKey) {
-    await ensureMysqlStorage();
-    const [rows] = await getPool().query(
+    const [rows] = await queryMysqlWithReconnect(
       "SELECT config_json,updated_at FROM ai_web_configs WHERE config_key=?",
       [configKey]
     );
@@ -277,9 +314,8 @@ function createMysqlStorage({
   }
 
   async function saveConfig(configKey, value) {
-    await ensureMysqlStorage();
     const now = Date.now();
-    await getPool().query(
+    await queryMysqlWithReconnect(
       `INSERT INTO ai_web_configs (config_key,config_json,updated_at)
        VALUES (?,?,?)
        ON DUPLICATE KEY UPDATE config_json=VALUES(config_json), updated_at=VALUES(updated_at)`,
@@ -345,20 +381,23 @@ function createMysqlStorage({
     const connection = await getPool().getConnection();
     try {
       await connection.beginTransaction();
+      const now = Date.now();
+      const staleBefore = now - Math.max(30_000, Number(activeConfig.chatJobStaleMs || 120_000));
       const [rows] = await connection.query(
         `SELECT id,request_id,source,model,request_json,attempts,created_at,updated_at
          FROM ai_web_chat_jobs
          WHERE status='pending'
+            OR (status='processing' AND (locked_at IS NULL OR locked_at < ?))
          ORDER BY created_at ASC
          LIMIT 1
-         FOR UPDATE`
+         FOR UPDATE`,
+        [staleBefore]
       );
       if (!rows.length) {
         await connection.commit();
         return null;
       }
       const row = rows[0];
-      const now = Date.now();
       await connection.query(
         `UPDATE ai_web_chat_jobs
          SET status='processing', attempts=attempts+1, locked_by=?, locked_at=?, updated_at=?

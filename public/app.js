@@ -1131,7 +1131,7 @@ function load() {
   if (els.qqToolsSkillEnabled) els.qqToolsSkillEnabled.checked = Boolean(s.qqToolSkillEnabled);
   if (els.qqToolsFileSendEnabled) els.qqToolsFileSendEnabled.checked = Boolean(s.qqToolFileSendEnabled);
   if (els.personaPreset) els.personaPreset.value = s.personaPreset || "none";
-  if (els.modelSelect && s.model) { const o = document.createElement("option"); o.value = s.model; o.textContent = s.model; els.modelSelect.replaceChildren(o); els.modelSelect.value = s.model; }
+  if (els.modelSelect && s.model && !els.modelSelect.options.length) { const o = document.createElement("option"); o.value = s.model; o.textContent = s.model; els.modelSelect.replaceChildren(o); els.modelSelect.value = s.model; }
   applyContextLimitForModel(s.model || "");
   state.skills = Array.isArray(s.skillsCache) ? s.skillsCache.filter(Boolean) : [];
   state.selectedSkill = cloneSkillForStorage(s.selectedSkill);
@@ -1745,6 +1745,9 @@ function setSettingsModal(open) {
   els.settingsModal.setAttribute("aria-hidden", open ? "false" : "true");
   els.settingsTrigger?.setAttribute("aria-expanded", open ? "true" : "false");
   syncOverlayModalState();
+  if (open && typeof maybeRefreshScheduledTasksOnDemand === "function") {
+    window.setTimeout(() => maybeRefreshScheduledTasksOnDemand(), 0);
+  }
 }
 
 function syncOverlayModalState() {
@@ -1933,7 +1936,11 @@ function renderFiles() {
 function clearFiles() { state.files = []; renderFiles(); refreshMetrics(); setStatus("附件已清空"); }
 
 async function j(url, options) {
-  const r = await fetch(url, options); let data = {};
+  const requestOptions = options ? { ...options } : {};
+  if (!requestOptions.method || String(requestOptions.method).toUpperCase() === "GET") {
+    requestOptions.cache = requestOptions.cache || "no-store";
+  }
+  const r = await fetch(url, requestOptions); let data = {};
   try { data = await r.json(); } catch {}
   if (!r.ok) throw new Error(data.error || data.details || `请求失败：${r.status}`);
   return data;
@@ -2030,14 +2037,27 @@ async function testConnection() {
   spark(els.testConnection); setStatus("正在测试连接...");
   try { const data = await j(modelsEndpoint()); const models = (data.data || []).map((x) => x.id).filter(Boolean); appendMessage("system", models.length ? `连接成功，可用模型：${models.join("、")}` : "连接成功，模型服务在线。", "success"); setStatus("连接测试成功"); } catch (e) { appendMessage("system", `连接测试失败：${e.message}`, "error"); setStatus("连接测试失败"); }
 }
-function renderModels(models) {
+function clearModelOptions() {
   if (!els.modelSelect) return;
-  const current = selectedModel(); const history = saved().modelHistory || []; const names = [...history, ...models].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
-  els.modelSelect.replaceChildren(...(names.length ? names : [""]).map((name) => { const o = document.createElement("option"); o.value = name; o.textContent = name || "未读取到模型"; return o; }));
-  els.modelSelect.value = names.includes(current) ? current : (names[0] || "");
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = "请选择模型";
+  els.modelSelect.replaceChildren(option);
+  els.modelSelect.value = "";
+  applyContextLimitForModel("");
+}
+function renderModels(models, { preferredModel = "" } = {}) {
+  if (!els.modelSelect) return;
+  const current = String(preferredModel || selectedModel()).trim(); const names = models.filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+  // Build option list with empty placeholder first
+  const options = [""].concat(names).map((name) => { const o = document.createElement("option"); o.value = name; o.textContent = name || "请选择模型"; return o; });
+  els.modelSelect.replaceChildren(...options);
+  // Keep current selection when valid; otherwise pick the first loaded model so chat is ready after startup.
+  els.modelSelect.value = current && names.includes(current) ? current : (names[0] || "");
   applyContextLimitForModel(selectedModel());
 }
 async function loadModels() {
+  clearModelOptions();
   spark(els.loadModels); setStatus("正在读取模型列表...");
   try { const data = await j(modelsEndpoint()); const models = (data.data || []).map((x) => x.id).filter(Boolean); renderModels(models); save(); appendMessage("system", models.length ? `已读取 ${models.length} 个模型。` : "未读取到模型。", models.length ? "success" : "error"); setStatus(models.length ? "模型列表已更新" : "未读取到模型"); } catch (e) { appendMessage("system", `读取模型失败：${e.message}`, "error"); setStatus("读取模型失败"); }
 }
@@ -2114,7 +2134,12 @@ function bind() {
   els.toolActivityClose?.addEventListener("click", () => setToolActivityModal(false));
   els.toolActivityBackdrop?.addEventListener("click", () => setToolActivityModal(false));
   document.querySelectorAll(".config-group[data-config-group]").forEach((group) => {
-    group.addEventListener("toggle", () => save());
+    group.addEventListener("toggle", () => {
+      save();
+      if (group.dataset.configGroup === "scheduler-settings" && group.open) {
+        maybeRefreshScheduledTasksOnDemand();
+      }
+    });
   });
   document.querySelectorAll(".sub-config-fold[data-config-group]").forEach((group) => {
     group.addEventListener("toggle", () => save());
@@ -2275,7 +2300,6 @@ function bind() {
 
 async function init() {
   renderPersonaPresets(); load(); renderPersonaPresetDescription(); renderModelMeta(); loadToolActivity(); initPreviewResizer(); closePreview(); setToolActivityModal(false); setSettingsModal(false); bind(); renderFiles(); resetChat(); refreshMetrics(); setStatus("就绪");
-  try { const data = await j(modelsEndpoint()); const models = (data.data || []).map((x) => x.id).filter(Boolean); if (models.length) { renderModels(models); save(); setStatus("连接正常，模型已加载"); } } catch {}
 }
 
 renderFiles = function renderFilesOverride() {
@@ -5108,7 +5132,48 @@ function formatScheduleTime(timestamp) {
   return `${mm}-${dd} ${hh}:${mi}`;
 }
 
+const scheduledTaskRequestRuntime = {
+  enabled: false,
+  loading: null,
+  refreshTimer: 0,
+};
+
+function isSchedulerSettingsVisible() {
+  const modalOpen = !els.settingsModal || !els.settingsModal.classList.contains("is-hidden");
+  const group = document.querySelector('.config-group[data-config-group="scheduler-settings"]');
+  return Boolean(modalOpen && (!group || group.open));
+}
+
+function enableScheduledTaskRequests() {
+  scheduledTaskRequestRuntime.enabled = true;
+}
+
+function shouldFetchScheduledTasks(options = {}) {
+  if (options.force) return true;
+  return scheduledTaskRequestRuntime.enabled || isSchedulerSettingsVisible();
+}
+
+function scheduleScheduledTasksRefresh(delayMs = 180) {
+  window.clearTimeout(scheduledTaskRequestRuntime.refreshTimer);
+  scheduledTaskRequestRuntime.refreshTimer = window.setTimeout(() => {
+    enableScheduledTaskRequests();
+    loadScheduledTasksUI({ force: true }).catch(() => {});
+  }, delayMs);
+}
+
+function maybeRefreshScheduledTasksOnDemand() {
+  if (!isSchedulerSettingsVisible()) return;
+  scheduleScheduledTasksRefresh(0);
+}
+
 async function schedulerRequest(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  if (method !== "GET" && String(url || "").startsWith("/scheduler/tasks")) {
+    enableScheduledTaskRequests();
+  }
+  if (method === "GET" && String(url || "").startsWith("/scheduler/tasks") && !shouldFetchScheduledTasks(options)) {
+    return { ok: true, tasks: [] };
+  }
   const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -6643,13 +6708,53 @@ renderScheduledTasks = function renderScheduledTasksCronOnly(tasks) {
 loadScheduledTasksUI().catch(() => {});
 
 const MYSQL_STORAGE_CONFIG_KEY = "app-settings";
+const MYSQL_STORAGE_SETTINGS_OMIT_KEYS = new Set([
+  "assistantAvatar",
+  "userAvatar",
+  "workspaceBackgroundImage",
+  "chatPageBackground",
+  "pageBackgrounds",
+  "settingBundle",
+  "skillsCache",
+  "selectedSkill",
+  "activeSkill",
+  "activeSkills",
+  "qqSelectedSkill",
+  "qqActiveSkills",
+]);
 const mysqlStorageRuntime = {
   loading: false,
+  settingsLoading: false,
+  settingsLoaded: false,
   syncing: false,
+  settingsSyncing: false,
   pendingRecords: null,
+  pendingSettingsJson: "",
+  settingsSnapshotTimer: 0,
   ready: false,
   lastSyncAt: 0,
+  lastSettingsSyncJson: "",
+  settingsSyncTimer: 0,
+  suppressSettingsSync: false,
 };
+
+function sanitizeSettingsForMysql(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeSettingsForMysql(item));
+  }
+  if (!value || typeof value !== "object") {
+    return typeof value === "string" && value.startsWith("data:") ? "" : value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !MYSQL_STORAGE_SETTINGS_OMIT_KEYS.has(key))
+      .map(([key, item]) => [key, sanitizeSettingsForMysql(item)])
+  );
+}
+
+function getMysqlSettingsSnapshotJson() {
+  return JSON.stringify(sanitizeSettingsForMysql(saved()));
+}
 
 async function mysqlStorageRequest(url, options = {}) {
   const response = await fetch(url, {
@@ -6731,36 +6836,67 @@ async function syncChatHistoryToMysql(records = readChatHistoryRecords()) {
 }
 
 async function loadSettingsFromMysql() {
+  if (mysqlStorageRuntime.settingsLoaded || mysqlStorageRuntime.settingsLoading) return;
+  mysqlStorageRuntime.settingsLoading = true;
   try {
     const data = await mysqlStorageRequest(`/storage/config/${encodeURIComponent(MYSQL_STORAGE_CONFIG_KEY)}`);
     const remoteSettings = data?.config?.value;
-    if (!remoteSettings || typeof remoteSettings !== "object") return;
+    if (!remoteSettings || typeof remoteSettings !== "object") {
+      mysqlStorageRuntime.settingsLoaded = true;
+      return;
+    }
     const localSettings = saved();
     const merged = {
       ...remoteSettings,
       ...localSettings,
     };
+    mysqlStorageRuntime.suppressSettingsSync = true;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
     load();
     renderWorkspaceBranding();
     renderModelMeta();
     refreshMetrics();
+    mysqlStorageRuntime.lastSettingsSyncJson = getMysqlSettingsSnapshotJson();
+    mysqlStorageRuntime.settingsLoaded = true;
   } catch (error) {
     if (error.status !== 404) {
       setStatus(`MySQL 配置读取失败：${String(error.message || error)}`, "error");
     }
+  } finally {
+    mysqlStorageRuntime.suppressSettingsSync = false;
+    mysqlStorageRuntime.settingsLoading = false;
   }
 }
 
 async function syncSettingsToMysql() {
+  const nextJson = mysqlStorageRuntime.pendingSettingsJson || getMysqlSettingsSnapshotJson();
+  if (!nextJson || nextJson === mysqlStorageRuntime.lastSettingsSyncJson) return;
+  if (mysqlStorageRuntime.settingsSyncing) return;
+  mysqlStorageRuntime.settingsSyncing = true;
   try {
     await mysqlStorageRequest(`/storage/config/${encodeURIComponent(MYSQL_STORAGE_CONFIG_KEY)}`, {
       method: "POST",
-      body: JSON.stringify({ value: saved() }),
+      body: JSON.stringify({ value: JSON.parse(nextJson) }),
     });
+    mysqlStorageRuntime.lastSettingsSyncJson = nextJson;
+    mysqlStorageRuntime.pendingSettingsJson = "";
   } catch (error) {
     setStatus(`MySQL 配置保存失败：${String(error.message || error)}`, "error");
+  } finally {
+    mysqlStorageRuntime.settingsSyncing = false;
   }
+}
+
+function queueSettingsSyncToMysql() {
+  if (mysqlStorageRuntime.suppressSettingsSync) return;
+  window.clearTimeout(mysqlStorageRuntime.settingsSnapshotTimer);
+  mysqlStorageRuntime.settingsSnapshotTimer = window.setTimeout(() => {
+    const nextJson = getMysqlSettingsSnapshotJson();
+    if (!nextJson || nextJson === mysqlStorageRuntime.lastSettingsSyncJson) return;
+    mysqlStorageRuntime.pendingSettingsJson = nextJson;
+    window.clearTimeout(mysqlStorageRuntime.settingsSyncTimer);
+    mysqlStorageRuntime.settingsSyncTimer = window.setTimeout(() => syncSettingsToMysql().catch(() => {}), 800);
+  }, 0);
 }
 
 const writeChatHistoryRecordsBeforeMysql = writeChatHistoryRecords;
@@ -6772,7 +6908,7 @@ writeChatHistoryRecords = function writeChatHistoryRecordsWithMysql(records) {
 const saveBeforeMysql = save;
 save = function saveWithMysql() {
   saveBeforeMysql();
-  syncSettingsToMysql().catch(() => {});
+  queueSettingsSyncToMysql();
 };
 
 loadSettingsFromMysql()
@@ -11888,6 +12024,7 @@ const sharedConnectionModelRuntime = {
   lastKnownModel: "",
 };
 let sharedConnectionConfigSaveTimer = null;
+let modelModeSwitchRequestId = 0;
 
 function getRemoteApiEnabled() {
   return String(els.remoteApiEnabled?.value || "false") === "true";
@@ -11997,13 +12134,61 @@ async function persistSharedConnectionModelToServer(modelName = selectedModel(),
   }
 }
 
-function queueSharedConnectionConfigSave() {
+function queueSharedConnectionConfigSave({ includeModel = true } = {}) {
   if (sharedConnectionConfigSaveTimer) {
     clearTimeout(sharedConnectionConfigSaveTimer);
   }
   sharedConnectionConfigSaveTimer = setTimeout(() => {
-    persistSharedConnectionModelToServer(selectedModel(), { quiet: false }).catch(() => {});
+    if (includeModel) {
+      persistSharedConnectionModelToServer(selectedModel(), { quiet: false }).catch(() => {});
+      return;
+    }
+    j(SHARED_CONNECTION_CONFIG_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildSharedConnectionConfigPayload({ includeModel: false })),
+    }).catch((error) => {
+      setStatus(`Connection config sync failed: ${String(error?.message || "unknown error")}`, "error");
+    });
   }, 300);
+}
+
+async function persistSharedConnectionConfigOnly() {
+  if (sharedConnectionConfigSaveTimer) {
+    clearTimeout(sharedConnectionConfigSaveTimer);
+    sharedConnectionConfigSaveTimer = null;
+  }
+  const response = await j(SHARED_CONNECTION_CONFIG_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildSharedConnectionConfigPayload({ includeModel: false })),
+  });
+  if (els.remoteApiEnabled) els.remoteApiEnabled.value = response?.config?.remoteApiEnabled ? "true" : "false";
+  if (els.remoteBaseUrl) els.remoteBaseUrl.value = String(response?.config?.remoteBaseUrl || "");
+  if (els.remoteApiPath) els.remoteApiPath.value = String(response?.config?.remoteApiPath || "/v1/chat/completions");
+  if (els.remoteModelsPath) els.remoteModelsPath.value = String(response?.config?.remoteModelsPath || "/v1/models");
+  if (els.remoteApiKey) els.remoteApiKey.value = String(response?.config?.remoteApiKey || "");
+  renderRemoteConnectionMeta();
+  return response?.config || {};
+}
+
+async function testConnectionAndLoadModelsForCurrentConfig() {
+  const requestId = ++modelModeSwitchRequestId;
+  clearModelOptions();
+  setStatus("正在测试连接...");
+  try {
+    const data = await j(modelsEndpoint());
+    if (requestId !== modelModeSwitchRequestId) return;
+    const models = (data.data || []).map((x) => x.id).filter(Boolean);
+    setStatus("连接测试成功，正在更新模型列表");
+    renderModels(models);
+    save();
+    setStatus(models.length ? "模型列表已更新" : "未读取到模型");
+  } catch (error) {
+    if (requestId !== modelModeSwitchRequestId) return;
+    clearModelOptions();
+    setStatus(`连接测试失败：${String(error?.message || "unknown error")}`, "error");
+  }
 }
 
 async function syncSharedConnectionModelFromServer({ quiet = true } = {}) {
@@ -12016,15 +12201,8 @@ async function syncSharedConnectionModelFromServer({ quiet = true } = {}) {
     if (els.remoteApiKey) els.remoteApiKey.value = String(response?.config?.remoteApiKey || "");
     renderRemoteConnectionMeta();
     const sharedModel = String(response?.config?.model || "").trim();
-    if (sharedModel) {
-      applySharedConnectionModelToUi(sharedModel, { persistLocal: true });
-      return sharedModel;
-    }
-    const localModel = selectedModel();
-    if (localModel) {
-      return await persistSharedConnectionModelToServer(localModel, { quiet: true });
-    }
-    return "";
+    sharedConnectionModelRuntime.lastKnownModel = sharedModel;
+    return sharedModel;
   } catch (error) {
     if (!quiet) {
       setStatus(`读取基础连接模型失败：${String(error?.message || "未知错误")}`, "error");
@@ -12043,6 +12221,21 @@ els.modelSelect?.addEventListener("change", () => {
 [els.remoteApiEnabled, els.remoteBaseUrl, els.remoteApiPath, els.remoteModelsPath, els.remoteApiKey].forEach((el) => {
   el?.addEventListener("change", () => {
     renderRemoteConnectionMeta();
+    if (el === els.remoteApiEnabled) {
+      clearModelOptions();
+      const requestId = ++modelModeSwitchRequestId;
+      persistSharedConnectionConfigOnly()
+        .then(() => {
+          if (requestId !== modelModeSwitchRequestId) return;
+          return testConnectionAndLoadModelsForCurrentConfig();
+        })
+        .catch((error) => {
+          if (requestId !== modelModeSwitchRequestId) return;
+          clearModelOptions();
+          setStatus(`Connection test failed: ${String(error?.message || "unknown error")}`, "error");
+        });
+      return;
+    }
     queueSharedConnectionConfigSave();
   });
   el?.addEventListener("blur", () => {
@@ -12066,7 +12259,26 @@ document.addEventListener("visibilitychange", () => {
   syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
 });
 
-syncSharedConnectionModelFromServer({ quiet: true }).catch(() => {});
+async function initializeSharedConnectionAndModels() {
+  const requestId = ++modelModeSwitchRequestId;
+  const previousSuppressSettingsSync = Boolean(mysqlStorageRuntime?.suppressSettingsSync);
+  try {
+    if (mysqlStorageRuntime) mysqlStorageRuntime.suppressSettingsSync = true;
+    const sharedModel = await syncSharedConnectionModelFromServer({ quiet: true });
+    const data = await j(modelsEndpoint());
+    if (requestId !== modelModeSwitchRequestId) return;
+    const models = (data.data || []).map((x) => x.id).filter(Boolean);
+    renderModels(models, { preferredModel: sharedModel });
+    save();
+    renderQqBotMeta();
+    renderQqToolPermissionMeta();
+    setStatus(models.length ? "模型列表已加载" : "未读取到模型");
+  } finally {
+    if (mysqlStorageRuntime) mysqlStorageRuntime.suppressSettingsSync = previousSuppressSettingsSync;
+  }
+}
+
+initializeSharedConnectionAndModels().catch(() => {});
 renderRemoteConnectionMeta();
 
 function seemsNaturalScheduledTaskIntentText(text = "") {
@@ -12748,11 +12960,11 @@ renderScheduledTasks = function renderScheduledTasksWithCreatorFinal(tasks) {
   schedulerElements().qqTargetId,
 ].forEach((el) => {
   el?.addEventListener("change", () => {
-    loadScheduledTasksUI().catch(() => {});
+    scheduleScheduledTasksRefresh(0);
   });
   el?.addEventListener("input", () => {
-    loadScheduledTasksUI().catch(() => {});
+    scheduleScheduledTasksRefresh(260);
   });
 });
 
-loadScheduledTasksUI().catch(() => {});
+maybeRefreshScheduledTasksOnDemand();

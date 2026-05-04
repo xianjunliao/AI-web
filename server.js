@@ -43,6 +43,7 @@ const TARGET_ORIGIN = "http://127.0.0.1:1234";
 const DEFAULT_CHAT_API_PATH = "/v1/chat/completions";
 const DEFAULT_MODELS_API_PATH = "/v1/models";
 const NOVEL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
+const BRIDGE_CHAT_TIMEOUT_MS = Number(process.env.BRIDGE_CHAT_TIMEOUT_MS || 120_000);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
@@ -130,19 +131,8 @@ const initializeDataFiles = createDataInitializer({
   legacyConnectionConfigFile: LEGACY_CONNECTION_CONFIG_FILE,
   migrateLegacyDataFile,
 });
-({
-  loadSharedConnectionConfig,
-  saveSharedConnectionConfig,
-  getSharedConnectionConfig,
-  handleSharedConnectionConfigGet,
-  handleSharedConnectionConfigPost,
-} = createSharedConnectionConfigModule({
-  connectionConfigFile: CONNECTION_CONFIG_FILE,
-  readJsonFile,
-  writeJsonFileAtomic,
-  readRequestBody,
-  sendJson,
-}));
+let syncConnectionConfigFromMysql;
+let handleSharedConnectionConfigSync;
 
 ({
   initMysqlStorage,
@@ -152,6 +142,7 @@ const initializeDataFiles = createDataInitializer({
   handleConfigGet: handleStorageConfigGet,
   handleConfigSave: handleStorageConfigSave,
   saveConfig: saveStorageConfig,
+  getConfig: getStorageConfig,
   logChatApiRequest,
   getMysqlStorageConfig,
   claimPendingChatJob,
@@ -166,6 +157,35 @@ const initializeDataFiles = createDataInitializer({
   readRequestBody,
   sendJson,
   logDebug: appendServerDebugLog,
+}));
+
+const mysqlStorageForConnection = {
+  isEnabled() {
+    try {
+      return !!(getMysqlStorageConfig && getMysqlStorageConfig().enabled);
+    } catch {
+      return false;
+    }
+  },
+  getConfig: getStorageConfig,
+  saveConfig: saveStorageConfig,
+};
+
+({
+  loadSharedConnectionConfig,
+  saveSharedConnectionConfig,
+  getSharedConnectionConfig,
+  syncConnectionConfigFromMysql,
+  handleSharedConnectionConfigGet,
+  handleSharedConnectionConfigPost,
+  handleSharedConnectionConfigSync,
+} = createSharedConnectionConfigModule({
+  connectionConfigFile: CONNECTION_CONFIG_FILE,
+  readJsonFile,
+  writeJsonFileAtomic,
+  readRequestBody,
+  sendJson,
+  mysqlStorage: mysqlStorageForConnection,
 }));
 
 let scheduledTasks = [];
@@ -260,6 +280,7 @@ function getResolvedModelServiceConfig() {
   const remoteApiPath = String(sharedConfig?.remoteApiPath || DEFAULT_CHAT_API_PATH).trim() || DEFAULT_CHAT_API_PATH;
   const remoteModelsPath = String(sharedConfig?.remoteModelsPath || DEFAULT_MODELS_API_PATH).trim() || DEFAULT_MODELS_API_PATH;
   const useRemote = remoteEnabled && remoteBaseUrl;
+  appendServerDebugLog(`model_service_config mode=${useRemote ? "remote" : "local"} remoteEnabled=${remoteEnabled} remoteBaseUrl=${remoteBaseUrl ? "(set)" : "(empty)"} remoteApiKey=${remoteApiKey ? "(set)" : "(empty)"}`);
   return {
     mode: useRemote ? "remote" : "local",
     targetOrigin: useRemote ? remoteBaseUrl : TARGET_ORIGIN,
@@ -383,10 +404,12 @@ function normalizeChatCompletionPayload(payload = {}) {
   if (nextPayload.stream === true) {
     nextPayload.stream = false;
   }
+  // Only use stored model as fallback when it's explicitly configured
+  // and no model was provided in the request
   if (!String(nextPayload.model || "").trim()) {
-    const fallbackModel = String(getSharedConnectionConfig()?.model || "").trim();
-    if (fallbackModel) {
-      nextPayload.model = fallbackModel;
+    const sharedModel = String(getSharedConnectionConfig()?.model || "").trim();
+    if (sharedModel) {
+      nextPayload.model = sharedModel;
     }
   }
   return nextPayload;
@@ -618,14 +641,16 @@ async function callBridgeChatCompletion(payload = {}) {
       : "Do not create, update, delete, or run scheduled tasks unless the user explicitly asks.",
     "After tool use, answer directly and concisely in the user's language.",
   ].join("\n");
+  const needsTools = allowScheduler || hasWebSearchIntent || hasWeatherIntent;
   const text = await callLocalModelWithTools({
     model,
     messages: [{ role: "system", content: bridgeSystemPrompt }, ...messages],
-    tools: createBridgeChatTools({ allowScheduler }),
+    tools: needsTools ? createBridgeChatTools({ allowScheduler }) : [],
     requiredToolName: hasWebSearchIntent ? "web_search" : (hasWeatherIntent ? "get_weather" : ""),
     singleUseToolNames: hasWebSearchIntent ? ["web_search"] : [],
     temperature: requestPayload.temperature,
-    timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
+    maxRounds: needsTools ? 6 : 1,
+    timeoutMs: BRIDGE_CHAT_TIMEOUT_MS,
   });
   return createBridgeTextResponse(text, model);
 }
@@ -637,7 +662,19 @@ async function processOneChatJob(workerId = "ai-web-worker") {
   }
 
   const startedAt = Date.now();
-  const requestPayload = normalizeChatCompletionPayload(job.requestPayload || {});
+  const rawPayload = job.requestPayload || {};
+
+  // Extract and apply connection config from life before processing
+  if (rawPayload.connectionConfig && typeof rawPayload.connectionConfig === "object") {
+    try {
+      await saveSharedConnectionConfig(rawPayload.connectionConfig);
+    } catch (syncErr) {
+      appendServerDebugLog(`mysql_job_connection_config_sync_failed ${String(syncErr?.message || syncErr)}`);
+    }
+    delete rawPayload.connectionConfig;
+  }
+
+  const requestPayload = normalizeChatCompletionPayload(rawPayload);
   try {
     const responsePayload = await callBridgeChatCompletion(requestPayload);
     await completeChatJob(job.id, {
@@ -846,6 +883,17 @@ async function handleMonitoredChatCompletion(req, res) {
   try {
     const rawBody = await readRequestBody(req, { limitBytes: 20 * 1024 * 1024 });
     payload = rawBody ? JSON.parse(rawBody) : {};
+
+    // If the request carries connectionConfig from life, apply it immediately
+    if (payload.connectionConfig && typeof payload.connectionConfig === "object") {
+      try {
+        await saveSharedConnectionConfig(payload.connectionConfig);
+      } catch (syncErr) {
+        appendServerDebugLog(`monitored_connection_config_sync_failed ${String(syncErr?.message || syncErr)}`);
+      }
+      delete payload.connectionConfig;
+    }
+
     payload = normalizeChatCompletionPayload(payload);
     responsePayload = await callConfiguredChatCompletion(payload);
     statusCode = 200;
@@ -2232,9 +2280,13 @@ async function generateNovelText({
   temperature = 0.7,
   timeoutMs = NOVEL_MODEL_TIMEOUT_MS,
 } = {}) {
-  const model = String(preferredModel || "").trim();
+  let model = String(preferredModel || "").trim();
+  // Fall back to global connection config model when project model is not set
   if (!model) {
-    const error = new Error("Novel project model is not configured");
+    model = String(getSharedConnectionConfig()?.model || "").trim();
+  }
+  if (!model) {
+    const error = new Error("Novel project model is not configured — set a model in project settings or global connection config");
     error.statusCode = 400;
     throw error;
   }
@@ -2452,6 +2504,7 @@ novelModule = createNovelModule({
   generateText: (...args) => generateNovelText(...args),
   sendQqMessage: (...args) => sendQqMessage(...args),
   getQqBotConfig: () => (typeof getQqBotConfig === "function" ? getQqBotConfig() : {}),
+  getSharedConnectionConfig: () => (typeof getSharedConnectionConfig === "function" ? getSharedConnectionConfig() : {}),
   logDebug: appendServerDebugLog,
 });
 
@@ -2575,6 +2628,11 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/connection-config" && req.method === "POST") {
     handleSharedConnectionConfigPost(req, res);
+    return;
+  }
+
+  if (pathname === "/connection-config/sync" && req.method === "POST") {
+    handleSharedConnectionConfigSync(req, res);
     return;
   }
 
@@ -3001,6 +3059,9 @@ bootstrapServer()
     startMysqlNovelJobWorker();
     startMysqlModelListSync();
     warmupModelServiceConnection({ reason: "startup" }).catch(() => {});
+    setInterval(() => {
+      syncConnectionConfigFromMysql().catch(() => {});
+    }, 30 * 1000);
   })
   .catch((error) => {
     console.error("Failed to initialize scheduler:", error);

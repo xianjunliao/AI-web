@@ -4858,9 +4858,7 @@ body.has-custom-background .activity-modal-panel,
 body.has-custom-background .novel-empty-state,
 body.has-custom-background .novel-dialog-form,
 body.has-custom-background .novel-reader-shell {
-  background:
-    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.34), transparent 34%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.58), rgba(244, 248, 255, 0.34) 56%, rgba(220, 234, 255, 0.24)) !important;
+  background: radial-gradient(circle at 100% 100%, rgba(255, 255, 255, 0.34), transparent 1%), linear-gradient(145deg, rgba(255, 255, 255, 0.58), rgba(244, 248, 255, 0.10) 0%, rgba(220, 234, 255, 0.01)) !important;
   border-color: rgba(255, 255, 255, 0.44) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.74),
@@ -5194,8 +5192,6 @@ body.has-custom-background {
 }
 
 body.has-custom-background .sidebar-history-panel {
-  background:
-    linear-gradient(180deg, rgba(251, 253, 255, 0.78), rgba(240, 246, 253, 0.68)) !important;
   border-color: rgba(255, 255, 255, 0.58) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.86),
@@ -5216,6 +5212,6 @@ body.has-custom-background .sidebar-history-panel .chat-history-meta-line,
 body.has-custom-background .sidebar-history-panel .chat-history-group-label,
 body.has-custom-background #chat-history-meta.inline-meta-card,
 body.has-custom-background .sidebar-history-panel .file-empty {
-  color: #567394 !important;
+  color: #1b1c1c !important;
 }
 

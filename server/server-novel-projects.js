@@ -520,8 +520,17 @@ function createNovelModule(deps = {}) {
     generateText,
     sendQqMessage,
     getQqBotConfig,
+    getSharedConnectionConfig,
     logDebug,
   } = deps;
+
+  function getGlobalModel() {
+    try {
+      return String((getSharedConnectionConfig && getSharedConnectionConfig()?.model) || "").trim();
+    } catch {
+      return "";
+    }
+  }
 
   async function ensureNovelsDir() {
     await fs.promises.mkdir(novelsDir, { recursive: true });
@@ -901,7 +910,7 @@ function createNovelModule(deps = {}) {
       premise: String(payload.premise || "").trim(),
       targetChapters: Number(payload.targetChapters) || 0,
       chapterWordTarget: normalizeChapterWordTarget(payload.chapterWordTarget),
-      model: sanitizeProjectModel(payload.model),
+      model: sanitizeProjectModel(payload.model) || getGlobalModel(),
       stylePreference: String(payload.stylePreference || "").trim(),
       audience: String(payload.audience || "").trim(),
       protagonist: String(payload.protagonist || "").trim(),
@@ -950,7 +959,7 @@ function createNovelModule(deps = {}) {
       premise: String(payload.premise ?? record.project.premise ?? "").trim(),
       targetChapters: Number(payload.targetChapters ?? record.project.targetChapters) || 0,
       chapterWordTarget: normalizeChapterWordTarget(payload.chapterWordTarget, record.project.chapterWordTarget),
-      model: sanitizeProjectModel(payload.model ?? record.project.model ?? ""),
+      model: sanitizeProjectModel(payload.model ?? record.project.model) || getGlobalModel(),
       stylePreference: String(payload.stylePreference ?? record.project.stylePreference ?? "").trim(),
       audience: String(payload.audience ?? record.project.audience ?? "").trim(),
       protagonist: String(payload.protagonist ?? record.project.protagonist ?? "").trim(),

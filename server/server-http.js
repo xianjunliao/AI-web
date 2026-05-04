@@ -198,12 +198,7 @@ async function requestJsonWithRetry(targetUrl, options = {}) {
   }
 
   if ((response.statusCode || 500) >= 400) {
-    const detail =
-      parsed?.message ||
-      parsed?.msg ||
-      parsed?.error ||
-      String(raw || "").trim() ||
-      `Request failed: ${response.statusCode || 500}`;
+    const detail = formatJsonErrorDetail(parsed, raw, response.statusCode || 500);
     const error = new Error(detail);
     error.statusCode = response.statusCode || 500;
     error.rawBody = raw;
@@ -218,6 +213,32 @@ async function requestJsonWithRetry(targetUrl, options = {}) {
   }
 
   return parsed || {};
+}
+
+function formatJsonErrorDetail(parsed, raw, statusCode) {
+  const candidates = [
+    parsed?.message,
+    parsed?.msg,
+    parsed?.error?.message,
+    parsed?.error?.msg,
+    parsed?.error?.detail,
+    parsed?.error,
+  ];
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+    if (typeof candidate === "object") {
+      try {
+        const text = JSON.stringify(candidate);
+        if (text && text !== "{}") return text;
+      } catch {
+        // Fall through to the raw response.
+      }
+    }
+  }
+  return String(raw || "").trim() || `Request failed: ${statusCode || 500}`;
 }
 
 function readIncomingRequestBody(req) {
@@ -276,7 +297,9 @@ function buildProxyRequestHeaders({
       normalizedKey === "content-length" ||
       normalizedKey === "host" ||
       normalizedKey === "origin" ||
-      normalizedKey === "referer"
+      normalizedKey === "referer" ||
+      normalizedKey === "if-none-match" ||
+      normalizedKey === "if-modified-since"
     ) {
       continue;
     }
@@ -314,6 +337,8 @@ function buildProxyResponseHeaders(responseHeaders = {}, bodyBuffer = Buffer.all
       !normalizedKey ||
       HOP_BY_HOP_RESPONSE_HEADERS.has(normalizedKey) ||
       normalizedKey === "content-length" ||
+      normalizedKey === "etag" ||
+      normalizedKey === "last-modified" ||
       normalizedKey === "access-control-allow-origin" ||
       normalizedKey === "access-control-allow-credentials"
     ) {
@@ -322,6 +347,7 @@ function buildProxyResponseHeaders(responseHeaders = {}, bodyBuffer = Buffer.all
     headers[key] = value;
   }
   headers["Content-Length"] = String(bodyBuffer.length);
+  headers["Cache-Control"] = "no-store";
   return headers;
 }
 
@@ -372,7 +398,7 @@ function createStaticServer({
 
       const ext = path.extname(resolvedPath).toLowerCase();
       const contentType = mimeTypes[ext] || "application/octet-stream";
-      res.writeHead(200, { "Content-Type": contentType });
+      res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
       res.end(data);
     });
   };
