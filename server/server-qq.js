@@ -1,6 +1,9 @@
 const fs = require("fs");
 const path = require("path");
-const { stripModelThinkingContent } = require("./server-utils");
+const {
+  buildAssistantMessageForHistory,
+  stripModelThinkingContent,
+} = require("./server-utils");
 const {
   inferScheduledTaskArgsFromText,
   inferScheduledTaskIntentFromText,
@@ -8,6 +11,16 @@ const {
   formatScheduledTaskActionReply,
 } = require("./server-schedule-intent");
 const { maybeRunDirectWebSearch } = require("./server-live-web-search");
+
+const DEFAULT_QQ_BRIDGE_TIMEOUT_MS = 120_000;
+
+function resolveQqBridgeTimeoutMs(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.max(1_000, numeric);
+  }
+  return DEFAULT_QQ_BRIDGE_TIMEOUT_MS;
+}
 
 function createQqModule(deps) {
   const {
@@ -156,7 +169,7 @@ function createQqModule(deps) {
     } catch {}
   }
 
-  async function postJson(targetUrl, headers = {}, payload = null) {
+  async function postJson(targetUrl, headers = {}, payload = null, options = {}) {
     const body = payload == null ? "" : JSON.stringify(payload);
     return await requestJson(targetUrl, {
       method: "POST",
@@ -166,6 +179,7 @@ function createQqModule(deps) {
         ...headers,
       },
       body,
+      timeoutMs: options.timeoutMs,
     });
   }
 
@@ -1517,6 +1531,7 @@ function createQqModule(deps) {
     const targetId = String(args.targetId || "").trim();
     const message = stripModelThinkingContent(String(args.message || "").trim());
     const accessToken = String(args.accessToken || "").trim();
+    const timeoutMs = resolveQqBridgeTimeoutMs(args.timeoutMs || process.env.QQ_BRIDGE_TIMEOUT_MS);
 
     if (!bridgeUrl) {
       const error = new Error("QQ bridge URL is required");
@@ -1544,7 +1559,7 @@ function createQqModule(deps) {
 
     const attemptSend = async (actionName, payload) => {
       const actionUrl = new URL(actionName, baseUrl);
-      return await postJson(actionUrl, requestHeaders, payload);
+      return await postJson(actionUrl, requestHeaders, payload, { timeoutMs });
     };
 
     let response;
@@ -2170,11 +2185,7 @@ function createQqModule(deps) {
         reply = currentReply;
       }
 
-      workingMessages.push({
-        role: "assistant",
-        content: message.content || currentReply,
-        tool_calls: message.tool_calls,
-      });
+      workingMessages.push(buildAssistantMessageForHistory(message, currentReply));
 
       if (!Array.isArray(message.tool_calls) || !message.tool_calls.length) {
         break;

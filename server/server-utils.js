@@ -47,6 +47,27 @@ function stripModelThinkingContent(value = "") {
     .trim();
 }
 
+function buildAssistantMessageForHistory(message = {}, fallbackContent = "") {
+  const assistantMessage = {
+    role: "assistant",
+    content: Object.prototype.hasOwnProperty.call(message, "content")
+      ? message.content
+      : fallbackContent,
+  };
+
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    assistantMessage.tool_calls = message.tool_calls;
+  }
+  if (Object.prototype.hasOwnProperty.call(message, "reasoning_content")) {
+    assistantMessage.reasoning_content = message.reasoning_content;
+  }
+  if (Object.prototype.hasOwnProperty.call(message, "reasoning")) {
+    assistantMessage.reasoning = message.reasoning;
+  }
+
+  return assistantMessage;
+}
+
 async function readRequestBody(req, options = {}) {
   const limitBytes = Number(options.limitBytes) || DEFAULT_REQUEST_BODY_LIMIT;
   return new Promise((resolve, reject) => {
@@ -231,6 +252,7 @@ async function migrateLegacyDataFile({ currentPath, legacyPath, fallbackValue })
 
 module.exports = {
   DEFAULT_REQUEST_BODY_LIMIT,
+  buildAssistantMessageForHistory,
   createHttpError,
   createStaticPathGuard,
   migrateLegacyDataFile,

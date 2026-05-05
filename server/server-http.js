@@ -3,7 +3,7 @@ const path = require("path");
 const http = require("http");
 const https = require("https");
 
-const DEFAULT_OUTBOUND_TIMEOUT_MS = 20_000;
+const DEFAULT_OUTBOUND_TIMEOUT_MS = 120_000;
 const DEFAULT_OUTBOUND_RETRY_COUNT = 1;
 const DEFAULT_OUTBOUND_RETRY_DELAY_MS = 750;
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);

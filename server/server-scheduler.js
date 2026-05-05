@@ -362,7 +362,10 @@ function createScheduler(deps) {
     await saveScheduledTasks();
 
     try {
-      const result = await callLocalModelForTask(task);
+      const result = await callLocalModelForTask({
+        ...task,
+        timeoutMs: scope.timeoutMs || scope.requestTimeoutMs || scope.aiTimeoutMs || scope.executionTimeoutMs,
+      });
       task.lastStatus = "success";
       task.lastResult = result.slice(0, 4000);
       task.lastRunAt = Date.now();
@@ -490,9 +493,16 @@ function createScheduler(deps) {
     }
   }
 
-  async function handleScheduledTaskRun(res, taskId) {
+  async function handleScheduledTaskRun(req, res, taskId) {
     try {
-      const task = await runScheduledTask(taskId);
+      const rawBody = await readRequestBody(req);
+      const payload = rawBody ? JSON.parse(rawBody) : {};
+      const effectiveTaskId = String(taskId || payload.taskId || payload.id || "").trim();
+      const task = await runScheduledTask(effectiveTaskId, {
+        ...payload,
+        id: effectiveTaskId,
+        taskId: effectiveTaskId
+      });
       sendJson(res, 200, { ok: true, task });
     } catch (error) {
       sendJson(res, error.statusCode || 500, {
@@ -571,6 +581,8 @@ function createScheduler(deps) {
       qqPushEnabled: Boolean(task.qqPushEnabled),
       qqTargetType: normalizeScheduledTaskQqTargetType(task.qqTargetType || "private"),
       qqTargetId: String(task.qqTargetId || "").trim(),
+      signMan: String(task.signMan || task.creatorId || "").trim(),
+      lifeBaseUrl: String(task.lifeBaseUrl || "").trim(),
       creatorType: creator.creatorType,
       creatorId: creator.creatorId,
       createdAt: Number(task.createdAt) || Date.now(),
@@ -664,6 +676,14 @@ function createScheduler(deps) {
       if (!partial || hasCreatorId) {
         next.creatorId = String(payload.creatorId || "").trim() || SCHEDULED_TASK_ADMIN_ID;
       }
+    }
+
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, "signMan")) {
+      next.signMan = String(payload.signMan || "").trim();
+    }
+
+    if (!partial || Object.prototype.hasOwnProperty.call(payload, "lifeBaseUrl")) {
+      next.lifeBaseUrl = String(payload.lifeBaseUrl || "").trim();
     }
 
     return next;
@@ -771,7 +791,8 @@ function createScheduler(deps) {
   }
 
   async function runScheduledTask(taskId, scope = {}) {
-    const task = ensureScheduledTask(taskId, scope);
+    const effectiveTaskId = String(taskId || scope.taskId || scope.id || "").trim();
+    const task = ensureScheduledTask(effectiveTaskId, scope);
     if (runningScheduledTaskIds.has(task.id)) {
       return task;
     }
@@ -783,7 +804,10 @@ function createScheduler(deps) {
     await saveScheduledTasks();
 
     try {
-      const result = await callLocalModelForTask(task);
+      const result = await callLocalModelForTask({
+        ...task,
+        timeoutMs: scope.timeoutMs || scope.requestTimeoutMs || scope.aiTimeoutMs || scope.executionTimeoutMs,
+      });
       task.lastStatus = "success";
       task.lastResult = result.slice(0, 4000);
       task.lastRunAt = Date.now();

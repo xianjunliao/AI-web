@@ -4,6 +4,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { URL } = require("url");
 const {
+  buildAssistantMessageForHistory,
   createStaticPathGuard,
   migrateLegacyDataFile,
   readJsonFile,
@@ -40,6 +41,7 @@ const {
 const HOST = "127.0.0.1";
 const PORT = 8000;
 const TARGET_ORIGIN = "http://127.0.0.1:1234";
+const LIFE_BASE_URL = String(process.env.LIFE_BASE_URL || process.env.LIFE_SIGN_BASE_URL || "http://127.0.0.1:8007").trim();
 const DEFAULT_CHAT_API_PATH = "/v1/chat/completions";
 const DEFAULT_MODELS_API_PATH = "/v1/models";
 const NOVEL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -373,6 +375,57 @@ function legacyParseQqIdListV1(value) {
 
 function requestJson(targetUrl, options = {}) {
   return requestJsonWithRetry(targetUrl, options);
+}
+
+async function runMoyuSignCommandForTask({
+  signMan = "",
+  runStatus = "",
+  doneText = "魔域签到命令已执行",
+  task = {},
+} = {}) {
+  const normalizedSignMan = String(signMan || "").trim();
+  const normalizedRunStatus = String(runStatus || "").trim();
+  if (!normalizedSignMan) {
+    const error = new Error("Sign man is required for Moyu sign command");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!normalizedRunStatus) {
+    const error = new Error("Run status is required for Moyu sign command");
+    error.statusCode = 400;
+    throw error;
+  }
+  const lifeBaseUrl = String(task?.lifeBaseUrl || LIFE_BASE_URL || "").trim();
+  if (!lifeBaseUrl) {
+    const error = new Error("LIFE_BASE_URL is required for Moyu sign scheduled tasks");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const targetUrl = new URL("/api/sign/updateRunStatus", lifeBaseUrl.endsWith("/") ? lifeBaseUrl : `${lifeBaseUrl}/`);
+  const payload = {
+    signMan: normalizedSignMan,
+    runStatus: normalizedRunStatus,
+  };
+  const data = await requestJson(targetUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+    timeoutMs: Number(process.env.LIFE_SIGN_TIMEOUT_MS || 30_000),
+    retryCount: 1,
+    retryDelayMs: 750,
+  });
+
+  if (!(data?.success || data?.code === 200 || data?.status === 200 || data?.status === "200")) {
+    const error = new Error(data?.msg || data?.message || data?.error || "Moyu sign command failed");
+    error.statusCode = 502;
+    throw error;
+  }
+
+  return `${doneText}：${normalizedSignMan} -> ${normalizedRunStatus}`;
 }
 
 async function requestBuffer(targetUrl, options = {}) {
@@ -2232,11 +2285,7 @@ async function callLocalModelWithTools({
       finalText = stripModelThinkingContent(text);
     }
 
-    workingMessages.push({
-      role: "assistant",
-      content: message.content || text,
-      tool_calls: message.tool_calls,
-    });
+    workingMessages.push(buildAssistantMessageForHistory(message, text));
 
     if (!Array.isArray(message.tool_calls) || !message.tool_calls.length) {
       if (hasRequiredTool && !requiredToolUsed && !requiredToolReminderSent) {
@@ -2517,6 +2566,7 @@ novelModule = createNovelModule({
 const callLocalModelForTask = createTaskModelInvoker({
   callLocalModelWithTools,
   getTaskModel: () => String(getSharedConnectionConfig()?.model || "").trim(),
+  runMoyuSignCommand: runMoyuSignCommandForTask,
   searchWeb,
 });
 
@@ -2719,7 +2769,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (action === "run" && req.method === "POST") {
-      handleScheduledTaskRun(res, taskId);
+      handleScheduledTaskRun(req, res, taskId);
       return;
     }
   }

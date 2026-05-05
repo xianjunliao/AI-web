@@ -1,8 +1,29 @@
 const { maybeRunDirectWebSearch } = require("./server-live-web-search");
 
+const DEFAULT_TASK_MODEL_TIMEOUT_MS = 180_000;
+
+const MOYU_SIGN_COMMANDS = {
+  start: {
+    runStatus: "\u8fd0\u884c\u4e2d",
+    doneText: "\u5df2\u542f\u52a8\u9b54\u57df\u7b7e\u5230",
+  },
+  stop: {
+    runStatus: "\u5df2\u505c\u6b62",
+    doneText: "\u5df2\u505c\u6b62\u9b54\u57df\u7b7e\u5230",
+  },
+};
+
 const FORCE_WEB_SEARCH_RE = /(?:\bweb_search\b|联网|上网|网页|网络搜索|联网搜索|搜索工具|联网工具)/i;
 const LIVE_DATA_TOPIC_RE = /(?:最新|实时|热搜|新闻|资讯|数据|价格|股价|汇率|排行|榜单|热点|发布|要点)/i;
 const LIVE_DATA_ACTION_RE = /(?:查询|搜索|获取|整理|汇总|总结|播报|查下|查一查|看看)/i;
+
+function resolveTaskModelTimeoutMs(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.max(1_000, numeric);
+  }
+  return DEFAULT_TASK_MODEL_TIMEOUT_MS;
+}
 
 function shouldForceWebSearch(task = {}) {
   const prompt = String(task?.prompt || "").trim();
@@ -15,8 +36,55 @@ function shouldForceWebSearch(task = {}) {
   return LIVE_DATA_TOPIC_RE.test(prompt) && LIVE_DATA_ACTION_RE.test(prompt);
 }
 
-function createTaskModelInvoker({ callLocalModelWithTools, getTaskModel, searchWeb }) {
+function resolveMoyuSignCommand(task = {}) {
+  const prompt = String(task?.prompt || "").trim();
+  if (!prompt) {
+    return null;
+  }
+  if (/^(?:\u9b54\u57df)?(?:\u542f\u52a8|\u5f00\u59cb)(?:\u9b54\u57df)?(?:\u7b7e\u5230)?$|^(?:\u9b54\u57df)?(?:\u542f\u52a8\u7b7e\u5230|\u5f00\u59cb\u7b7e\u5230|\u7b7e\u5230\u542f\u52a8|\u7b7e\u5230\u5f00\u59cb)$/i.test(prompt)) {
+    return {
+      action: "start",
+      runStatus: MOYU_SIGN_COMMANDS.start.runStatus,
+      doneText: MOYU_SIGN_COMMANDS.start.doneText,
+    };
+  }
+  if (/^(?:\u9b54\u57df)?(?:\u505c\u6b62|\u4e2d\u6b62|\u6682\u505c)(?:\u9b54\u57df)?(?:\u7b7e\u5230)?$|^(?:\u9b54\u57df)?(?:\u505c\u6b62\u7b7e\u5230|\u4e2d\u6b62\u7b7e\u5230|\u7b7e\u5230\u505c\u6b62)$/i.test(prompt)) {
+    return {
+      action: "stop",
+      runStatus: MOYU_SIGN_COMMANDS.stop.runStatus,
+      doneText: MOYU_SIGN_COMMANDS.stop.doneText,
+    };
+  }
+  return null;
+}
+
+function resolveTaskSignMan(task = {}) {
+  return String(task.signMan || task.creatorId || task.ownerId || "").trim();
+}
+
+function createTaskModelInvoker({
+  callLocalModelWithTools,
+  getTaskModel,
+  searchWeb,
+  runMoyuSignCommand,
+  taskModelTimeoutMs = process.env.SCHEDULED_TASK_MODEL_TIMEOUT_MS,
+}) {
   return async function callLocalModelForTask(task) {
+    const moyuSignCommand = resolveMoyuSignCommand(task);
+    if (moyuSignCommand && typeof runMoyuSignCommand === "function") {
+      const signMan = resolveTaskSignMan(task);
+      if (!signMan) {
+        const error = new Error("Sign man is required for Moyu sign scheduled task");
+        error.statusCode = 400;
+        throw error;
+      }
+      return await runMoyuSignCommand({
+        ...moyuSignCommand,
+        signMan,
+        task,
+      });
+    }
+
     const requireWebSearch = shouldForceWebSearch(task);
     const directWebSearch = await maybeRunDirectWebSearch({
       text: task?.prompt,
@@ -90,10 +158,15 @@ function createTaskModelInvoker({ callLocalModelWithTools, getTaskModel, searchW
       tools: taskTools,
       requiredToolName: requireWebSearch ? "web_search" : "",
       singleUseToolNames: requireWebSearch ? ["web_search"] : [],
+      timeoutMs: resolveTaskModelTimeoutMs(task?.timeoutMs || taskModelTimeoutMs),
     });
   };
 }
 
 module.exports = {
+  DEFAULT_TASK_MODEL_TIMEOUT_MS,
   createTaskModelInvoker,
+  resolveMoyuSignCommand,
+  resolveTaskModelTimeoutMs,
+  resolveTaskSignMan,
 };
