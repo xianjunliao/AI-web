@@ -31,6 +31,7 @@ const {
   requestBufferWithRetry,
 } = require("./server/server-http");
 const { createNovelModule } = require("./server/server-novel-projects");
+const { createNovelSyncModule } = require("./server/server-novel-sync");
 const {
   inferScheduledTaskArgsFromText,
   inferScheduledTaskIntentFromText,
@@ -61,6 +62,7 @@ const QQ_BOT_CONFIG_FILE = path.join(DATA_DIR, "qq-bot-config.json");
 const QQ_BOT_SESSIONS_FILE = path.join(DATA_DIR, "qq-bot-sessions.json");
 const CONNECTION_CONFIG_FILE = path.join(DATA_DIR, "connection-config.json");
 const MYSQL_CONFIG_FILE = path.join(DATA_DIR, "mysql-config.json");
+const NOVEL_SYNC_STATE_FILE = path.join(DATA_DIR, "novel-sync-state.json");
 const PERSONA_PRESETS_DIR = path.join(DATA_DIR, "personas");
 const SCHEDULER_TICK_MS = 30 * 1000;
 const PUBLIC_STATIC_PATHS = new Set(["/"]);
@@ -234,6 +236,7 @@ let handleQqWebhook;
 let pushScheduledTaskResultToQq;
 let getQqBotConfig;
 let novelModule;
+let novelSyncModule;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -2561,6 +2564,19 @@ novelModule = createNovelModule({
   getSharedConnectionConfig: () => (typeof getSharedConnectionConfig === "function" ? getSharedConnectionConfig() : {}),
   logDebug: appendServerDebugLog,
 });
+
+novelSyncModule = createNovelSyncModule({
+  novelsDir: NOVELS_DIR,
+  stateFile: NOVEL_SYNC_STATE_FILE,
+  readJsonFile,
+  writeFileAtomic,
+  writeJsonFileAtomic,
+  requestJson,
+  novelModule,
+  defaultCloudBaseUrl: LIFE_BASE_URL,
+  logDebug: appendServerDebugLog,
+});
+novelSyncModule.start();
 
 // Canonical scheduled-task model invocation flow.
 const callLocalModelForTask = createTaskModelInvoker({

@@ -2482,6 +2482,8 @@ function createNovelModule(deps = {}) {
     handleRequest,
     handleQqCommand,
     listProjects,
+    readSetting,
+    writeSetting,
     createProject,
     inferProjectFromBrief,
     getProjectDetail,
