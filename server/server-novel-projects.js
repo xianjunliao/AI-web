@@ -577,6 +577,92 @@ function createNovelModule(deps = {}) {
     return { project, state, review, paths };
   }
 
+  function contentFromSnapshotItem(item) {
+    if (item == null) return "";
+    if (typeof item === "string") return item;
+    if (typeof item === "object") {
+      return String(item.content || item.draft || item.text || "");
+    }
+    return String(item || "");
+  }
+
+  function snapshotMaterialEntries(materials = {}) {
+    const entries = Object.entries(materials || {}).map(([key, value]) => [key, contentFromSnapshotItem(value)]);
+    const byKey = Object.fromEntries(entries);
+    if (byKey.scene && !byKey.environment) entries.push(["environment", byKey.scene]);
+    if (byKey.foreshadowing && !byKey.custom) entries.push(["custom", byKey.foreshadowing]);
+    return entries;
+  }
+
+  async function writeSnapshotProject(projectId, snapshot = {}) {
+    const paths = getProjectPaths(novelsDir, projectId);
+    await Promise.all([
+      fs.promises.mkdir(paths.settingsDir, { recursive: true }),
+      fs.promises.mkdir(paths.materialsDir, { recursive: true }),
+      fs.promises.mkdir(paths.chaptersDir, { recursive: true }),
+      fs.promises.mkdir(paths.draftsDir, { recursive: true }),
+      fs.promises.mkdir(paths.summariesDir, { recursive: true }),
+      fs.promises.mkdir(paths.snapshotsDir, { recursive: true }),
+      fs.promises.mkdir(paths.logsDir, { recursive: true }),
+    ]);
+
+    const project = {
+      ...(snapshot.project && typeof snapshot.project === "object" ? snapshot.project : {}),
+      id: projectId,
+      qqReviewEnabled: false,
+      updatedAt: Date.now(),
+    };
+    const state = {
+      ...createInitialState(),
+      ...(snapshot.state && typeof snapshot.state === "object" ? snapshot.state : {}),
+      updatedAt: Date.now(),
+    };
+    const review = {
+      ...createInitialReview(),
+      ...(snapshot.review && typeof snapshot.review === "object" ? snapshot.review : {}),
+      updatedAt: Date.now(),
+    };
+    await Promise.all([
+      writeJsonFileAtomic(paths.projectFile, project),
+      writeJsonFileAtomic(paths.stateFile, state),
+      writeJsonFileAtomic(paths.reviewFile, review),
+    ]);
+
+    for (const definition of SETTING_DEFINITIONS) {
+      const content = contentFromSnapshotItem(snapshot.settings?.[definition.key]);
+      await writeFileAtomic(path.join(paths.settingsDir, createSettingFileName(definition.key)), String(content || "").trim() + "\n");
+    }
+    for (const [key, content] of snapshotMaterialEntries(snapshot.materials)) {
+      if (!String(content || "").trim()) continue;
+      await writeFileAtomic(path.join(paths.materialsDir, createMaterialFileName(key)), String(content || "").trim() + "\n");
+    }
+    for (const chapter of Array.isArray(snapshot.chapters) ? snapshot.chapters : []) {
+      const chapterNo = parseChapterNo(chapter?.chapterNo);
+      const content = contentFromSnapshotItem(chapter);
+      if (!chapterNo || !content.trim()) continue;
+      const status = String(chapter.status || "").trim().toLowerCase();
+      const targetDir = status === "draft" || status === "pending" || status === "waiting_review" ? paths.draftsDir : paths.chaptersDir;
+      const suffix = targetDir === paths.draftsDir ? ".draft.md" : ".md";
+      await writeFileAtomic(path.join(targetDir, formatChapterFileName(chapterNo, suffix)), content.trim() + "\n");
+    }
+  }
+
+  async function withLifeSnapshotProject(projectId, payload = {}, handler) {
+    const snapshot = payload && typeof payload === "object" ? payload.lifeProjectSnapshot : null;
+    if (!snapshot || typeof snapshot !== "object") {
+      return await handler(projectId);
+    }
+    await ensureNovelsDir();
+    const tempProjectId = `life-snapshot-${String(projectId || "project").replace(/[^A-Za-z0-9_-]/g, "-")}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tempPaths = getProjectPaths(novelsDir, tempProjectId);
+    await writeSnapshotProject(tempProjectId, snapshot);
+    try {
+      return await handler(tempProjectId);
+    } finally {
+      await fs.promises.rm(tempPaths.projectDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
   async function listProjects() {
     await ensureNovelsDir();
     const entries = await fs.promises.readdir(novelsDir, { withFileTypes: true });
@@ -2260,7 +2346,9 @@ function createNovelModule(deps = {}) {
       sendJson(res, 200, {
         ok: true,
         projectId,
-        generated: await generateSettings(projectId, { overwrite: payload.overwrite !== false }),
+        generated: await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+          generateSettings(effectiveProjectId, { overwrite: payload.overwrite !== false })
+        ),
       });
       return true;
     }
@@ -2272,7 +2360,9 @@ function createNovelModule(deps = {}) {
       sendJson(res, 200, {
         ok: true,
         projectId,
-        generated: await reconcileSettingsFromChapters(projectId, { overwrite: payload.overwrite !== false }),
+        generated: await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+          reconcileSettingsFromChapters(effectiveProjectId, { overwrite: payload.overwrite !== false })
+        ),
       });
       return true;
     }
@@ -2285,7 +2375,9 @@ function createNovelModule(deps = {}) {
       sendJson(res, 200, {
         ok: true,
         projectId,
-        generated: await generateSingleSetting(projectId, key, { overwrite: payload.overwrite !== false }),
+        generated: await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+          generateSingleSetting(effectiveProjectId, key, { overwrite: payload.overwrite !== false })
+        ),
       });
       return true;
     }
@@ -2298,10 +2390,12 @@ function createNovelModule(deps = {}) {
       sendJson(res, 200, {
         ok: true,
         projectId,
-        generated: await generateSingleSetting(projectId, key, {
-          overwrite: payload.overwrite !== false,
-          alignToWrittenChapters: true,
-        }),
+        generated: await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+          generateSingleSetting(effectiveProjectId, key, {
+            overwrite: payload.overwrite !== false,
+            alignToWrittenChapters: true,
+          })
+        ),
       });
       return true;
     }
@@ -2335,7 +2429,9 @@ function createNovelModule(deps = {}) {
       sendJson(res, 200, {
         ok: true,
         projectId,
-        generated: await generateMaterial(projectId, key, payload),
+        generated: await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+          generateMaterial(effectiveProjectId, key, payload)
+        ),
       });
       return true;
     }
@@ -2398,7 +2494,11 @@ function createNovelModule(deps = {}) {
     const generateChapterMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/generate-next$/);
     if (generateChapterMatch && req.method === "POST") {
       const projectId = decodeURIComponent(generateChapterMatch[1]);
-      sendJson(res, 200, { ok: true, ...(await generateChapter(projectId)) });
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, {
+        ok: true,
+        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => generateChapter(effectiveProjectId))),
+      });
       return true;
     }
 
@@ -2406,7 +2506,10 @@ function createNovelModule(deps = {}) {
     if (polishManualChapterMatch && req.method === "POST") {
       const projectId = decodeURIComponent(polishManualChapterMatch[1]);
       const payload = await parseJsonBody(req);
-      sendJson(res, 200, { ok: true, ...(await polishManualChapter(projectId, payload)) });
+      sendJson(res, 200, {
+        ok: true,
+        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => polishManualChapter(effectiveProjectId, payload))),
+      });
       return true;
     }
 
@@ -2414,7 +2517,7 @@ function createNovelModule(deps = {}) {
     if (batchGenerateMatch && req.method === "POST") {
       const projectId = decodeURIComponent(batchGenerateMatch[1]);
       const payload = await parseJsonBody(req);
-      sendJson(res, 200, await batchGenerateChapters(projectId, payload));
+      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => batchGenerateChapters(effectiveProjectId, payload)));
       return true;
     }
 
@@ -2454,7 +2557,9 @@ function createNovelModule(deps = {}) {
       const projectId = decodeURIComponent(rewriteMatch[1]);
       const chapterNo = decodeURIComponent(rewriteMatch[2]);
       const payload = await parseJsonBody(req);
-      sendJson(res, 200, await rewriteChapter(projectId, chapterNo, payload.feedback || ""));
+      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+        rewriteChapter(effectiveProjectId, chapterNo, payload.feedback || "")
+      ));
       return true;
     }
 
@@ -2462,7 +2567,11 @@ function createNovelModule(deps = {}) {
     if (regenerateMatch && req.method === "POST") {
       const projectId = decodeURIComponent(regenerateMatch[1]);
       const chapterNo = decodeURIComponent(regenerateMatch[2]);
-      sendJson(res, 200, { ok: true, ...(await regenerateChapter(projectId, chapterNo)) });
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, {
+        ok: true,
+        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => regenerateChapter(effectiveProjectId, chapterNo))),
+      });
       return true;
     }
 
