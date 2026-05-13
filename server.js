@@ -46,7 +46,7 @@ const LIFE_BASE_URL = String(process.env.LIFE_BASE_URL || process.env.LIFE_SIGN_
 const DEFAULT_CHAT_API_PATH = "/v1/chat/completions";
 const DEFAULT_MODELS_API_PATH = "/v1/models";
 const NOVEL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
-const BRIDGE_CHAT_TIMEOUT_MS = Number(process.env.BRIDGE_CHAT_TIMEOUT_MS || 120_000);
+const BRIDGE_CHAT_TIMEOUT_MS = Number(process.env.BRIDGE_CHAT_TIMEOUT_MS || NOVEL_MODEL_TIMEOUT_MS);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
@@ -88,6 +88,7 @@ let handleStorageConfigSave;
 let logChatApiRequest;
 let saveStorageConfig;
 let getMysqlStorageConfig;
+let queryMysqlWithReconnect;
 let claimPendingChatJob;
 let completeChatJob;
 let failChatJob;
@@ -149,6 +150,7 @@ let handleSharedConnectionConfigSync;
   getConfig: getStorageConfig,
   logChatApiRequest,
   getMysqlStorageConfig,
+  queryMysqlWithReconnect,
   claimPendingChatJob,
   completeChatJob,
   failChatJob,
@@ -275,17 +277,21 @@ proxyRequest = createApiProxy({
   logDebug: appendServerDebugLog,
 });
 
-function getResolvedModelServiceConfig() {
-  const sharedConfig = typeof getSharedConnectionConfig === "function"
+function getResolvedModelServiceConfig(options = {}) {
+  const requestConfig = options.connectionConfig && typeof options.connectionConfig === "object"
+    ? options.connectionConfig
+    : null;
+  const localOnly = options.localOnly === true;
+  const sharedConfig = requestConfig || (typeof getSharedConnectionConfig === "function"
     ? (getSharedConnectionConfig() || {})
-    : {};
+    : {});
   const remoteEnabled = sharedConfig?.remoteApiEnabled === true;
   const remoteBaseUrl = String(sharedConfig?.remoteBaseUrl || "").trim();
   const remoteApiKey = String(sharedConfig?.remoteApiKey || "").trim();
   const remoteApiPath = String(sharedConfig?.remoteApiPath || DEFAULT_CHAT_API_PATH).trim() || DEFAULT_CHAT_API_PATH;
   const remoteModelsPath = String(sharedConfig?.remoteModelsPath || DEFAULT_MODELS_API_PATH).trim() || DEFAULT_MODELS_API_PATH;
-  const useRemote = remoteEnabled && remoteBaseUrl;
-  appendServerDebugLog(`model_service_config mode=${useRemote ? "remote" : "local"} remoteEnabled=${remoteEnabled} remoteBaseUrl=${remoteBaseUrl ? "(set)" : "(empty)"} remoteApiKey=${remoteApiKey ? "(set)" : "(empty)"}`);
+  const useRemote = !localOnly && remoteEnabled && remoteBaseUrl;
+  appendServerDebugLog(`model_service_config mode=${useRemote ? "remote" : "local"} localOnly=${localOnly ? "true" : "false"} remoteEnabled=${remoteEnabled} remoteBaseUrl=${remoteBaseUrl ? "(set)" : "(empty)"} remoteApiKey=${remoteApiKey ? "(set)" : "(empty)"}`);
   return {
     mode: useRemote ? "remote" : "local",
     targetOrigin: useRemote ? remoteBaseUrl : TARGET_ORIGIN,
@@ -295,8 +301,8 @@ function getResolvedModelServiceConfig() {
   };
 }
 
-function buildModelServiceUrl(kind = "chat") {
-  const resolved = getResolvedModelServiceConfig();
+function buildModelServiceUrl(kind = "chat", options = {}) {
+  const resolved = getResolvedModelServiceConfig(options);
   const apiPath = kind === "models" ? resolved.modelsPath : resolved.chatPath;
   return new URL(apiPath, resolved.targetOrigin);
 }
@@ -455,19 +461,47 @@ function resolveMonitoredRequestSource(req) {
   ).slice(0, 128);
 }
 
-function normalizeChatCompletionPayload(payload = {}) {
+function normalizeChatCompletionPayload(payload = {}, options = {}) {
   const nextPayload = payload && typeof payload === "object" ? { ...payload } : {};
+  const fallbackUserText = String(nextPayload.question || nextPayload.user_text || "").trim();
+  if (!Array.isArray(nextPayload.messages) || !nextPayload.messages.length) {
+    nextPayload.messages = fallbackUserText ? [{ role: "user", content: fallbackUserText }] : [];
+  }
+  const hasUserMessage = Array.isArray(nextPayload.messages)
+    && nextPayload.messages.some((message) => {
+      if (message?.role !== "user") return false;
+      const content = message?.content;
+      if (typeof content === "string") return Boolean(content.trim());
+      if (Array.isArray(content)) {
+        return content.some((item) => String(item?.text || "").trim() || item?.image_url);
+      }
+      return Boolean(content);
+    });
+  if (!hasUserMessage && fallbackUserText) {
+    nextPayload.messages = [...nextPayload.messages, { role: "user", content: fallbackUserText }];
+  }
   if (nextPayload.stream === true) {
     nextPayload.stream = false;
   }
   // Only use stored model as fallback when it's explicitly configured
   // and no model was provided in the request
-  if (!String(nextPayload.model || "").trim()) {
-    const sharedModel = String(getSharedConnectionConfig()?.model || "").trim();
+  if (!options.localOnly && !String(nextPayload.model || "").trim()) {
+    const config = options.connectionConfig && typeof options.connectionConfig === "object"
+      ? options.connectionConfig
+      : getSharedConnectionConfig();
+    const sharedModel = String(config?.model || "").trim();
     if (sharedModel) {
       nextPayload.model = sharedModel;
     }
   }
+  delete nextPayload.connectionConfig;
+  delete nextPayload.modelRoute;
+  delete nextPayload.chatMode;
+  delete nextPayload.localOnly;
+  delete nextPayload.toolsEnabled;
+  delete nextPayload.signMan;
+  delete nextPayload.question;
+  delete nextPayload.user_text;
   return nextPayload;
 }
 
@@ -489,7 +523,11 @@ function formatErrorForStorage(error) {
 }
 
 async function callConfiguredChatCompletion(payload = {}) {
-  const resolved = getResolvedModelServiceConfig();
+  const connectionConfig = payload.connectionConfig && typeof payload.connectionConfig === "object"
+    ? payload.connectionConfig
+    : null;
+  const localOnly = payload.localOnly === true;
+  const resolved = getResolvedModelServiceConfig({ connectionConfig, localOnly });
   const targetUrl = new URL(resolved.chatPath, resolved.targetOrigin);
   return await requestJson(targetUrl, {
     method: "POST",
@@ -498,7 +536,7 @@ async function callConfiguredChatCompletion(payload = {}) {
       Accept: "application/json",
       ...resolved.authHeaders,
     },
-    body: JSON.stringify(normalizeChatCompletionPayload(payload)),
+    body: JSON.stringify(normalizeChatCompletionPayload(payload, { connectionConfig, localOnly })),
     timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
     retryCount: 1,
     retryDelayMs: 750,
@@ -661,20 +699,29 @@ function createBridgeTextResponse(text = "", model = "") {
 }
 
 async function callBridgeChatCompletion(payload = {}) {
-  const requestPayload = normalizeChatCompletionPayload(payload);
+  const connectionConfig = payload.connectionConfig && typeof payload.connectionConfig === "object"
+    ? payload.connectionConfig
+    : null;
+  const localOnly = payload.localOnly === true;
+  const requestPayload = normalizeChatCompletionPayload(payload, { connectionConfig, localOnly });
   if (requestPayload.toolsEnabled === false) {
-    return await callConfiguredChatCompletion(requestPayload);
+    return await callConfiguredChatCompletion({ ...requestPayload, connectionConfig, localOnly });
   }
 
-  const model = String(requestPayload.model || getSharedConnectionConfig()?.model || "").trim();
+  const model = String(requestPayload.model || (!localOnly ? (connectionConfig?.model || getSharedConnectionConfig()?.model) : "") || "").trim();
   if (!model) {
-    return await callConfiguredChatCompletion(requestPayload);
+    return await callConfiguredChatCompletion({ ...requestPayload, connectionConfig, localOnly });
   }
 
   const userText = extractLastUserTextFromPayload(requestPayload);
   const allowScheduler = BRIDGE_SCHEDULER_INTENT_RE.test(userText);
   const hasWeatherIntent = BRIDGE_WEATHER_INTENT_RE.test(userText);
   const hasWebSearchIntent = BRIDGE_WEB_SEARCH_INTENT_RE.test(userText) && !hasWeatherIntent;
+  const needsTools = allowScheduler || hasWebSearchIntent || hasWeatherIntent;
+
+  if (!needsTools) {
+    return await callConfiguredChatCompletion({ ...requestPayload, connectionConfig, localOnly });
+  }
 
   if (allowScheduler) {
     try {
@@ -697,9 +744,10 @@ async function callBridgeChatCompletion(payload = {}) {
       : "Do not create, update, delete, or run scheduled tasks unless the user explicitly asks.",
     "After tool use, answer directly and concisely in the user's language.",
   ].join("\n");
-  const needsTools = allowScheduler || hasWebSearchIntent || hasWeatherIntent;
   const text = await callLocalModelWithTools({
     model,
+    connectionConfig,
+    localOnly,
     messages: [{ role: "system", content: bridgeSystemPrompt }, ...messages],
     tools: needsTools ? createBridgeChatTools({ allowScheduler }) : [],
     requiredToolName: hasWebSearchIntent ? "web_search" : (hasWeatherIntent ? "get_weather" : ""),
@@ -720,19 +768,22 @@ async function processOneChatJob(workerId = "ai-web-worker") {
   const startedAt = Date.now();
   const rawPayload = job.requestPayload || {};
 
-  // Extract and apply connection config from life before processing
+  // Keep per-request connection config isolated; do not save it globally,
+  // otherwise one user's remote API choice can affect another user's local request.
   if (rawPayload.connectionConfig && typeof rawPayload.connectionConfig === "object") {
-    try {
-      await saveSharedConnectionConfig(rawPayload.connectionConfig);
-    } catch (syncErr) {
-      appendServerDebugLog(`mysql_job_connection_config_sync_failed ${String(syncErr?.message || syncErr)}`);
-    }
-    delete rawPayload.connectionConfig;
+    appendServerDebugLog("mysql_job_connection_config_received scoped=request");
   }
 
-  const requestPayload = normalizeChatCompletionPayload(rawPayload);
+  const requestPayload = normalizeChatCompletionPayload(rawPayload, {
+    connectionConfig: rawPayload.connectionConfig,
+    localOnly: rawPayload.localOnly === true,
+  });
   try {
-    const responsePayload = await callBridgeChatCompletion(requestPayload);
+    const responsePayload = await callBridgeChatCompletion({
+      ...requestPayload,
+      connectionConfig: rawPayload.connectionConfig,
+      localOnly: rawPayload.localOnly === true,
+    });
     await completeChatJob(job.id, {
       responsePayload,
       statusCode: 200,
@@ -816,8 +867,26 @@ async function callLocalNovelEndpoint(job = {}) {
     throw error;
   }
 
-  const targetUrl = new URL(pathValue, `http://${HOST}:${PORT}`);
   const bodyPayload = job.requestPayload && typeof job.requestPayload === "object" ? job.requestPayload : {};
+  if (
+    method === "POST" &&
+    /^\/novels\/projects\/[^/?]+\/chapters\/generate-next(?:\?|$)/.test(pathValue) &&
+    bodyPayload.lifeProjectId &&
+    !bodyPayload.lifeProjectSnapshot &&
+    novelSyncModule &&
+    (typeof novelSyncModule.pullProjectFromMysql === "function" || typeof novelSyncModule.tick === "function")
+  ) {
+    if (typeof novelSyncModule.pullProjectFromMysql === "function") {
+      await novelSyncModule.pullProjectFromMysql(bodyPayload.lifeProjectId).catch((error) => {
+        appendServerDebugLog(`novel_generation_mysql_presync_failed ${String(error?.message || error)}`);
+      });
+    }
+    await novelSyncModule.tick().catch((error) => {
+      appendServerDebugLog(`novel_generation_presync_failed ${String(error?.message || error)}`);
+    });
+  }
+
+  const targetUrl = new URL(pathValue, `http://${HOST}:${PORT}`);
   const hasBody = !["GET", "HEAD"].includes(method);
   return await requestJson(targetUrl, {
     method,
@@ -901,8 +970,23 @@ async function refreshMysqlAvailableModels() {
   if (typeof saveStorageConfig !== "function") {
     return false;
   }
-  const modelsUrl = buildModelServiceUrl("models");
-  const { authHeaders } = getResolvedModelServiceConfig();
+  const remoteModels = await fetchAvailableModelsForBridge();
+  await saveStorageConfig("available-models", {
+    models: remoteModels,
+    updatedAt: Date.now(),
+  });
+
+  const localModels = await fetchAvailableModelsForBridge({ localOnly: true });
+  await saveStorageConfig("available-local-models", {
+    models: localModels,
+    updatedAt: Date.now(),
+  });
+  return true;
+}
+
+async function fetchAvailableModelsForBridge(options = {}) {
+  const modelsUrl = buildModelServiceUrl("models", options);
+  const { authHeaders } = getResolvedModelServiceConfig(options);
   const data = await requestJson(modelsUrl, {
     method: "GET",
     headers: {
@@ -913,14 +997,9 @@ async function refreshMysqlAvailableModels() {
     retryCount: 1,
     retryDelayMs: 750,
   });
-  const models = Array.isArray(data?.data)
+  return Array.from(new Set(Array.isArray(data?.data)
     ? data.data.map((item) => String(item?.id || item?.name || "").trim()).filter(Boolean)
-    : [];
-  await saveStorageConfig("available-models", {
-    models: Array.from(new Set(models)),
-    updatedAt: Date.now(),
-  });
-  return true;
+    : []));
 }
 
 function startMysqlModelListSync() {
@@ -945,18 +1024,22 @@ async function handleMonitoredChatCompletion(req, res) {
     const rawBody = await readRequestBody(req, { limitBytes: 20 * 1024 * 1024 });
     payload = rawBody ? JSON.parse(rawBody) : {};
 
-    // If the request carries connectionConfig from life, apply it immediately
+    // Per-request connection config is scoped to this request only.
     if (payload.connectionConfig && typeof payload.connectionConfig === "object") {
-      try {
-        await saveSharedConnectionConfig(payload.connectionConfig);
-      } catch (syncErr) {
-        appendServerDebugLog(`monitored_connection_config_sync_failed ${String(syncErr?.message || syncErr)}`);
-      }
-      delete payload.connectionConfig;
+      appendServerDebugLog("monitored_connection_config_received scoped=request");
     }
 
-    payload = normalizeChatCompletionPayload(payload);
-    responsePayload = await callConfiguredChatCompletion(payload);
+    const scopedConnectionConfig = payload.connectionConfig;
+    const scopedLocalOnly = payload.localOnly === true;
+    payload = normalizeChatCompletionPayload(payload, {
+      connectionConfig: scopedConnectionConfig,
+      localOnly: scopedLocalOnly,
+    });
+    responsePayload = await callConfiguredChatCompletion({
+      ...payload,
+      connectionConfig: scopedConnectionConfig,
+      localOnly: scopedLocalOnly,
+    });
     statusCode = 200;
 
     await logChatApiRequest({
@@ -2213,6 +2296,8 @@ function serializeToolResultForModel(toolName, result) {
 
 async function callLocalModelWithTools({
   model,
+  connectionConfig = null,
+  localOnly = false,
   messages,
   tools,
   requiredToolName = "",
@@ -2221,8 +2306,8 @@ async function callLocalModelWithTools({
   maxRounds = 6,
   timeoutMs,
 }) {
-  const targetUrl = buildModelServiceUrl("chat");
-  const { authHeaders } = getResolvedModelServiceConfig();
+  const targetUrl = buildModelServiceUrl("chat", { connectionConfig, localOnly });
+  const { authHeaders } = getResolvedModelServiceConfig({ connectionConfig, localOnly });
   let workingMessages = [...messages];
   let finalText = "";
   const normalizedRequiredToolName = String(requiredToolName || "").trim();
@@ -2334,13 +2419,15 @@ async function generateNovelText({
   systemPrompt,
   userPrompt,
   model: preferredModel,
+  connectionConfig = null,
+  localOnly = false,
   temperature = 0.7,
   timeoutMs = NOVEL_MODEL_TIMEOUT_MS,
 } = {}) {
   let model = String(preferredModel || "").trim();
   // Fall back to global connection config model when project model is not set
-  if (!model) {
-    model = String(getSharedConnectionConfig()?.model || "").trim();
+  if (!localOnly && !model) {
+    model = String((connectionConfig && typeof connectionConfig === "object" ? connectionConfig : getSharedConnectionConfig())?.model || "").trim();
   }
   if (!model) {
     const error = new Error("Novel project model is not configured — set a model in project settings or global connection config");
@@ -2349,6 +2436,8 @@ async function generateNovelText({
   }
   return await callLocalModelWithTools({
     model,
+    connectionConfig,
+    localOnly,
     messages: [
       {
         role: "system",
@@ -2572,6 +2661,7 @@ novelSyncModule = createNovelSyncModule({
   writeFileAtomic,
   writeJsonFileAtomic,
   requestJson,
+  queryMysql: typeof queryMysqlWithReconnect === "function" ? queryMysqlWithReconnect : null,
   novelModule,
   defaultCloudBaseUrl: LIFE_BASE_URL,
   logDebug: appendServerDebugLog,

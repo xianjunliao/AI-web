@@ -56,7 +56,7 @@ The scheduler task payload keeps the AI-web format:
 
 ## 2026-05-05 Updates
 
-- Scheduled task model calls now use a longer default timeout of 180 seconds.
+- Scheduled task model calls now use a longer default timeout of 30 minutes.
 - The timeout can be overridden with `SCHEDULED_TASK_MODEL_TIMEOUT_MS`.
 - Run-now requests can pass a per-request timeout; the scheduler forwards it into task execution.
 - QQ bridge push calls now use a 120 second default timeout, configurable with `QQ_BRIDGE_TIMEOUT_MS`.
@@ -86,7 +86,7 @@ Configuration:
 
 - `LIFE_BASE_URL` or `LIFE_SIGN_BASE_URL`: fallback life origin, default `http://127.0.0.1:8007`.
 - `LIFE_SIGN_TIMEOUT_MS`: timeout for the sign status update request, default 30000.
-- `SCHEDULED_TASK_MODEL_TIMEOUT_MS`: model timeout for normal AI scheduled tasks, default 180000.
+- `SCHEDULED_TASK_MODEL_TIMEOUT_MS`: model timeout for normal AI scheduled tasks, default 1800000.
 - `QQ_BRIDGE_TIMEOUT_MS`: QQ push timeout, default 120000.
 
 ## Verification

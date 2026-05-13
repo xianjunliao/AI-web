@@ -13,7 +13,7 @@
 - 聊天记录同步：AI-web 前端可将聊天记录同步到 `ai_web_chat_records`。
 - 配置同步：AI-web 前端配置保存到 `ai_web_configs`。
 - 聊天桥接：life 写入 `ai_web_chat_jobs`，AI-web 处理后回写答案。
-- 模型列表：AI-web 定时同步模型列表到 `ai_web_configs` 的 `available-models`，life 通过接口读取。
+- 模型列表：AI-web 定时同步远程/当前模型列表到 `ai_web_configs` 的 `available-models`，并同步本地模型列表到 `available-local-models`，life 只读取 MySQL 中的这些 key。
 - 工具能力：聊天桥接会携带 `toolsEnabled: true`，可复用 AI-web 已有网络搜索、天气查询、定时任务等工具处理逻辑。
 - 小说桥接：life 的 `/novels/**` 请求写入 `ai_web_novel_jobs`，AI-web 调用本地小说接口处理后回写结果。
 - 小说页面：life 静态资源目录下提供桌面端 `/lxj/novels.html` 和移动端 `/lxj/novels-mobile.html`。

@@ -1,6 +1,6 @@
 const { maybeRunDirectWebSearch } = require("./server-live-web-search");
 
-const DEFAULT_TASK_MODEL_TIMEOUT_MS = 180_000;
+const DEFAULT_TASK_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
 
 const MOYU_SIGN_COMMANDS = {
   start: {

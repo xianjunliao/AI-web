@@ -24,6 +24,15 @@ function createSharedConnectionConfigModule({
     return Object.prototype.hasOwnProperty.call(input || {}, field);
   }
 
+  function hasRemoteApiConfig(config = {}) {
+    return Boolean(
+      String(config.remoteBaseUrl || "").trim()
+      && String(config.remoteApiPath || "/v1/chat/completions").trim()
+      && String(config.remoteModelsPath || "/v1/models").trim()
+      && String(config.remoteApiKey || "").trim()
+    );
+  }
+
   function sanitizeSharedConnectionConfig(input = {}, { partial = false } = {}) {
     const result = {};
     if (!partial || hasConfigField(input, "model")) {
@@ -44,6 +53,9 @@ function createSharedConnectionConfigModule({
     if (!partial || hasConfigField(input, "remoteApiKey")) {
       result.remoteApiKey = String(input?.remoteApiKey || "").trim();
     }
+    if (!partial) {
+      result.remoteApiEnabled = hasRemoteApiConfig(result);
+    }
     return result;
   }
 
@@ -53,10 +65,12 @@ function createSharedConnectionConfigModule({
 
   function mergeConfig(local, remote) {
     if (!remote) return { ...local };
-    return {
+    const merged = {
       ...local,
       ...sanitizeSharedConnectionConfig(remote, { partial: true }),
     };
+    merged.remoteApiEnabled = hasRemoteApiConfig(merged);
+    return merged;
   }
 
   async function loadSharedConnectionConfig() {
@@ -88,6 +102,7 @@ function createSharedConnectionConfigModule({
       ...sharedConnectionConfigState,
       ...sanitizeSharedConnectionConfig(nextConfig, { partial: true }),
     };
+    sharedConnectionConfigState.remoteApiEnabled = hasRemoteApiConfig(sharedConnectionConfigState);
     await writeJsonFileAtomic(connectionConfigFile, sharedConnectionConfigState);
 
     // Also write to MySQL if available

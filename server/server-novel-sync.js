@@ -9,6 +9,7 @@ function createNovelSyncModule(deps = {}) {
     writeFileAtomic,
     writeJsonFileAtomic,
     requestJson,
+    queryMysql,
     novelModule,
     logDebug,
     defaultCloudBaseUrl,
@@ -143,6 +144,94 @@ function createNovelSyncModule(deps = {}) {
       hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
     }
     return String(hash >>> 0);
+  }
+
+  function parseJson(value, fallback = {}) {
+    if (value == null || value === "") return fallback;
+    if (typeof value === "object") return value;
+    try {
+      return JSON.parse(String(value || ""));
+    } catch {
+      return fallback;
+    }
+  }
+
+  function firstRows(result) {
+    return Array.isArray(result?.[0]) ? result[0] : [];
+  }
+
+  async function pullProjectFromMysql(projectId) {
+    const target = String(projectId || "").trim();
+    if (!target || typeof queryMysql !== "function") {
+      return false;
+    }
+    const projectRows = firstRows(await queryMysql(
+      "SELECT project_json,state_json,review_json,updated_at FROM novel_project WHERE project_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+      [target]
+    ));
+    if (!projectRows.length) {
+      debug(`mysql_project_not_found projectId=${target}`);
+      return false;
+    }
+    const [settingRows, materialRows, chapterRows] = await Promise.all([
+      queryMysql("SELECT setting_key,title,content,meta_json,updated_at FROM novel_setting WHERE project_id = ? ORDER BY setting_key ASC", [target]).then(firstRows),
+      queryMysql("SELECT material_key,title,content,meta_json,updated_at FROM novel_material WHERE project_id = ? ORDER BY material_key ASC", [target]).then(firstRows),
+      queryMysql("SELECT chapter_no,title,status,content,character_count,meta_json,updated_at FROM novel_chapter WHERE project_id = ? AND deleted_at IS NULL ORDER BY chapter_no ASC, status ASC", [target]).then(firstRows),
+    ]);
+    const detail = {
+      project: parseJson(projectRows[0].project_json, { id: target }),
+      state: parseJson(projectRows[0].state_json, {}),
+      review: parseJson(projectRows[0].review_json, { pending: [] }),
+      settings: {},
+      materials: {},
+      chapters: [],
+    };
+    detail.project.id = target;
+    for (const row of settingRows) {
+      const key = String(row.setting_key || "").trim();
+      if (!key) continue;
+      detail.settings[key] = {
+        ...parseJson(row.meta_json, {}),
+        key,
+        title: String(row.title || key),
+        content: String(row.content || ""),
+        updatedAt: Number(row.updated_at || 0),
+      };
+    }
+    for (const row of materialRows) {
+      const key = String(row.material_key || "").trim();
+      if (!key) continue;
+      detail.materials[key] = {
+        ...parseJson(row.meta_json, {}),
+        key,
+        title: String(row.title || key),
+        content: String(row.content || ""),
+        updatedAt: Number(row.updated_at || 0),
+      };
+    }
+    const chapterByNo = new Map();
+    for (const row of chapterRows) {
+      const chapterNo = Number(row.chapter_no || 0);
+      if (!chapterNo) continue;
+      const status = String(row.status || "").trim().toLowerCase();
+      const existing = chapterByNo.get(chapterNo);
+      if (existing && existing.status === "draft" && status !== "draft") {
+        continue;
+      }
+      chapterByNo.set(chapterNo, {
+        ...parseJson(row.meta_json, {}),
+        chapterNo,
+        title: String(row.title || ""),
+        status: status || "approved",
+        content: String(row.content || ""),
+        characterCount: Number(row.character_count || 0),
+        updatedAt: Number(row.updated_at || 0),
+      });
+    }
+    detail.chapters = Array.from(chapterByNo.values()).sort((a, b) => a.chapterNo - b.chapterNo);
+    await applyProjectSnapshot({ projectId: target, detail, updatedAt: Number(projectRows[0].updated_at || Date.now()) });
+    debug(`mysql_project_pulled projectId=${target} chapters=${detail.chapters.length}`);
+    return true;
   }
 
   async function pushChangedLocalProjects(state) {
@@ -387,6 +476,8 @@ function createNovelSyncModule(deps = {}) {
     const draftsDir = path.join(projectDir, "drafts");
     await fs.promises.mkdir(chaptersDir, { recursive: true });
     await fs.promises.mkdir(draftsDir, { recursive: true });
+    await clearChapterMarkdownFiles(chaptersDir, ".md");
+    await clearChapterMarkdownFiles(draftsDir, ".draft.md");
     for (const chapter of chapters || []) {
       const chapterNo = Number(chapter?.chapterNo || 0);
       const content = String(chapter?.content || chapter?.draft || "").trim();
@@ -396,6 +487,19 @@ function createNovelSyncModule(deps = {}) {
       const targetDir = status === "draft" ? draftsDir : chaptersDir;
       await writeTextFileAtomic(path.join(targetDir, fileName), `${content}\n`);
     }
+  }
+
+  async function clearChapterMarkdownFiles(dirPath, suffix) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(suffix))
+      .map((entry) => fs.promises.unlink(path.join(dirPath, entry.name))));
   }
 
   async function writeTextFileAtomic(filePath, content) {
@@ -444,6 +548,7 @@ function createNovelSyncModule(deps = {}) {
     tick,
     getLocalSnapshot,
     applyProjectSnapshot,
+    pullProjectFromMysql,
   };
 }
 

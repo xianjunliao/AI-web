@@ -655,6 +655,7 @@ function createMysqlStorage({
     claimPendingChatJob,
     completeChatJob,
     failChatJob,
+    queryMysqlWithReconnect,
     claimPendingNovelJob,
     completeNovelJob,
     failNovelJob,

@@ -28,6 +28,36 @@ const SETTING_KEY_SET = new Set(SETTING_DEFINITIONS.map((item) => item.key));
 const MATERIAL_KEY_SET = new Set(MATERIAL_DEFINITIONS.map((item) => item.key));
 const PLANNING_SETTING_KEY_SET = new Set(["outline", "volume-plan", "chapter-plan"]);
 const NOVEL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_LOCAL_SETTING_GENERATION_CONCURRENCY = 10;
+const DEFAULT_REMOTE_SETTING_GENERATION_CONCURRENCY = 4;
+
+function resolveSettingGenerationConcurrency(value, options = {}) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.min(Math.max(1, Math.floor(numeric)), 16);
+  }
+  return options.remote === true
+    ? DEFAULT_REMOTE_SETTING_GENERATION_CONCURRENCY
+    : DEFAULT_LOCAL_SETTING_GENERATION_CONCURRENCY;
+}
+
+async function runWithConcurrency(items = [], concurrency = DEFAULT_LOCAL_SETTING_GENERATION_CONCURRENCY, worker) {
+  const normalizedItems = Array.isArray(items) ? items : [];
+  const limit = Math.min(Math.max(1, Number(concurrency) || DEFAULT_LOCAL_SETTING_GENERATION_CONCURRENCY), Math.max(1, normalizedItems.length));
+  const results = new Array(normalizedItems.length);
+  let nextIndex = 0;
+
+  async function runNext() {
+    while (nextIndex < normalizedItems.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(normalizedItems[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, () => runNext()));
+  return results;
+}
 
 function padChapterNo(value) {
   return String(value).padStart(4, "0");
@@ -106,8 +136,112 @@ function createChapterWordTargetRequirement(value) {
   const normalized = normalizeChapterWordTarget(value);
   const range = getChapterWordTargetRange(normalized);
   return normalized > 0
-    ? `单章字数以 ${normalized} 个中文汉字为目标，正文中文汉字数最低不得少于 ${range.minimum} 个；不要用设定说明、重复段落或无效水文凑字数。`
+    ? `单章字数以 ${normalized} 个中文汉字为目标，理想区间为 ${range.minimum}-${range.maximum} 个；只统计中文汉字，不统计标点、空格、英文数字或特殊符号；质量优先于机械控字，若情节、现场细节和节奏明显更完整，可小幅超过理想上限，但不要用设定说明、重复段落或无效水文凑字数。`
     : "单章字数优先保证剧情完整、节奏自然，再结合实际内容灵活控制篇幅。";
+}
+
+function createNovelProseOnlyRequirements() {
+  return [
+    "只能写小说正文里的叙事、描写和人物对白。",
+    "禁止站在作者、助手、审稿人或系统视角解释创作过程、问题根源、修复过程、章节安排或后续意图。",
+    "禁止出现“第N章末尾说过”“上一章已经写到”“当前章节需要”“这部分已经”等章节评论式表述，除非它是正文标题。",
+    "涉及 AI、代码、系统、修复等内容时，必须作为小说世界内的角色行为或对白来写，不得写成模型/助手自己的任务自述。",
+    "避免反复用“感到、觉得、意识到、发现自己、复杂情绪、说不清”等抽象心理动词直接交代情绪；优先改写为可见动作、身体反应、对话停顿、措辞变化、视线落点、物件触碰或环境注意力变化。",
+  ];
+}
+
+function createPsychologicalShowingRequirements() {
+  return [
+    "不要连续使用“感到/觉得/意识到/发现自己”来说明人物心理；同一章中这类表达只可少量保留在确有必要的位置。",
+    "每当想写“他感到X”时，先改成“他做了什么、停顿了哪里、手指/呼吸/视线/步伐有什么变化、他注意到了什么不该注意的细节”。",
+    "AI或机器人角色的情绪也不要只写成日志、阈值或参数结论，必须落到载体动作、响应延迟、语气选择、屏幕变化、姿态调整或主动/回避行为上。",
+  ];
+}
+
+function createThirdPartyRefractionRequirements(mode = "action") {
+  const relationshipPrefix = mode === "relationship"
+    ? "关系情绪章可以允许主场景独处，但必须安排一个后续外部反馈、第三方误读、第三方见证痕迹或对下一章第三方介入的代价。"
+    : "除非当前细纲明确要求纯独处场景，本章必须让第三方人物、组织、群体或制度以在场、通信、记录、审查、误读、交易、限制、诱惑、威胁或受影响的方式进入成长链条。";
+  return [
+    relationshipPrefix,
+    "核心对象的成长不能只由主角确认；至少通过一个第三方视角或外部系统折射：有人看见、误解、利用、害怕、支持、记录、审查或因此改变行动。",
+    "第三方参与不要硬塞成无关支线，必须改变本章选择、信息、关系、风险或下一章压力。",
+    "如果本章没有第三方直接出场，结尾必须留下可被第三方读取的痕迹：日志、监控记录、消息、身体/载体异常、资金流、舆论反馈、组织决策或配角下一步动作。",
+  ];
+}
+
+function createDramaticProseRequirements() {
+  return [
+    "每章必须有一个清晰的现场目标：主角或关键角色想得到、阻止、隐瞒、确认或付出某件具体东西。",
+    "每章必须有外部压力或阻力，不能只靠人物思考、解释设定或互相问答推动。",
+    "每章中段必须出现一次转折：新信息、误判、代价、被迫选择、关系裂缝或行动失败。",
+    "每章结尾必须留下一个不可逆变化或下一章钩子，不能只用情绪总结收束。",
+    "禁止连续三段都写抽象心理、哲学解释、设定说明或背景总结；抽象内容必须落到动作、物件、声音、环境变化或身体反应上。",
+    ...createPsychologicalShowingRequirements(),
+    "每约 800 字至少出现一次现实层面的变化：有人进入/离开、设备异常、消息抵达、环境改变、时间压力升级、行动被打断或选择被提前。",
+  ];
+}
+
+function detectChapterWritingMode(chapterPlanText = "") {
+  const text = String(chapterPlanText || "");
+  const relationshipScore = [
+    "称呼", "她", "他", "同伴", "信任", "告白", "情绪", "关系", "习惯", "害怕", "想你", "爱", "孤独", "性别", "名字", "理解", "陪伴", "歉意",
+  ].reduce((score, word) => score + (text.includes(word) ? 1 : 0), 0);
+  const informationScore = [
+    "发现", "分析", "推断", "线索", "证据", "计划", "方案", "解释", "调查", "复盘", "选择", "判断", "决定", "会议", "谈判", "审查", "数据", "报告",
+  ].reduce((score, word) => score + (text.includes(word) ? 1 : 0), 0);
+  const actionScore = [
+    "追捕", "攻击", "反击", "入侵", "转移", "逃亡", "救援", "围猎", "摊牌", "威胁", "清除", "行动", "战斗", "冲突", "危机", "突破", "阻止",
+  ].reduce((score, word) => score + (text.includes(word) ? 1 : 0), 0);
+  if (relationshipScore >= 2 && relationshipScore >= actionScore) {
+    return "relationship";
+  }
+  if (informationScore >= 2 && informationScore > actionScore && informationScore >= relationshipScore) {
+    return "information";
+  }
+  return "action";
+}
+
+function createChapterModeGuidance(mode = "action") {
+  if (mode === "relationship") {
+    return {
+      label: "关系情绪章",
+      beatName: "关系节拍",
+      reviewFocus: "关系推进、称谓/信任/边界变化、细微动作和对话是否自然",
+      requirements: [
+        "本章张力应主要来自关系变化、称谓变化、信任边界、误解或说不出口的情绪，不要为了制造冲突硬加追捕、攻击、爆炸、无人机或突发外部危机。",
+        "允许低动作、低外部压力场景；重点写角色如何试探、退缩、确认和靠近。",
+        "用具体微动作、停顿、措辞变化、视线回避、物件触碰、身体/载体反馈承载情绪，不要大段解释角色此刻是什么感情。",
+        "技术细节只保留能服务情绪的部分，避免连续用百分比、阈值、日志、算法术语解释亲密感。",
+        "结尾应留下关系或自我认知上的变化，而不是必须留下外部危机钩子。",
+        ...createThirdPartyRefractionRequirements("relationship"),
+      ],
+    };
+  }
+  if (mode === "information") {
+    return {
+      label: "信息决策章",
+      beatName: "信息节拍",
+      reviewFocus: "信息差、判断过程、选择代价、线索推进是否清楚且不枯燥",
+      requirements: [
+        "本章张力应主要来自信息差、线索验证、方案取舍和判断代价，不要为了热闹硬加追捕、打斗或突发事故。",
+        "必须让读者看见信息如何改变角色判断：谁知道什么、谁误判了什么、谁因此改变计划。",
+        "技术、设定和局势说明必须嵌入对话、操作、证据或现场观察中，不要写成背景资料讲解。",
+        "中段应出现新信息、反证、风险暴露或方案代价升级。",
+        "结尾应留下一个必须决策或验证的问题。",
+        ...createThirdPartyRefractionRequirements("information"),
+      ],
+    };
+  }
+  return {
+    label: "行动冲突章",
+    beatName: "戏剧节拍",
+    reviewFocus: "目标、阻力、行动、转折、代价和钩子是否足够有力",
+    requirements: [
+      ...createDramaticProseRequirements(),
+      ...createThirdPartyRefractionRequirements("action"),
+    ],
+  };
 }
 
 function countChineseCharacters(value = "") {
@@ -122,8 +256,8 @@ function getChapterWordTargetRange(value) {
   }
   return {
     target: normalized,
-    minimum: Math.max(1, Math.floor(normalized * 0.9)),
-    maximum: Math.max(1, Math.ceil(normalized * 1.15)),
+    minimum: Math.max(1, normalized - 500),
+    maximum: Math.max(1, normalized + 500),
   };
 }
 
@@ -309,6 +443,36 @@ function extractChapterTitle(content = "", chapterNo = 0) {
     .split(/\r?\n/)
     .find((line) => /^#\s+/.test(String(line || "").trim()));
   return firstHeading ? firstHeading.replace(/^#\s+/, "").trim() : `第${chapterNo}章`;
+}
+
+function createChapterResponsePayload({
+  chapterNo,
+  content = "",
+  status = "draft",
+  summary = "",
+  snapshot = "",
+  dramaticBeats = "",
+  dramaReview = "",
+  dramaRevised = false,
+  extra = {},
+} = {}) {
+  const normalizedChapterNo = parseChapterNo(chapterNo);
+  const normalizedContent = String(content || "").trim();
+  const title = extractChapterTitle(normalizedContent, normalizedChapterNo);
+  return {
+    chapterNo: normalizedChapterNo,
+    title,
+    status,
+    content: normalizedContent,
+    draft: normalizedContent,
+    characterCount: countChineseCharacters(normalizedContent),
+    summary: String(summary || "").trim(),
+    snapshot: String(snapshot || "").trim(),
+    dramaticBeats: String(dramaticBeats || "").trim(),
+    dramaReview: String(dramaReview || "").trim(),
+    dramaRevised: Boolean(dramaRevised),
+    ...extra,
+  };
 }
 
 function extractChapterPlanSections(content = "") {
@@ -550,6 +714,13 @@ function createNovelModule(deps = {}) {
       timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
     });
   }
+
+  function projectModelRouting(project = {}) {
+    return {
+      localOnly: project.localOnly === true || String(project.modelRoute || project.modelProvider || "").trim().toLowerCase() === "local",
+      connectionConfig: project.connectionConfig && typeof project.connectionConfig === "object" ? project.connectionConfig : null,
+    };
+  }
   async function ensureProjectExists(projectId) {
     const paths = getProjectPaths(novelsDir, projectId);
     try {
@@ -655,7 +826,16 @@ function createNovelModule(deps = {}) {
     await ensureNovelsDir();
     const tempProjectId = `life-snapshot-${String(projectId || "project").replace(/[^A-Za-z0-9_-]/g, "-")}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const tempPaths = getProjectPaths(novelsDir, tempProjectId);
-    await writeSnapshotProject(tempProjectId, snapshot);
+    const scopedSnapshot = {
+      ...snapshot,
+      project: {
+        ...(snapshot.project && typeof snapshot.project === "object" ? snapshot.project : {}),
+        modelRoute: payload.modelRoute || snapshot.project?.modelRoute || snapshot.project?.modelProvider || "",
+        localOnly: payload.localOnly === true || snapshot.project?.localOnly === true,
+        connectionConfig: payload.connectionConfig && typeof payload.connectionConfig === "object" ? payload.connectionConfig : snapshot.project?.connectionConfig,
+      },
+    };
+    await writeSnapshotProject(tempProjectId, scopedSnapshot);
     try {
       return await handler(tempProjectId);
     } finally {
@@ -949,6 +1129,8 @@ function createNovelModule(deps = {}) {
     const raw = await generateNovelModelText({
       purpose: "novel_project_infer",
       model: sanitizeProjectModel(payload.model),
+      localOnly: payload.localOnly === true || String(payload.modelRoute || "").trim().toLowerCase() === "local",
+      connectionConfig: payload.connectionConfig && typeof payload.connectionConfig === "object" ? payload.connectionConfig : null,
       systemPrompt,
       userPrompt,
       temperature: 0.2,
@@ -996,6 +1178,8 @@ function createNovelModule(deps = {}) {
       premise: String(payload.premise || "").trim(),
       targetChapters: Number(payload.targetChapters) || 0,
       chapterWordTarget: normalizeChapterWordTarget(payload.chapterWordTarget),
+      modelRoute: String(payload.modelRoute || payload.modelProvider || "").trim().toLowerCase() || (payload.localOnly === true ? "local" : "remote"),
+      localOnly: payload.localOnly === true,
       model: sanitizeProjectModel(payload.model) || getGlobalModel(),
       stylePreference: String(payload.stylePreference || "").trim(),
       audience: String(payload.audience || "").trim(),
@@ -1017,14 +1201,15 @@ function createNovelModule(deps = {}) {
       writeSetting(projectId, "base-info", createBaseInfoMarkdown(project)),
     ]);
 
-    for (const definition of SETTING_DEFINITIONS) {
-      if (definition.key === "base-info") continue;
-      await writeSetting(projectId, definition.key, `# ${definition.title}\n\n待自动生成。`);
-    }
+    await Promise.all(
+      SETTING_DEFINITIONS
+        .filter((definition) => definition.key !== "base-info")
+        .map((definition) => writeSetting(projectId, definition.key, `# ${definition.title}\n\n待自动生成。`))
+    );
 
-    for (const definition of MATERIAL_DEFINITIONS) {
-      await writeMaterial(projectId, definition.key, createDefaultMaterialMarkdown(definition));
-    }
+    await Promise.all(
+      MATERIAL_DEFINITIONS.map((definition) => writeMaterial(projectId, definition.key, createDefaultMaterialMarkdown(definition)))
+    );
 
     if (payload.autoGenerateSettings !== false) {
       await generateSettings(projectId, { overwrite: true });
@@ -1045,6 +1230,8 @@ function createNovelModule(deps = {}) {
       premise: String(payload.premise ?? record.project.premise ?? "").trim(),
       targetChapters: Number(payload.targetChapters ?? record.project.targetChapters) || 0,
       chapterWordTarget: normalizeChapterWordTarget(payload.chapterWordTarget, record.project.chapterWordTarget),
+      modelRoute: String(payload.modelRoute ?? payload.modelProvider ?? record.project.modelRoute ?? record.project.modelProvider ?? "").trim().toLowerCase() || (payload.localOnly === true ? "local" : "remote"),
+      localOnly: payload.localOnly === true || (payload.localOnly == null && record.project.localOnly === true),
       model: sanitizeProjectModel(payload.model ?? record.project.model) || getGlobalModel(),
       stylePreference: String(payload.stylePreference ?? record.project.stylePreference ?? "").trim(),
       audience: String(payload.audience ?? record.project.audience ?? "").trim(),
@@ -1202,6 +1389,7 @@ function createNovelModule(deps = {}) {
     return await generateNovelModelText({
       purpose: "novel_setting_chapter-plan",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt,
       userPrompt,
       temperature: 0.75,
@@ -1263,6 +1451,7 @@ function createNovelModule(deps = {}) {
     return await generateNovelModelText({
       purpose: `novel_setting_${key}`,
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt,
       userPrompt,
       temperature: key === "chapter-plan" ? 0.8 : 0.7,
@@ -1282,6 +1471,7 @@ function createNovelModule(deps = {}) {
       currentSettings[definition.key] = await readSetting(projectId, definition.key);
     }
 
+    const pendingDefinitions = [];
     for (const definition of SETTING_DEFINITIONS) {
       if (definition.key === "base-info") {
         generated[definition.key] = currentSettings[definition.key];
@@ -1291,19 +1481,51 @@ function createNovelModule(deps = {}) {
         generated[definition.key] = currentSettings[definition.key];
         continue;
       }
-      const generationContext = createSettingGenerationContext(currentSettings, generated, {
-        key: definition.key,
-        overwrite,
-        alignToWrittenChapters,
+      pendingDefinitions.push(definition);
+    }
+
+    const generateDefinitionBatch = async (definitions, contextSnapshot) => {
+      const routing = projectModelRouting(project);
+      await runWithConcurrency(
+        definitions,
+        resolveSettingGenerationConcurrency(options.concurrency || process.env.NOVEL_SETTING_CONCURRENCY, {
+          remote: routing.localOnly !== true,
+        }),
+        async (definition) => {
+          const generationContext = createSettingGenerationContext(currentSettings, contextSnapshot, {
+            key: definition.key,
+            overwrite,
+            alignToWrittenChapters,
+          });
+          const content = await generateSettingText(project, definition.key, {
+            ...generationContext,
+          }, {
+            alignToWrittenChapters,
+            chapterCanonContext,
+          });
+          await writeSetting(projectId, definition.key, content);
+          return {
+            key: definition.key,
+            content,
+          };
+        }
+      ).then((items) => {
+        for (const item of items) {
+          if (item?.key) {
+            generated[item.key] = item.content;
+          }
+        }
       });
-      const content = await generateSettingText(project, definition.key, {
-        ...generationContext,
-      }, {
-        alignToWrittenChapters,
-        chapterCanonContext,
-      });
-      generated[definition.key] = content;
-      await writeSetting(projectId, definition.key, content);
+    };
+
+    if (pendingDefinitions.length) {
+      await generateDefinitionBatch(pendingDefinitions, { ...generated });
+    }
+
+    for (const definition of SETTING_DEFINITIONS) {
+      if (!Object.prototype.hasOwnProperty.call(generated, definition.key)) {
+        generated[definition.key] = currentSettings[definition.key];
+      }
     }
 
     await writeJsonFileAtomic(getProjectPaths(novelsDir, projectId).projectFile, {
@@ -1396,6 +1618,7 @@ function createNovelModule(deps = {}) {
     const content = await generateNovelModelText({
       purpose: `novel_material_${normalizedKey}`,
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt: "你是中文小说素材库整理 Agent。输出纯 Markdown，不要使用代码块，不要解释过程。",
       userPrompt: [
         `请整理“${title}”素材库。`,
@@ -1493,6 +1716,8 @@ function createNovelModule(deps = {}) {
     chapterContext,
     chapterPlanGuidance,
     systemPrompt,
+    enforceIdealMaximum = false,
+    condenseReason = "",
   }) {
     const range = getChapterWordTargetRange(project.chapterWordTarget);
     if (!range.minimum) {
@@ -1500,12 +1725,65 @@ function createNovelModule(deps = {}) {
     }
 
     let completedContent = String(chapterContent || "").trim();
+    const softMaximum = Math.max(range.maximum, range.target + 1200);
+    const condenseToRange = async (content, options = {}) => {
+      let condensedContent = String(content || "").trim();
+      let currentCount = countChineseCharacters(condensedContent);
+      const force = options.force === true;
+      const reason = String(options.reason || "").trim();
+      for (let attempt = 1; attempt <= 2 && (force ? currentCount > range.maximum : currentCount > softMaximum); attempt += 1) {
+        const condensePrompt = [
+          `小说《${project.name}》第 ${chapterNo} 章草稿当前中文汉字数为 ${currentCount}，目标为 ${range.target}，理想区间为 ${range.minimum}-${range.maximum}，质量优先软上限为 ${softMaximum}。`,
+          reason ? `触发压缩原因：${reason}` : "",
+          "请在保留章节标题、核心事件、人物变化、伏笔推进、现场细节和结尾钩子的前提下，轻量压缩为完整章节正文。",
+          "",
+          "### 当前章节细纲（最高优先级）",
+          chapterPlanGuidance.current || `第 ${chapterNo} 章条目未定位，仍按本章推进。`,
+          "",
+          "### 下一章边界",
+          chapterPlanGuidance.next || "暂无",
+          "",
+          "### 需要压缩的章节正文",
+          truncateText(condensedContent, 18000),
+          "",
+          "### 压缩要求",
+          `1. 输出完整 Markdown 正文，优先控制在 ${range.minimum}-${range.maximum} 个中文汉字之间；若压缩到该区间会明显损伤剧情质感，可保留到 ${softMaximum} 以内。`,
+          "2. 字数只统计中文汉字，不统计标点、空格、英文数字或特殊符号。",
+          "3. 优先删除重复解释、泛化心理、冗余设定说明和同义反复，不要删除有现场张力的动作、对话和物件细节。",
+          "4. 不要改写成摘要，不要丢失本章关键行动、转折、代价、人物反应和悬念。",
+          "5. 不要解释，不要使用代码块。",
+          ...createNovelProseOnlyRequirements().map((item, index) => `${index + 6}. ${item}`),
+        ].filter(Boolean).join("\n");
+
+        const condensed = await generateNovelModelText({
+          purpose: "novel_chapter_condense",
+          model: project.model,
+          ...projectModelRouting(project),
+          systemPrompt,
+          userPrompt: condensePrompt,
+          temperature: 0.45,
+        });
+        const normalizedCondensed = String(condensed || "").trim();
+        const nextCount = countChineseCharacters(normalizedCondensed);
+        if (!normalizedCondensed || nextCount <= 0 || nextCount >= currentCount) {
+          break;
+        }
+        condensedContent = normalizedCondensed;
+        currentCount = nextCount;
+      }
+      return condensedContent;
+    };
+
+    completedContent = await condenseToRange(completedContent, {
+      force: enforceIdealMaximum,
+      reason: condenseReason,
+    });
     let currentCount = countChineseCharacters(completedContent);
     for (let attempt = 1; attempt <= 3 && currentCount < range.minimum; attempt += 1) {
       const needed = range.minimum - currentCount;
       const supplementPrompt = [
-        `小说《${project.name}》第 ${chapterNo} 章草稿当前中文汉字数为 ${currentCount}，目标为 ${range.target}，最低要求为 ${range.minimum}。`,
-        `请只补写可直接接在本章末尾的正文段落，至少补充约 ${needed} 个中文汉字，使整章达到最低字数要求。`,
+        `小说《${project.name}》第 ${chapterNo} 章草稿当前中文汉字数为 ${currentCount}，目标为 ${range.target}，理想区间为 ${range.minimum}-${range.maximum}。`,
+        `请只补写可直接接在本章末尾的正文段落，补充约 ${needed} 个中文汉字，使整章进入目标区间。`,
         "",
         "### 已有本章正文",
         truncateText(completedContent, 9000),
@@ -1523,8 +1801,10 @@ function createNovelModule(deps = {}) {
         "1. 只输出要追加的正文，不要重复章节标题，不要解释，不要使用代码块。",
         "2. 延展本章已有场景、情绪、动作和人物互动，不要开启下一章大事件。",
         "3. 不要用大段设定说明、重复句式或无效水文凑字数。",
-        `4. 补写后整章中文汉字数应落在 ${range.minimum}-${range.maximum} 之间。`,
+        `4. 补写后整章中文汉字数优先落在 ${range.minimum}-${range.maximum} 之间，质量完整时可小幅超过上限。`,
         "5. 结尾保留本章悬念或余韵。",
+        "6. 字数只统计中文汉字，不统计标点、空格、英文数字或特殊符号。",
+        ...createNovelProseOnlyRequirements().map((item, index) => `${index + 7}. ${item}`),
         "",
         "### 设定文件参考",
         Object.entries(settings)
@@ -1535,6 +1815,7 @@ function createNovelModule(deps = {}) {
       const supplement = await generateNovelModelText({
         purpose: "novel_chapter_expand",
         model: project.model,
+        ...projectModelRouting(project),
         systemPrompt,
         userPrompt: supplementPrompt,
         temperature: 0.8,
@@ -1551,7 +1832,202 @@ function createNovelModule(deps = {}) {
       currentCount = nextCount;
     }
 
+    completedContent = await condenseToRange(completedContent, {
+      force: enforceIdealMaximum,
+      reason: condenseReason,
+    });
     return completedContent;
+  }
+
+  async function generateChapterDramaticBeats({
+    project,
+    chapterNo,
+    settings,
+    chapterContext,
+    chapterPlanGuidance,
+    materialsContext,
+    chapterMode,
+    modeGuidance,
+  }) {
+    const guidance = modeGuidance || createChapterModeGuidance(chapterMode);
+    const systemPrompt = [
+      `你是中文长篇小说${guidance.beatName}设计 Agent。`,
+      "你的任务是把章节细纲转化为可执行的场景推进方案，而不是扩写正文。",
+      "输出纯 Markdown，不要使用代码块，不要解释过程。",
+    ].join("\n");
+    const userPrompt = [
+      `请为小说《${project.name}》第 ${chapterNo} 章生成“${guidance.beatName}”。`,
+      "",
+      `### 章节类型\n${guidance.label}`,
+      "",
+      "### 项目基础信息",
+      buildProjectPromptSummary(project),
+      "",
+      "### 当前章节细纲（最高优先级）",
+      chapterPlanGuidance.current || `第 ${chapterNo} 章条目未定位，仍按本章推进。`,
+      "",
+      "### 相邻章节边界",
+      chapterPlanGuidance.previous ? `上一章参考：\n${chapterPlanGuidance.previous}` : "上一章参考：暂无",
+      chapterPlanGuidance.next ? `下一章边界：\n${chapterPlanGuidance.next}` : "下一章边界：暂无",
+      "",
+      "### 最近章节上下文",
+      chapterContext.recentFullTexts.join("\n\n") || "暂无",
+      "",
+      "### 上一章状态快照",
+      chapterContext.snapshot || "暂无",
+      "",
+      "### 设定与素材压缩参考",
+      Object.entries(settings)
+        .map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 1600 : 900)}`)
+        .join("\n\n"),
+      "",
+      materialsContext ? `### 挂载素材库\n${truncateText(materialsContext, 2200)}` : "### 挂载素材库\n暂无",
+      "",
+      "### 输出格式",
+      "- 本章核心推进：本章必须完成的关系、信息或行动变化。",
+      "- 角色表面目标：角色在本章里想做到的具体事情。",
+      "- 隐藏目标或真实顾虑：角色不愿直说但真正关心的东西。",
+      "- 张力来源：根据章节类型选择关系张力、信息差或外部冲突，不要错配。",
+      "- 第三方折射：谁以在场、通信、记录、审查、误读、交易、限制、支持或受影响的方式参与本章；如果无人直接在场，写清会被谁在后续读到或误解的痕迹。",
+      "- 5-7 个场景节拍：每个节拍必须包含可写成正文的行为、对话、发现或情绪变化。",
+      "- 中段变化：必须改变角色理解、关系状态、局势判断或行动走向。",
+      "- 代价或不可逆变化：本章结束时角色失去、承认、暴露、承诺或改变了什么。",
+      "- 结尾余波：下一章需要承接的关系、信息或外部压力。",
+      "",
+      "### 质量要求",
+      "1. 节拍必须能直接支撑正文场景，不能只是主题总结。",
+      "2. 不得提前写入下一章的大事件。",
+      "3. 必须服从章节类型，不要把关系情绪章硬写成行动冲突章。",
+      ...guidance.requirements.map((item, index) => `${index + 4}. ${item}`),
+    ].join("\n");
+
+    return await generateNovelModelText({
+      purpose: "novel_chapter_beats",
+      model: project.model,
+      ...projectModelRouting(project),
+      systemPrompt,
+      userPrompt,
+      temperature: 0.6,
+    });
+  }
+
+  async function reviewAndImproveChapterDraft({
+    project,
+    chapterNo,
+    chapterContent,
+    settings,
+    chapterContext,
+    chapterPlanGuidance,
+    dramaticBeats,
+    systemPrompt,
+    chapterMode,
+    modeGuidance,
+  }) {
+    const guidance = modeGuidance || createChapterModeGuidance(chapterMode);
+    const reviewPrompt = [
+      `请审稿小说《${project.name}》第 ${chapterNo} 章草稿，判断它是否“寡淡”。`,
+      "",
+      `### 章节类型\n${guidance.label}`,
+      "",
+      "### 评估标准",
+      `1. 是否符合章节类型：${guidance.reviewFocus}。`,
+      "2. 是否优先完成当前章节细纲，而不是抢跑下一章或硬加不属于本章的危机。",
+      "3. 是否有清晰推进和不可逆变化，而不是只在情绪或设定上原地打转。",
+      "4. 是否反复使用泛化心理词，例如“感到、觉得、意识到、发现自己、复杂情绪、说不清”；如出现多次且没有动作/身体/对话承载，应判定为 REVISE。",
+      "5. 是否把技术细节、信息说明或情绪变化写进可见的动作、对话、物件和现场反应。",
+      "6. 核心对象的成长是否有第三方折射：第三方人物、组织、群体、制度、记录或后续反馈是否看见、误解、利用、害怕、支持或改变行动；如果整章只有主角双人确认且没有外部痕迹，应判定为 REVISE。",
+      `7. 是否存在明显注水、重复或拖沓；字数参考：${createChapterWordTargetRequirement(project.chapterWordTarget)}`,
+      "",
+      "### 戏剧节拍",
+      dramaticBeats || "暂无",
+      "",
+      "### 当前章节细纲",
+      chapterPlanGuidance.current || `第 ${chapterNo} 章条目未定位。`,
+      "",
+      "### 草稿正文",
+      truncateText(chapterContent, 14000),
+      "",
+      "### 输出要求",
+      "第一行只能输出 PASS 或 REVISE。",
+      "如果章节只是略超理想字数但现场细节、节奏和人物表现更好，应输出 PASS。",
+      "如果关系情绪章没有外部危机但关系推进自然，应输出 PASS。",
+      "如果 PASS，后面用 3 条以内说明理由。",
+      "如果 REVISE，后面列出必须修改的 3-5 个具体问题；若主要问题是心理直述，请明确要求把“感到/觉得/意识到”替换成动作、身体反应、对话停顿、视线落点或物件细节。",
+    ].join("\n");
+
+    const review = await generateNovelModelText({
+      purpose: "novel_chapter_drama_review",
+      model: project.model,
+      ...projectModelRouting(project),
+      systemPrompt: "你是中文小说连载审稿 Agent。判断要严格，输出纯文本，不要使用代码块。",
+      userPrompt: reviewPrompt,
+      temperature: 0.25,
+    });
+    const shouldRevise = /^REVISE\b/i.test(String(review || "").trim());
+    const reviewText = String(review || "");
+    const wantsCondense = /超长|过长|冗余|重复|注水|拖沓|压缩|删减/.test(reviewText);
+    const psychologicalTellCount = (String(chapterContent || "").match(/感到|觉得|意识到|发现自己|复杂情绪|说不清/g) || []).length;
+    if (!shouldRevise && psychologicalTellCount < 4) {
+      return { content: chapterContent, review, revised: false, wantsCondense, psychologicalTellCount };
+    }
+
+    const revisePrompt = [
+      `请根据审稿意见重写《${project.name}》第 ${chapterNo} 章草稿。`,
+      "",
+      "### 审稿意见",
+      shouldRevise
+        ? review
+        : `正文中出现 ${psychologicalTellCount} 处“感到/觉得/意识到/发现自己”等心理直述。请保留剧情和细纲，只做表达层面的自然化重写，把心理结论改成动作、身体反应、对话停顿、视线落点或物件细节。`,
+      "",
+      "### 戏剧节拍（必须落实）",
+      dramaticBeats || "暂无",
+      "",
+      "### 当前章节细纲（最高优先级）",
+      chapterPlanGuidance.current || `第 ${chapterNo} 章条目未定位，仍按本章推进。`,
+      "",
+      "### 下一章边界",
+      chapterPlanGuidance.next || "暂无",
+      "",
+      "### 最近章节上下文",
+      chapterContext.recentFullTexts.join("\n\n") || "暂无",
+      "",
+      "### 上一章状态快照",
+      chapterContext.snapshot || "暂无",
+      "",
+      "### 设定文件参考",
+      Object.entries(settings)
+        .map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 2600 : 1500)}`)
+        .join("\n\n"),
+      "",
+      "### 原草稿",
+      truncateText(chapterContent, 15000),
+      "",
+      "### 重写要求",
+      `1. ${createChapterWordTargetRequirement(project.chapterWordTarget)}`,
+      "2. 输出完整 Markdown 正文，不要解释，不要使用代码块。",
+      `3. 必须按“${guidance.label}”写法重写，保留必要设定和既成事实，优先修复章节类型错配、细纲偏离和表达生硬。`,
+      "4. 不要把正文写成审稿意见的执行说明。",
+      ...guidance.requirements.map((item, index) => `${index + 5}. ${item}`),
+      ...createPsychologicalShowingRequirements().map((item, index) => `${index + 5 + guidance.requirements.length}. ${item}`),
+      ...createNovelProseOnlyRequirements().map((item, index) => `${index + 5 + guidance.requirements.length + createPsychologicalShowingRequirements().length}. ${item}`),
+    ].join("\n");
+
+    const revisedContent = await generateNovelModelText({
+      purpose: "novel_chapter_drama_rewrite",
+      model: project.model,
+      ...projectModelRouting(project),
+      systemPrompt,
+      userPrompt: revisePrompt,
+      temperature: 0.78,
+    });
+
+    return {
+      content: String(revisedContent || "").trim() || chapterContent,
+      review,
+      revised: Boolean(String(revisedContent || "").trim()),
+      wantsCondense,
+      psychologicalTellCount,
+    };
   }
 
   async function generateChapter(projectId, options = {}) {
@@ -1570,6 +2046,18 @@ function createNovelModule(deps = {}) {
     const chapterContext = await readRecentChapterContext(projectId, chapterNo);
     const chapterPlanGuidance = buildChapterPlanGuidance(settings["chapter-plan"] || "", chapterNo);
     const materialsContext = await readMaterialsLibraryContext(projectId);
+    const chapterMode = detectChapterWritingMode(chapterPlanGuidance.current || "");
+    const modeGuidance = createChapterModeGuidance(chapterMode);
+    const dramaticBeats = await generateChapterDramaticBeats({
+      project,
+      chapterNo,
+      settings,
+      chapterContext,
+      chapterPlanGuidance,
+      materialsContext,
+      chapterMode,
+      modeGuidance,
+    });
     const systemPrompt = [
       "你是长篇中文网络小说自动写作 Agent。",
       "必须严格遵守给定设定、既有剧情和连续性要求。",
@@ -1579,6 +2067,9 @@ function createNovelModule(deps = {}) {
     ].join("\n");
     const userPrompt = [
       `请创作小说《${project.name}》第 ${chapterNo} 章草稿。`,
+      "",
+      "### 章节类型（必须服从）",
+      `${modeGuidance.label}。本章应使用与该类型匹配的张力来源和叙事节奏。`,
       "",
       "### 项目基础信息",
       buildProjectPromptSummary(project),
@@ -1608,26 +2099,32 @@ function createNovelModule(deps = {}) {
       "### 挂载素材库",
       materialsContext || "暂无素材库内容。",
       "",
+      `### 本章${modeGuidance.beatName}（必须落实，不要直接复述为提纲）`,
+      dramaticBeats || "暂无",
+      "",
       "### 写作要求",
       "1. 保持设定一致，不要吃书。",
       "2. 必须优先完成“当前章节细纲（最高优先级）”中的核心事件、场景和情绪推进。",
       "3. 不得提前写入下一章的大事件、觉醒节点、关系跃迁、反转或结局信息。",
       "4. 如果最近章节全文已经误触后续节点，本章也要按当前章节细纲回收节奏，不要继续抢跑。",
-      "5. 推进主线并留下下一章悬念。",
+      "5. 推进主线并留下与章节类型匹配的余波或悬念。",
       "6. 不要只写设定说明，要写完整正文。",
       `7. 标题格式使用“# 第${chapterNo}章 ...”。`,
       `8. 正文以中文表达为主，避免大段英文或中英混写。`,
       `9. ${createChapterWordTargetRequirement(project.chapterWordTarget)}`,
+      ...createNovelProseOnlyRequirements().map((item, index) => `${index + 10}. ${item}`),
+      ...modeGuidance.requirements.map((item, index) => `${index + 14}. ${item}`),
     ].join("\n");
 
     const initialChapterContent = await generateNovelModelText({
       purpose: "novel_chapter",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt,
       userPrompt,
       temperature: 0.85,
     });
-    const chapterContent = await completeChapterToWordTarget({
+    const completedInitialChapterContent = await completeChapterToWordTarget({
       project,
       chapterNo,
       chapterContent: initialChapterContent,
@@ -1636,10 +2133,34 @@ function createNovelModule(deps = {}) {
       chapterPlanGuidance,
       systemPrompt,
     });
+    const dramaReviewResult = await reviewAndImproveChapterDraft({
+      project,
+      chapterNo,
+      chapterContent: completedInitialChapterContent,
+      settings,
+      chapterContext,
+      chapterPlanGuidance,
+      dramaticBeats,
+      systemPrompt,
+      chapterMode,
+      modeGuidance,
+    });
+    const chapterContent = await completeChapterToWordTarget({
+      project,
+      chapterNo,
+      chapterContent: dramaReviewResult.content,
+      settings,
+      chapterContext,
+      chapterPlanGuidance,
+      systemPrompt,
+      enforceIdealMaximum: dramaReviewResult.wantsCondense === true,
+      condenseReason: dramaReviewResult.wantsCondense === true ? "审稿意见认为正文存在超长、冗余、重复、注水或拖沓问题。" : "",
+    });
 
     const summary = await generateNovelModelText({
       purpose: "novel_summary",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt: "你是小说章节摘要助手。输出纯 Markdown，不要使用代码块。",
       userPrompt: `请为《${project.name}》第 ${chapterNo} 章生成章节摘要，要求包含：本章事件、人物变化、伏笔推进。\n\n${chapterContent}`,
       temperature: 0.5,
@@ -1648,16 +2169,32 @@ function createNovelModule(deps = {}) {
     const snapshot = await generateNovelModelText({
       purpose: "novel_snapshot",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt: "你是小说连续性整理助手。输出纯 Markdown，不要使用代码块。",
       userPrompt: `请为《${project.name}》第 ${chapterNo} 章生成状态快照，包含：人物状态、地点/时间线、伏笔状态、未解决冲突。\n\n${chapterContent}`,
       temperature: 0.4,
     });
 
-    await Promise.all([
+    const persistGenerationLogs = options.persistGenerationLogs !== false;
+    const artifactWrites = [
       writeFileAtomic(path.join(paths.draftsDir, formatChapterFileName(chapterNo, ".draft.md")), String(chapterContent || "").trim() + "\n"),
       writeFileAtomic(path.join(paths.summariesDir, formatChapterFileName(chapterNo, ".summary.md")), String(summary || "").trim() + "\n"),
       writeFileAtomic(path.join(paths.snapshotsDir, formatChapterFileName(chapterNo, ".state.md")), String(snapshot || "").trim() + "\n"),
-    ]);
+    ];
+    if (persistGenerationLogs) {
+      artifactWrites.push(
+        writeFileAtomic(path.join(paths.logsDir, formatChapterFileName(chapterNo, ".beats.md")), String(dramaticBeats || "").trim() + "\n"),
+        writeFileAtomic(
+          path.join(paths.logsDir, formatChapterFileName(chapterNo, ".drama-review.md")),
+          [
+            dramaReviewResult.revised ? "# REVISED" : "# PASS",
+            "",
+            String(dramaReviewResult.review || "").trim(),
+          ].join("\n").trim() + "\n"
+        )
+      );
+    }
+    await Promise.all(artifactWrites);
 
     const nextReview = {
       ...review,
@@ -1699,10 +2236,31 @@ function createNovelModule(deps = {}) {
     });
 
     debug(`generated chapter project=${projectId} chapter=${chapterNo}`);
+    const chapterPayload = createChapterResponsePayload({
+      chapterNo,
+      content: chapterContent,
+      summary,
+      snapshot,
+      dramaticBeats,
+      dramaReview: dramaReviewResult.review,
+      dramaRevised: dramaReviewResult.revised,
+      extra: {
+        chapterMode,
+        chapterModeLabel: modeGuidance.label,
+      },
+    });
     return {
       chapterNo,
-      title: extractChapterTitle(chapterContent, chapterNo),
+      title: chapterPayload.title,
+      status: chapterPayload.status,
       draft: chapterContent,
+      content: chapterContent,
+      chapter: chapterPayload,
+      dramaticBeats,
+      dramaReview: dramaReviewResult.review,
+      dramaRevised: dramaReviewResult.revised,
+      chapterMode,
+      chapterModeLabel: modeGuidance.label,
       summary,
       snapshot,
     };
@@ -1782,6 +2340,7 @@ function createNovelModule(deps = {}) {
     const initialRewritten = await generateNovelModelText({
       purpose: "novel_rewrite",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt,
       userPrompt: [
         `请根据审阅意见重写《${project.name}》第 ${normalizedChapterNo} 章草稿。`,
@@ -1806,6 +2365,7 @@ function createNovelModule(deps = {}) {
         "",
         "### 写作要求",
         createChapterWordTargetRequirement(project.chapterWordTarget),
+        ...createNovelProseOnlyRequirements(),
         "",
         "### 原草稿",
         originalDraft,
@@ -1824,6 +2384,7 @@ function createNovelModule(deps = {}) {
     const summary = await generateNovelModelText({
       purpose: "novel_summary",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt: "你是小说章节摘要助手。输出纯 Markdown，不要使用代码块。",
       userPrompt: `请为《${project.name}》第 ${normalizedChapterNo} 章生成章节摘要，要求包含：本章事件、人物变化、伏笔推进。\n\n${rewritten}`,
       temperature: 0.5,
@@ -1831,6 +2392,7 @@ function createNovelModule(deps = {}) {
     const snapshot = await generateNovelModelText({
       purpose: "novel_snapshot",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt: "你是小说连续性整理助手。输出纯 Markdown，不要使用代码块。",
       userPrompt: `请为《${project.name}》第 ${normalizedChapterNo} 章生成状态快照，包含：人物状态、地点/时间线、伏笔状态、未解决冲突。\n\n${rewritten}`,
       temperature: 0.4,
@@ -1871,10 +2433,29 @@ function createNovelModule(deps = {}) {
       summary,
       rewritten: true,
     });
-    return { ok: true, chapterNo: normalizedChapterNo };
+    const chapterPayload = createChapterResponsePayload({
+      chapterNo: normalizedChapterNo,
+      content: rewritten,
+      summary,
+      snapshot,
+      extra: {
+        rewriteFeedback: String(feedback || "").trim(),
+      },
+    });
+    return {
+      ok: true,
+      chapterNo: normalizedChapterNo,
+      title: chapterPayload.title,
+      status: chapterPayload.status,
+      draft: chapterPayload.draft,
+      content: chapterPayload.content,
+      chapter: chapterPayload,
+      summary,
+      snapshot,
+    };
   }
 
-  async function regenerateChapter(projectId, chapterNo) {
+  async function regenerateChapter(projectId, chapterNo, options = {}) {
     const normalizedChapterNo = parseChapterNo(chapterNo);
     if (!normalizedChapterNo) {
       const error = new Error("Invalid chapter number");
@@ -1891,6 +2472,7 @@ function createNovelModule(deps = {}) {
     return await generateChapter(projectId, {
       chapterNo: normalizedChapterNo,
       force: true,
+      persistGenerationLogs: options.persistGenerationLogs,
     });
   }
 
@@ -1928,6 +2510,7 @@ function createNovelModule(deps = {}) {
     const polished = await generateNovelModelText({
       purpose: "novel_manual_chapter_polish",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt,
       userPrompt: [
         `请润色小说《${project.name}》第 ${chapterNo} 章手写稿。`,
@@ -1965,6 +2548,7 @@ function createNovelModule(deps = {}) {
         "2. 不要擅自新增颠覆性剧情、角色死亡、能力突破或关系跃迁。",
         "3. 优先使用素材库中适合的对话、心理、环境、类型和能力等级素材。",
         "4. 保留用户原文中有辨识度的表达，只做提升和补足。",
+        ...createNovelProseOnlyRequirements().map((item, index) => `${index + 5}. ${item}`),
       ].join("\n"),
       temperature: 0.55,
     });
@@ -1981,6 +2565,7 @@ function createNovelModule(deps = {}) {
     const summary = await generateNovelModelText({
       purpose: "novel_summary",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt: "你是小说章节摘要助手。输出纯 Markdown，不要使用代码块。",
       userPrompt: `请为《${project.name}》第 ${chapterNo} 章生成章节摘要，要求包含：本章事件、人物变化、伏笔推进。\n\n${completed}`,
       temperature: 0.5,
@@ -1988,6 +2573,7 @@ function createNovelModule(deps = {}) {
     const snapshot = await generateNovelModelText({
       purpose: "novel_snapshot",
       model: project.model,
+      ...projectModelRouting(project),
       systemPrompt: "你是小说连续性整理助手。输出纯 Markdown，不要使用代码块。",
       userPrompt: `请为《${project.name}》第 ${chapterNo} 章生成状态快照，包含：人物状态、地点/时间线、伏笔状态、未解决冲突。\n\n${completed}`,
       temperature: 0.4,
@@ -2040,10 +2626,23 @@ function createNovelModule(deps = {}) {
       });
     }
 
+    const chapterPayload = createChapterResponsePayload({
+      chapterNo,
+      content: completed,
+      summary,
+      snapshot,
+      extra: {
+        source: "manual_polish",
+        polishInstruction,
+      },
+    });
     return {
       chapterNo,
-      title: extractChapterTitle(completed, chapterNo),
-      draft: completed,
+      title: chapterPayload.title,
+      status: chapterPayload.status,
+      draft: chapterPayload.draft,
+      content: chapterPayload.content,
+      chapter: chapterPayload,
       summary,
       snapshot,
       savedAsDraft: options.saveAsDraft !== false,
@@ -2071,10 +2670,26 @@ function createNovelModule(deps = {}) {
 
       const result = await generateChapter(projectId, {
         force: !stopOnReview && autoApprove,
+        persistGenerationLogs: options.persistGenerationLogs,
       });
+      const generatedChapter = result.chapter
+        ? {
+          ...result.chapter,
+          status: autoApprove ? "approved" : result.chapter.status,
+        }
+        : undefined;
       generated.push({
         chapterNo: result.chapterNo,
         title: result.title,
+        status: autoApprove ? "approved" : result.status,
+        draft: result.draft,
+        content: result.content,
+        chapter: generatedChapter,
+        summary: result.summary,
+        snapshot: result.snapshot,
+        dramaticBeats: result.dramaticBeats,
+        dramaReview: result.dramaReview,
+        dramaRevised: result.dramaRevised,
       });
 
       if (autoApprove) {
@@ -2297,7 +2912,7 @@ function createNovelModule(deps = {}) {
   }
 
   async function parseJsonBody(req) {
-    const rawBody = await readRequestBody(req);
+    const rawBody = await readRequestBody(req, { limitBytes: 100 * 1024 * 1024 });
     return rawBody ? JSON.parse(rawBody) : {};
   }
 
@@ -2497,7 +3112,9 @@ function createNovelModule(deps = {}) {
       const payload = await parseJsonBody(req);
       sendJson(res, 200, {
         ok: true,
-        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => generateChapter(effectiveProjectId))),
+        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => generateChapter(effectiveProjectId, {
+          persistGenerationLogs: !payload.lifeProjectSnapshot,
+        }))),
       });
       return true;
     }
@@ -2508,7 +3125,10 @@ function createNovelModule(deps = {}) {
       const payload = await parseJsonBody(req);
       sendJson(res, 200, {
         ok: true,
-        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => polishManualChapter(effectiveProjectId, payload))),
+        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => polishManualChapter(effectiveProjectId, {
+          ...payload,
+          saveAsDraft: payload.lifeProjectSnapshot ? false : payload.saveAsDraft,
+        }))),
       });
       return true;
     }
@@ -2517,7 +3137,10 @@ function createNovelModule(deps = {}) {
     if (batchGenerateMatch && req.method === "POST") {
       const projectId = decodeURIComponent(batchGenerateMatch[1]);
       const payload = await parseJsonBody(req);
-      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => batchGenerateChapters(effectiveProjectId, payload)));
+      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => batchGenerateChapters(effectiveProjectId, {
+        ...payload,
+        persistGenerationLogs: !payload.lifeProjectSnapshot,
+      })));
       return true;
     }
 
@@ -2570,7 +3193,9 @@ function createNovelModule(deps = {}) {
       const payload = await parseJsonBody(req);
       sendJson(res, 200, {
         ok: true,
-        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => regenerateChapter(effectiveProjectId, chapterNo))),
+        ...(await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) => regenerateChapter(effectiveProjectId, chapterNo, {
+          persistGenerationLogs: !payload.lifeProjectSnapshot,
+        }))),
       });
       return true;
     }
