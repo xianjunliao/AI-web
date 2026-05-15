@@ -55,6 +55,17 @@ function rowToChatJob(row = {}) {
   };
 }
 
+function rowToChatJobEvent(row = {}) {
+  return {
+    id: Number(row.id || 0),
+    requestId: String(row.request_id || ""),
+    eventType: String(row.event_type || ""),
+    deltaText: String(row.delta_text || ""),
+    eventPayload: parseJsonValue(row.event_json, {}),
+    createdAt: normalizeTimestamp(row.created_at),
+  };
+}
+
 function rowToNovelJob(row = {}) {
   return {
     id: Number(row.id || 0),
@@ -225,6 +236,41 @@ function createMysqlStorage({
     }
   }
 
+  async function transactionMysqlWithReconnect(runTransaction) {
+    await ensureMysqlStorage();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let connection = null;
+      try {
+        connection = await getPool().getConnection();
+        await connection.beginTransaction();
+        const result = await runTransaction(connection);
+        await connection.commit();
+        return result;
+      } catch (error) {
+        if (connection) {
+          try {
+            await connection.rollback();
+          } catch {}
+        }
+        if (attempt > 0 || !isRecoverableMysqlConnectionError(error)) {
+          throw error;
+        }
+        if (typeof logDebug === "function") {
+          logDebug(`mysql_storage_transaction_reconnect_after ${error.code || error.message || "connection_error"}`);
+        }
+        await resetMysqlPool();
+        await ensureMysqlStorage();
+      } finally {
+        if (connection) {
+          try {
+            connection.release();
+          } catch {}
+        }
+      }
+    }
+    throw new Error("MySQL transaction failed");
+  }
+
   async function listChatRecords() {
     await ensureMysqlStorage();
     const [rows] = await getPool().query(
@@ -341,7 +387,7 @@ function createMysqlStorage({
       record.assistantText || extractAssistantTextFromResponse(responsePayload)
     ).slice(0, 16 * 1024 * 1024);
 
-    await getPool().query(
+    await queryMysqlWithReconnect(
       `INSERT INTO ai_web_chat_request_logs
         (request_id,source,model,user_text,assistant_text,request_json,response_json,status_code,error_text,latency_ms,created_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -377,10 +423,7 @@ function createMysqlStorage({
   }
 
   async function claimPendingChatJob(workerId = "ai-web-worker") {
-    await ensureMysqlStorage();
-    const connection = await getPool().getConnection();
-    try {
-      await connection.beginTransaction();
+    return await transactionMysqlWithReconnect(async (connection) => {
       const now = Date.now();
       const staleBefore = now - Math.max(30_000, Number(activeConfig.chatJobStaleMs || 120_000));
       const [rows] = await connection.query(
@@ -394,7 +437,6 @@ function createMysqlStorage({
         [staleBefore]
       );
       if (!rows.length) {
-        await connection.commit();
         return null;
       }
       const row = rows[0];
@@ -404,14 +446,8 @@ function createMysqlStorage({
          WHERE id=?`,
         [workerId, now, now, row.id]
       );
-      await connection.commit();
       return rowToChatJob({ ...row, attempts: Number(row.attempts || 0) + 1, updated_at: now });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
+    });
   }
 
   async function completeChatJob(jobId, {
@@ -421,7 +457,7 @@ function createMysqlStorage({
   } = {}) {
     await ensureMysqlStorage();
     const now = Date.now();
-    await getPool().query(
+    await queryMysqlWithReconnect(
       `UPDATE ai_web_chat_jobs
        SET status='done',
         response_json=?,
@@ -454,7 +490,7 @@ function createMysqlStorage({
   } = {}) {
     await ensureMysqlStorage();
     const now = Date.now();
-    await getPool().query(
+    await queryMysqlWithReconnect(
       `UPDATE ai_web_chat_jobs
        SET status='error',
         response_json=?,
@@ -478,39 +514,83 @@ function createMysqlStorage({
     );
   }
 
-  async function claimPendingNovelJob(workerId = "ai-web-novel-worker") {
+  async function appendChatJobEvent(requestId, {
+    eventType = "message",
+    deltaText = "",
+    eventPayload = {},
+  } = {}) {
     await ensureMysqlStorage();
-    const connection = await getPool().getConnection();
-    try {
-      await connection.beginTransaction();
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId) {
+      return null;
+    }
+    const now = Date.now();
+    const [result] = await queryMysqlWithReconnect(
+      `INSERT INTO ai_web_chat_events
+        (request_id,event_type,delta_text,event_json,created_at)
+       VALUES (?,?,?,?,?)`,
+      [
+        normalizedRequestId,
+        String(eventType || "message").slice(0, 64),
+        String(deltaText || "").slice(0, 65535),
+        JSON.stringify(eventPayload || {}),
+        now,
+      ]
+    );
+    return {
+      id: Number(result?.insertId || 0),
+      requestId: normalizedRequestId,
+      eventType,
+      deltaText,
+      eventPayload,
+      createdAt: now,
+    };
+  }
+
+  async function listChatJobEvents(requestId, afterId = 0, limit = 100) {
+    await ensureMysqlStorage();
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId) {
+      return [];
+    }
+    const safeLimit = Math.max(1, Math.min(500, Number(limit || 100)));
+    const [rows] = await queryMysqlWithReconnect(
+      `SELECT id,request_id,event_type,delta_text,event_json,created_at
+       FROM ai_web_chat_events
+       WHERE request_id=? AND id>?
+       ORDER BY id ASC
+       LIMIT ?`,
+      [normalizedRequestId, Math.max(0, Number(afterId || 0)), safeLimit]
+    );
+    return rows.map(rowToChatJobEvent);
+  }
+
+  async function claimPendingNovelJob(workerId = "ai-web-novel-worker") {
+    return await transactionMysqlWithReconnect(async (connection) => {
+      const now = Date.now();
+      const staleBefore = now - Math.max(30_000, Number(activeConfig.novelJobStaleMs || activeConfig.chatJobStaleMs || 35 * 60 * 1000));
       const [rows] = await connection.query(
         `SELECT id,request_id,source,method,path,request_json,attempts,created_at,updated_at
          FROM ai_web_novel_jobs
          WHERE status='pending'
+            OR (status='processing' AND (locked_at IS NULL OR locked_at < ?))
          ORDER BY created_at ASC
          LIMIT 1
-         FOR UPDATE`
+         FOR UPDATE`,
+        [staleBefore]
       );
       if (!rows.length) {
-        await connection.commit();
         return null;
       }
       const row = rows[0];
-      const now = Date.now();
       await connection.query(
         `UPDATE ai_web_novel_jobs
          SET status='processing', attempts=attempts+1, locked_by=?, locked_at=?, updated_at=?
          WHERE id=?`,
         [workerId, now, now, row.id]
       );
-      await connection.commit();
       return rowToNovelJob({ ...row, attempts: Number(row.attempts || 0) + 1, updated_at: now });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
+    });
   }
 
   async function completeNovelJob(jobId, {
@@ -522,7 +602,7 @@ function createMysqlStorage({
   } = {}) {
     await ensureMysqlStorage();
     const now = Date.now();
-    await getPool().query(
+    await queryMysqlWithReconnect(
       `UPDATE ai_web_novel_jobs
        SET status='done',
         response_json=?,
@@ -557,7 +637,7 @@ function createMysqlStorage({
   } = {}) {
     await ensureMysqlStorage();
     const now = Date.now();
-    await getPool().query(
+    await queryMysqlWithReconnect(
       `UPDATE ai_web_novel_jobs
        SET status='error',
         response_json=?,
@@ -655,6 +735,8 @@ function createMysqlStorage({
     claimPendingChatJob,
     completeChatJob,
     failChatJob,
+    appendChatJobEvent,
+    listChatJobEvents,
     queryMysqlWithReconnect,
     claimPendingNovelJob,
     completeNovelJob,

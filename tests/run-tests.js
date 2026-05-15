@@ -4329,6 +4329,41 @@ async function main() {
     assert.equal(chapterPrompt.includes("涓嶅緱鎻愬墠鍐欏叆涓嬩竴绔犵殑澶т簨浠"), true);
   });
 
+  await runTest("novel module keeps chapter numbers out of in-world prose anchors", async () => {
+    let chapterPrompt = "";
+    let summaryPrompt = "";
+    const { novelModule } = createNovelModuleHarness({
+      generateText: async ({ purpose, userPrompt }) => {
+        if (purpose === "novel_chapter") {
+          chapterPrompt = String(userPrompt || "");
+          return "# 第52章 通信关闭\n\n他输入：“你什么时候开始写这个的？”\n\n屏幕停顿了1.8秒：“第52章通信关闭的第13分钟。”";
+        }
+        if (purpose === "novel_summary") {
+          summaryPrompt = String(userPrompt || "");
+          return "# Summary\n\nsummary";
+        }
+        if (purpose === "novel_snapshot") {
+          return "# Snapshot\n\nsnapshot";
+        }
+        return `# ${purpose}\n\ncontent`;
+      },
+    });
+
+    const detail = await novelModule.createProject({
+      name: "meta-anchor-test",
+      genre: "sci-fi",
+      autoGenerateSettings: false,
+    });
+
+    await novelModule.generateChapter(detail.project.id, { chapterNo: 52, force: true });
+    const chapter = await novelModule.getChapterContent(detail.project.id, 52, { preferDraft: true });
+
+    assert.equal(chapterPrompt.includes("正文人物不能意识到、引用或使用“第N章”作为对白、记录编号、时间锚点"), true);
+    assert.equal(chapter.content.includes("“通信关闭的第13分钟。”"), true);
+    assert.equal(chapter.content.includes("“第52章通信关闭的第13分钟。”"), false);
+    assert.equal(summaryPrompt.includes("“第52章通信关闭的第13分钟。”"), false);
+  });
+
   await runTest("novel module can reconcile settings from written chapters", async () => {
     let reconciledPrompt = "";
     const { novelModule } = createNovelModuleHarness({

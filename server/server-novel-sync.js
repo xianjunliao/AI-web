@@ -527,13 +527,23 @@ function createNovelSyncModule(deps = {}) {
 
   function start() {
     let running = false;
+    let lastFailureKey = "";
+    let lastFailureLoggedAt = 0;
     const loop = async () => {
       if (running) return;
       running = true;
       try {
         await tick();
+        lastFailureKey = "";
       } catch (error) {
-        debug(`tick_failed ${error.message || error}`);
+        const failureMessage = String(error?.message || error);
+        const failureKey = `${error?.code || ""}:${failureMessage}`;
+        const now = Date.now();
+        if (failureKey !== lastFailureKey || now - lastFailureLoggedAt > 60_000) {
+          debug(`tick_failed ${failureMessage}`);
+          lastFailureKey = failureKey;
+          lastFailureLoggedAt = now;
+        }
       } finally {
         running = false;
       }

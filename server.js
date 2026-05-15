@@ -1,6 +1,8 @@
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { URL } = require("url");
 const {
@@ -32,6 +34,7 @@ const {
 } = require("./server/server-http");
 const { createNovelModule } = require("./server/server-novel-projects");
 const { createNovelSyncModule } = require("./server/server-novel-sync");
+const { createWritingTrainingModule } = require("./server/server-writing-training");
 const {
   inferScheduledTaskArgsFromText,
   inferScheduledTaskIntentFromText,
@@ -46,12 +49,17 @@ const LIFE_BASE_URL = String(process.env.LIFE_BASE_URL || process.env.LIFE_SIGN_
 const DEFAULT_CHAT_API_PATH = "/v1/chat/completions";
 const DEFAULT_MODELS_API_PATH = "/v1/models";
 const NOVEL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
+const NOVEL_CHAPTER_GENERATION_TIMEOUT_MS = Math.max(
+  NOVEL_MODEL_TIMEOUT_MS + 30_000,
+  Number(process.env.NOVEL_CHAPTER_GENERATION_TIMEOUT_MS || process.env.NOVEL_BRIDGE_TIMEOUT_MS || 7 * NOVEL_MODEL_TIMEOUT_MS)
+);
 const BRIDGE_CHAT_TIMEOUT_MS = Number(process.env.BRIDGE_CHAT_TIMEOUT_MS || NOVEL_MODEL_TIMEOUT_MS);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
 const LOGS_DIR = path.join(ROOT, "logs");
 const NOVELS_DIR = path.join(DATA_DIR, "novels");
+const WRITING_DIR = path.join(DATA_DIR, "writing");
 const LEGACY_PERSONA_PRESETS_DIR = path.join(ROOT, "人设");
 const LEGACY_SCHEDULED_TASKS_FILE = path.join(ROOT, "scheduled-tasks.json");
 const LEGACY_QQ_BOT_CONFIG_FILE = path.join(ROOT, "qq-bot-config.json");
@@ -92,6 +100,8 @@ let queryMysqlWithReconnect;
 let claimPendingChatJob;
 let completeChatJob;
 let failChatJob;
+let appendChatJobEvent;
+let listChatJobEvents;
 let claimPendingNovelJob;
 let completeNovelJob;
 let failNovelJob;
@@ -154,6 +164,8 @@ let handleSharedConnectionConfigSync;
   claimPendingChatJob,
   completeChatJob,
   failChatJob,
+  appendChatJobEvent,
+  listChatJobEvents,
   claimPendingNovelJob,
   completeNovelJob,
   failNovelJob,
@@ -239,6 +251,7 @@ let pushScheduledTaskResultToQq;
 let getQqBotConfig;
 let novelModule;
 let novelSyncModule;
+let writingTrainingModule;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -461,6 +474,53 @@ function resolveMonitoredRequestSource(req) {
   ).slice(0, 128);
 }
 
+const NO_THINK_DIRECTIVE = "请直接回答，不要进入深度思考或推理模式，不要输出 <think>...</think> 内容。如果模型支持 /no_think，请使用 no_think 模式。";
+
+function isDisableThinkingRequested(payload = {}, options = {}) {
+  if (options.localOnly !== true) return false;
+  return payload.disableThinking === true
+    || payload.noThinking === true
+    || payload.disable_thinking === true
+    || String(payload.reasoningEffort || payload.reasoning_effort || "").toLowerCase() === "none";
+}
+
+function contentHasNoThinkDirective(content) {
+  if (typeof content === "string") return /(^|\s)\/no_think\b/i.test(content);
+  if (Array.isArray(content)) {
+    return content.some((item) => /(^|\s)\/no_think\b/i.test(String(item?.text || "")));
+  }
+  return false;
+}
+
+function prependNoThinkToContent(content) {
+  if (contentHasNoThinkDirective(content)) return content;
+  if (typeof content === "string") return `/no_think\n${content}`;
+  if (Array.isArray(content)) {
+    return [{ type: "text", text: "/no_think\n" }, ...content];
+  }
+  return content;
+}
+
+function applyDisableThinkingDirective(payload = {}) {
+  const messages = Array.isArray(payload.messages)
+    ? payload.messages.map((message) => ({ ...message }))
+    : [];
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex >= 0) {
+    messages[lastUserIndex].content = prependNoThinkToContent(messages[lastUserIndex].content);
+  }
+  payload.messages = [
+    { role: "system", content: NO_THINK_DIRECTIVE },
+    ...messages,
+  ];
+}
+
 function normalizeChatCompletionPayload(payload = {}, options = {}) {
   const nextPayload = payload && typeof payload === "object" ? { ...payload } : {};
   const fallbackUserText = String(nextPayload.question || nextPayload.user_text || "").trim();
@@ -494,11 +554,19 @@ function normalizeChatCompletionPayload(payload = {}, options = {}) {
       nextPayload.model = sharedModel;
     }
   }
+  if (isDisableThinkingRequested(nextPayload, options)) {
+    applyDisableThinkingDirective(nextPayload);
+  }
   delete nextPayload.connectionConfig;
   delete nextPayload.modelRoute;
   delete nextPayload.chatMode;
   delete nextPayload.localOnly;
   delete nextPayload.toolsEnabled;
+  delete nextPayload.disableThinking;
+  delete nextPayload.noThinking;
+  delete nextPayload.disable_thinking;
+  delete nextPayload.reasoningEffort;
+  delete nextPayload.reasoning_effort;
   delete nextPayload.signMan;
   delete nextPayload.question;
   delete nextPayload.user_text;
@@ -540,6 +608,290 @@ async function callConfiguredChatCompletion(payload = {}) {
     timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
     retryCount: 1,
     retryDelayMs: 750,
+  });
+}
+
+function requestStream(targetUrl, { method = "POST", headers = {}, body = "", timeoutMs = NOVEL_MODEL_TIMEOUT_MS } = {}, onData = () => {}) {
+  const url = targetUrl instanceof URL ? targetUrl : new URL(targetUrl);
+  const transport = url.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = transport.request(url, { method, headers }, (res) => {
+      if ((res.statusCode || 500) >= 400) {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on("end", () => {
+          const error = new Error(Buffer.concat(chunks).toString("utf8").trim() || `Request failed: ${res.statusCode || 500}`);
+          error.statusCode = res.statusCode || 500;
+          reject(error);
+        });
+        return;
+      }
+      res.on("data", (chunk) => {
+        try {
+          onData(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk || ""));
+        } catch (error) {
+          req.destroy(error);
+        }
+      });
+      res.on("end", resolve);
+      res.on("error", reject);
+    });
+    req.setTimeout(timeoutMs, () => {
+      const error = new Error(`Request timed out after ${timeoutMs}ms`);
+      error.code = "ETIMEDOUT";
+      req.destroy(error);
+    });
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function extractStreamDeltaText(event = {}) {
+  const choices = Array.isArray(event?.choices) ? event.choices : [];
+  const parts = [];
+  for (const choice of choices) {
+    const delta = choice?.delta || {};
+    const candidates = [
+      delta.content,
+      delta.text,
+      choice?.text,
+      choice?.message?.content,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate) {
+        parts.push(candidate);
+        break;
+      }
+    }
+  }
+  return parts.join("");
+}
+
+function extractUsageFromStreamEvent(event = {}) {
+  const usage = event?.usage;
+  return usage && typeof usage === "object" ? usage : null;
+}
+
+function createThinkingDeltaFilter() {
+  return {
+    insideThinking: false,
+    pending: "",
+    push(deltaText = "") {
+      let text = `${this.pending}${String(deltaText || "")}`;
+      this.pending = "";
+      let output = "";
+      while (text) {
+        const lower = text.toLowerCase();
+        if (this.insideThinking) {
+          const endIndex = lower.indexOf("</think>");
+          if (endIndex < 0) {
+            this.pending = text.slice(-7);
+            return output;
+          }
+          text = text.slice(endIndex + 8);
+          this.insideThinking = false;
+          continue;
+        }
+        const startIndex = lower.indexOf("<think>");
+        if (startIndex < 0) {
+          const keepLength = Math.min(6, text.length);
+          if (keepLength > 0) {
+            output += text.slice(0, -keepLength);
+            this.pending = text.slice(-keepLength);
+          } else {
+            output += text;
+          }
+          return output;
+        }
+        output += text.slice(0, startIndex);
+        text = text.slice(startIndex + 7);
+        this.insideThinking = true;
+      }
+      return output;
+    },
+    flush() {
+      const output = this.insideThinking ? "" : this.pending;
+      this.pending = "";
+      return output;
+    },
+  };
+}
+
+function estimateTokenCountForBridge(text = "") {
+  return Math.max(1, Math.ceil(String(text || "").length / 3.5));
+}
+
+function collectCachedTokenCount(usage = {}) {
+  const details = [
+    usage?.prompt_tokens_details,
+    usage?.input_tokens_details,
+    usage?.cache_tokens_details,
+  ].filter((item) => item && typeof item === "object");
+  const direct = [
+    usage?.cached_tokens,
+    usage?.cache_read_tokens,
+    usage?.input_cache_hit_tokens,
+    usage?.prompt_cache_hit_tokens,
+  ];
+  for (const detail of details) {
+    direct.push(
+      detail.cached_tokens,
+      detail.cache_read_tokens,
+      detail.input_cache_hit_tokens,
+      detail.prompt_cache_hit_tokens
+    );
+  }
+  return direct
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .reduce((sum, value) => sum + value, 0);
+}
+
+function buildChatMetrics({
+  text = "",
+  usage = null,
+  startedAt = Date.now(),
+  firstDeltaAt = 0,
+  completedAt = Date.now(),
+} = {}) {
+  const promptTokens = Number(usage?.prompt_tokens ?? usage?.input_tokens ?? 0) || 0;
+  const completionTokens = Number(usage?.completion_tokens ?? usage?.output_tokens ?? 0) || 0;
+  const outputTokens = completionTokens || estimateTokenCountForBridge(text);
+  const inputTokens = promptTokens || 0;
+  const totalTokens = Number(usage?.total_tokens ?? 0) || (inputTokens + outputTokens);
+  const firstTokenLatencyMs = firstDeltaAt ? Math.max(0, firstDeltaAt - startedAt) : 0;
+  const generationMs = firstDeltaAt ? Math.max(1, completedAt - firstDeltaAt) : Math.max(1, completedAt - startedAt);
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedTokens: collectCachedTokenCount(usage || {}),
+    firstTokenLatencyMs,
+    generationMs,
+    totalMs: Math.max(0, completedAt - startedAt),
+    outputTokensPerSecond: outputTokens / Math.max(0.1, generationMs / 1000),
+    estimated: !usage,
+    tokenSource: usage ? "api" : "estimated",
+    usage: usage || null,
+  };
+}
+
+function extractAssistantTextFromChatResponse(response = {}) {
+  const choices = Array.isArray(response?.choices) ? response.choices : [];
+  for (const choice of choices) {
+    const content = choice?.message?.content ?? choice?.text;
+    if (typeof content === "string" && content.trim()) {
+      return content.trim();
+    }
+    if (Array.isArray(content)) {
+      const text = content.map((item) => item?.text || "").join("\n").trim();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function handleStreamPayloadLine(line, state, onDelta) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return;
+  const payloadText = trimmed.startsWith("data:")
+    ? trimmed.replace(/^data:\s*/, "")
+    : trimmed;
+  if (!payloadText || payloadText === "[DONE]") {
+    return;
+  }
+  let event = null;
+  try {
+    event = JSON.parse(payloadText);
+  } catch {
+    return;
+  }
+  state.lastEvent = event;
+  const usage = extractUsageFromStreamEvent(event);
+  if (usage) {
+    state.usage = usage;
+  }
+  const deltaText = extractStreamDeltaText(event);
+  if (deltaText) {
+    if (!state.firstDeltaAt) {
+      state.firstDeltaAt = Date.now();
+    }
+    state.rawText += deltaText;
+    const visibleDeltaText = state.thinkingDeltaFilter ? state.thinkingDeltaFilter.push(deltaText) : deltaText;
+    if (visibleDeltaText) {
+      state.text += visibleDeltaText;
+      onDelta(visibleDeltaText, event);
+    }
+  }
+}
+
+async function callConfiguredChatCompletionStream(payload = {}, { onDelta = () => {} } = {}) {
+  const connectionConfig = payload.connectionConfig && typeof payload.connectionConfig === "object"
+    ? payload.connectionConfig
+    : null;
+  const localOnly = payload.localOnly === true;
+  const resolved = getResolvedModelServiceConfig({ connectionConfig, localOnly });
+  const targetUrl = new URL(resolved.chatPath, resolved.targetOrigin);
+  const requestPayload = {
+    ...normalizeChatCompletionPayload(payload, { connectionConfig, localOnly }),
+    stream: true,
+    stream_options: {
+      ...(payload.stream_options && typeof payload.stream_options === "object" ? payload.stream_options : {}),
+      include_usage: true,
+    },
+  };
+  const requestBody = JSON.stringify(requestPayload);
+  const startedAt = Date.now();
+  const state = {
+    buffer: "",
+    text: "",
+    rawText: "",
+    lastEvent: null,
+    usage: null,
+    firstDeltaAt: 0,
+    thinkingDeltaFilter: createThinkingDeltaFilter(),
+  };
+  await requestStream(targetUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(requestBody),
+      Accept: "text/event-stream, application/x-ndjson, application/json",
+      ...resolved.authHeaders,
+    },
+    body: requestBody,
+    timeoutMs: NOVEL_MODEL_TIMEOUT_MS,
+  }, (chunkText) => {
+    state.buffer += chunkText;
+    const lines = state.buffer.split(/\r?\n/);
+    state.buffer = lines.pop() || "";
+    for (const line of lines) {
+      handleStreamPayloadLine(line, state, onDelta);
+    }
+  });
+  if (state.buffer.trim()) {
+    handleStreamPayloadLine(state.buffer, state, onDelta);
+  }
+  const trailingText = state.thinkingDeltaFilter.flush();
+  if (trailingText) {
+    state.text += trailingText;
+    onDelta(trailingText, state.lastEvent || {});
+  }
+  const text = stripModelThinkingContent((state.rawText || state.text).trim()) || state.text.trim();
+  if (!text) {
+    throw new Error("Stream completed without final text");
+  }
+  const metrics = buildChatMetrics({
+    text,
+    usage: state.usage,
+    startedAt,
+    firstDeltaAt: state.firstDeltaAt,
+    completedAt: Date.now(),
+  });
+  return createBridgeTextResponse(text, requestPayload.model || "", {
+    usage: state.usage || undefined,
+    metrics,
   });
 }
 
@@ -679,7 +1031,7 @@ function createBridgeChatTools({ allowScheduler = false } = {}) {
   return tools;
 }
 
-function createBridgeTextResponse(text = "", model = "") {
+function createBridgeTextResponse(text = "", model = "", extras = {}) {
   return {
     id: `bridge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     object: "chat.completion",
@@ -695,10 +1047,12 @@ function createBridgeTextResponse(text = "", model = "") {
         finish_reason: "stop",
       },
     ],
+    ...(extras && typeof extras === "object" ? extras : {}),
   };
 }
 
-async function callBridgeChatCompletion(payload = {}) {
+async function callBridgeChatCompletion(payload = {}, options = {}) {
+  const onDelta = typeof options.onDelta === "function" ? options.onDelta : null;
   const connectionConfig = payload.connectionConfig && typeof payload.connectionConfig === "object"
     ? payload.connectionConfig
     : null;
@@ -720,6 +1074,22 @@ async function callBridgeChatCompletion(payload = {}) {
   const needsTools = allowScheduler || hasWebSearchIntent || hasWeatherIntent;
 
   if (!needsTools) {
+    if (onDelta) {
+      let emittedDelta = false;
+      try {
+        return await callConfiguredChatCompletionStream({ ...requestPayload, connectionConfig, localOnly }, {
+          onDelta: (deltaText, event) => {
+            emittedDelta = true;
+            onDelta(deltaText, event);
+          },
+        });
+      } catch (error) {
+        if (emittedDelta) {
+          throw error;
+        }
+        appendServerDebugLog(`bridge_stream_fallback ${formatErrorForStorage(error)}`);
+      }
+    }
     return await callConfiguredChatCompletion({ ...requestPayload, connectionConfig, localOnly });
   }
 
@@ -730,6 +1100,16 @@ async function callBridgeChatCompletion(payload = {}) {
     } catch (error) {
       appendServerDebugLog(`bridge_scheduler_intent_fallback ${formatErrorForStorage(error)}`);
     }
+  }
+
+  if (typeof options.onEvent === "function") {
+    await options.onEvent({
+      eventType: "status",
+      eventPayload: {
+        status: "running",
+        title: hasWebSearchIntent ? "正在联网搜索" : (hasWeatherIntent ? "正在查询天气" : "正在使用工具"),
+      },
+    });
   }
 
   const messages = Array.isArray(requestPayload.messages) && requestPayload.messages.length
@@ -778,11 +1158,34 @@ async function processOneChatJob(workerId = "ai-web-worker") {
     connectionConfig: rawPayload.connectionConfig,
     localOnly: rawPayload.localOnly === true,
   });
+  const writeStreamEvent = createChatJobEventWriter(job.requestId);
   try {
+    await writeStreamEvent({ eventType: "status", eventPayload: { status: "running", title: "AI-web 已开始处理" }, force: true });
     const responsePayload = await callBridgeChatCompletion({
       ...requestPayload,
       connectionConfig: rawPayload.connectionConfig,
       localOnly: rawPayload.localOnly === true,
+    }, {
+      onDelta: (deltaText) => writeStreamEvent({ eventType: "delta", deltaText }),
+      onEvent: writeStreamEvent,
+    });
+    if (!responsePayload.metrics) {
+      responsePayload.metrics = buildChatMetrics({
+        text: extractAssistantTextFromChatResponse(responsePayload),
+        usage: responsePayload.usage || null,
+        startedAt,
+        firstDeltaAt: 0,
+        completedAt: Date.now(),
+      });
+    }
+    await writeStreamEvent({
+      eventType: "done",
+      eventPayload: {
+        status: "done",
+        metrics: responsePayload?.metrics || null,
+        usage: responsePayload?.usage || null,
+      },
+      force: true,
     });
     await completeChatJob(job.id, {
       responsePayload,
@@ -799,6 +1202,7 @@ async function processOneChatJob(workerId = "ai-web-worker") {
     });
   } catch (error) {
     const errorText = formatErrorForStorage(error.message || error);
+    await writeStreamEvent({ eventType: "error", eventPayload: { status: "error", error: errorText }, force: true });
     await failChatJob(job.id, {
       errorText,
       statusCode: error.statusCode || 500,
@@ -858,6 +1262,7 @@ async function callLocalNovelEndpoint(job = {}) {
   const pathValue = String(job.path || "/").trim();
   if (
     !pathValue.startsWith("/novels/") &&
+    !pathValue.startsWith("/writing/") &&
     pathValue !== "/novels/projects" &&
     pathValue !== "/novels/infer-project" &&
     !pathValue.startsWith("/scheduler/tasks")
@@ -870,20 +1275,25 @@ async function callLocalNovelEndpoint(job = {}) {
   const bodyPayload = job.requestPayload && typeof job.requestPayload === "object" ? job.requestPayload : {};
   if (
     method === "POST" &&
-    /^\/novels\/projects\/[^/?]+\/chapters\/generate-next(?:\?|$)/.test(pathValue) &&
+    isMysqlNovelChapterWritePath(pathValue) &&
     bodyPayload.lifeProjectId &&
-    !bodyPayload.lifeProjectSnapshot &&
     novelSyncModule &&
     (typeof novelSyncModule.pullProjectFromMysql === "function" || typeof novelSyncModule.tick === "function")
   ) {
+    let mysqlPreSynced = false;
     if (typeof novelSyncModule.pullProjectFromMysql === "function") {
-      await novelSyncModule.pullProjectFromMysql(bodyPayload.lifeProjectId).catch((error) => {
+      mysqlPreSynced = await novelSyncModule.pullProjectFromMysql(bodyPayload.lifeProjectId).catch((error) => {
         appendServerDebugLog(`novel_generation_mysql_presync_failed ${String(error?.message || error)}`);
-      });
+        return false;
+      }) === true;
     }
     await novelSyncModule.tick().catch((error) => {
       appendServerDebugLog(`novel_generation_presync_failed ${String(error?.message || error)}`);
     });
+    if (mysqlPreSynced && bodyPayload.lifeProjectSnapshot) {
+      delete bodyPayload.lifeProjectSnapshot;
+      appendServerDebugLog(`novel_generation_snapshot_ignored_after_mysql_presync projectId=${bodyPayload.lifeProjectId} path=${pathValue}`);
+    }
   }
 
   const targetUrl = new URL(pathValue, `http://${HOST}:${PORT}`);
@@ -897,9 +1307,206 @@ async function callLocalNovelEndpoint(job = {}) {
       "x-request-id": job.requestId,
     },
     body: hasBody ? JSON.stringify(bodyPayload) : undefined,
-    timeoutMs: NOVEL_MODEL_TIMEOUT_MS + 30_000,
+    timeoutMs: NOVEL_CHAPTER_GENERATION_TIMEOUT_MS,
     retryCount: 0,
   });
+}
+
+function isMysqlNovelChapterWritePath(pathValue = "") {
+  const pathText = String(pathValue || "");
+  return (
+    /^\/novels\/projects\/[^/?]+\/chapters\/generate-next(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/batch-generate(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/polish-manual(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/rewrite(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/regenerate(?:\?|$)/.test(pathText)
+  );
+}
+
+function countChineseCharactersForStorage(content = "") {
+  const matches = String(content || "").match(/[\u4e00-\u9fff]/g);
+  return matches ? matches.length : 0;
+}
+
+function hashStorageText(value = "") {
+  return crypto.createHash("md5").update(String(value || ""), "utf8").digest("hex");
+}
+
+function parseJsonObjectForStorage(value, fallback = {}) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  try {
+    const parsed = JSON.parse(String(value || ""));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function persistGeneratedNovelChapterToMysql(job = {}, responsePayload = {}) {
+  if (typeof queryMysqlWithReconnect !== "function") {
+    return false;
+  }
+  const requestPayload = job.requestPayload && typeof job.requestPayload === "object" ? job.requestPayload : {};
+  const lifeProjectId = String(requestPayload.lifeProjectId || "").trim();
+  if (!lifeProjectId) {
+    return false;
+  }
+  if (
+    String(job.method || "").toUpperCase() !== "POST" ||
+    !isMysqlNovelChapterWritePath(job.path)
+  ) {
+    return false;
+  }
+
+  const generatedItems = Array.isArray(responsePayload?.generated) ? responsePayload.generated : [];
+  if (generatedItems.length) {
+    let persistedCount = 0;
+    for (const item of generatedItems) {
+      const itemPayload = item?.chapter && typeof item.chapter === "object" ? item.chapter : item;
+      if (await persistOneGeneratedNovelChapterToMysql(lifeProjectId, itemPayload)) {
+        persistedCount += 1;
+      }
+    }
+    if (persistedCount > 0) {
+      await persistNovelProjectStateAndReviewToMysql(lifeProjectId);
+      appendServerDebugLog(`mysql_novel_chapter_batch_persisted projectId=${lifeProjectId} count=${persistedCount}`);
+      return true;
+    }
+    return false;
+  }
+
+  const chapterPayload = responsePayload?.chapter && typeof responsePayload.chapter === "object"
+    ? responsePayload.chapter
+    : responsePayload;
+  const persisted = await persistOneGeneratedNovelChapterToMysql(lifeProjectId, chapterPayload, responsePayload);
+  if (!persisted) {
+    return false;
+  }
+  await persistNovelProjectStateAndReviewToMysql(lifeProjectId);
+  return true;
+}
+
+async function persistOneGeneratedNovelChapterToMysql(lifeProjectId, chapterPayload = {}, responsePayload = {}) {
+  const chapterNo = Number(chapterPayload?.chapterNo || responsePayload?.chapterNo || 0);
+  const content = String(chapterPayload?.content || chapterPayload?.draft || responsePayload?.content || responsePayload?.draft || "").trim();
+  if (!chapterNo || !content) {
+    return false;
+  }
+
+  const now = Date.now();
+  const title = String(chapterPayload.title || responsePayload.title || `第${chapterNo}章`).trim();
+  const status = String(chapterPayload.status || responsePayload.status || "draft").trim().toLowerCase() || "draft";
+  const normalizedStatus = ["approved", "draft"].includes(status) ? status : "draft";
+  const characterCount = Number(chapterPayload.characterCount || 0) || countChineseCharactersForStorage(content);
+  const meta = {
+    ...chapterPayload,
+    chapterNo,
+    title,
+    status: normalizedStatus,
+    characterCount,
+  };
+  delete meta.content;
+  delete meta.draft;
+
+  await queryMysqlWithReconnect(
+    `INSERT INTO novel_chapter
+      (project_id, chapter_no, title, status, content, character_count, meta_json, content_hash, version, deleted_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)
+     ON DUPLICATE KEY UPDATE
+      title=VALUES(title),
+      content=VALUES(content),
+      character_count=VALUES(character_count),
+      meta_json=VALUES(meta_json),
+      content_hash=VALUES(content_hash),
+      version=version+1,
+      deleted_at=NULL,
+      updated_at=VALUES(updated_at)`,
+    [
+      lifeProjectId,
+      chapterNo,
+      title,
+      normalizedStatus,
+      content,
+      characterCount,
+      JSON.stringify(meta),
+      hashStorageText(content),
+      now,
+      now,
+    ]
+  );
+  appendServerDebugLog(`mysql_novel_chapter_persisted projectId=${lifeProjectId} chapter=${chapterNo} status=${normalizedStatus}`);
+  return true;
+}
+
+async function persistNovelProjectStateAndReviewToMysql(lifeProjectId) {
+  const state = await readJsonFile(path.join(NOVELS_DIR, lifeProjectId, "state.json"), null);
+  const review = await readJsonFile(path.join(NOVELS_DIR, lifeProjectId, "review.json"), null);
+  if (state || review) {
+    const now = Date.now();
+    const [rows] = await queryMysqlWithReconnect(
+      "SELECT project_json,state_json,review_json FROM novel_project WHERE project_id=? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+      [lifeProjectId]
+    );
+    const current = Array.isArray(rows) ? rows[0] : null;
+    if (current) {
+      const projectJson = String(current.project_json || "{}");
+      const nextState = state || parseJsonObjectForStorage(current.state_json, {});
+      const nextReview = review || parseJsonObjectForStorage(current.review_json, {});
+      const nextStateJson = JSON.stringify(nextState);
+      const nextReviewJson = JSON.stringify(nextReview);
+      await queryMysqlWithReconnect(
+        `UPDATE novel_project
+         SET state_json=?, review_json=?, content_hash=?, version=version+1, updated_at=?
+         WHERE project_id=? AND deleted_at IS NULL`,
+        [
+          nextStateJson,
+          nextReviewJson,
+          hashStorageText([projectJson, nextStateJson, nextReviewJson].join("\n")),
+          now,
+          lifeProjectId,
+        ]
+      );
+    }
+  }
+}
+
+function createChatJobEventWriter(requestId) {
+  let pendingDelta = "";
+  let lastFlushAt = 0;
+  let flushPromise = Promise.resolve();
+  const flushDelta = ({ force = false } = {}) => {
+    if (!pendingDelta) return flushPromise;
+    const now = Date.now();
+    if (!force && pendingDelta.length < 80 && now - lastFlushAt < 350) {
+      return flushPromise;
+    }
+    const deltaText = pendingDelta;
+    pendingDelta = "";
+    lastFlushAt = now;
+    flushPromise = flushPromise
+      .catch(() => {})
+      .then(() => appendChatJobEvent(requestId, {
+        eventType: "delta",
+        deltaText,
+        eventPayload: { length: deltaText.length },
+      }).catch((error) => appendServerDebugLog(`chat_event_delta_failed requestId=${requestId || ""} error=${formatErrorForStorage(error)}`)));
+    return flushPromise;
+  };
+  return async function writeStreamEvent(event = {}) {
+    if (event.eventType === "delta") {
+      pendingDelta += String(event.deltaText || "");
+      await flushDelta({ force: event.force === true });
+      return;
+    }
+    await flushDelta({ force: true });
+    await appendChatJobEvent(requestId, {
+      eventType: event.eventType || "status",
+      deltaText: event.deltaText || "",
+      eventPayload: event.eventPayload || {},
+    }).catch((error) => appendServerDebugLog(`chat_event_failed requestId=${requestId || ""} error=${formatErrorForStorage(error)}`));
+  };
 }
 
 async function processOneNovelJob(workerId = "ai-web-novel-worker") {
@@ -910,7 +1517,11 @@ async function processOneNovelJob(workerId = "ai-web-novel-worker") {
 
   const startedAt = Date.now();
   try {
+    appendServerDebugLog(`mysql_novel_job_started id=${job.id} requestId=${job.requestId || ""} method=${job.method || ""} path=${job.path || ""}`);
     const responsePayload = await callLocalNovelEndpoint(job);
+    await persistGeneratedNovelChapterToMysql(job, responsePayload).catch((error) => {
+      appendServerDebugLog(`mysql_novel_chapter_persist_failed id=${job.id} requestId=${job.requestId || ""} error=${formatErrorForStorage(error)}`);
+    });
     await completeNovelJob(job.id, {
       responsePayload,
       responseText: JSON.stringify(responsePayload || {}),
@@ -918,6 +1529,7 @@ async function processOneNovelJob(workerId = "ai-web-novel-worker") {
       statusCode: 200,
       latencyMs: Date.now() - startedAt,
     });
+    appendServerDebugLog(`mysql_novel_job_done id=${job.id} requestId=${job.requestId || ""} latencyMs=${Date.now() - startedAt}`);
   } catch (error) {
     const errorText = formatErrorForStorage(error.message || error);
     await failNovelJob(job.id, {
@@ -925,6 +1537,7 @@ async function processOneNovelJob(workerId = "ai-web-novel-worker") {
       statusCode: error.statusCode || 500,
       latencyMs: Date.now() - startedAt,
     });
+    appendServerDebugLog(`mysql_novel_job_failed id=${job.id} requestId=${job.requestId || ""} latencyMs=${Date.now() - startedAt} error=${errorText}`);
   }
   return true;
 }
@@ -2668,6 +3281,52 @@ novelSyncModule = createNovelSyncModule({
 });
 novelSyncModule.start();
 
+writingTrainingModule = createWritingTrainingModule({
+  writingDir: WRITING_DIR,
+  readJsonFile,
+  readTextFile,
+  writeJsonFileAtomic,
+  writeFileAtomic,
+  readRequestBody,
+  sendJson,
+  generateText: (...args) => generateNovelText(...args),
+  streamGenerateText: async ({ systemPrompt, userPrompt, model, connectionConfig, localOnly, temperature, onDelta } = {}) => {
+    let deltaChain = Promise.resolve();
+    const response = await callConfiguredChatCompletionStream({
+      model,
+      connectionConfig,
+      localOnly,
+      temperature,
+      messages: [
+        { role: "system", content: String(systemPrompt || "").trim() },
+        { role: "user", content: String(userPrompt || "").trim() },
+      ],
+    }, {
+      onDelta: (deltaText) => {
+        if (typeof onDelta === "function") {
+          deltaChain = deltaChain.then(() => onDelta(deltaText)).catch(() => {});
+        }
+      },
+    });
+    await deltaChain;
+    return {
+      content: extractAssistantTextFromChatResponse(response),
+      model: response.model || model || "",
+      usage: response.usage || null,
+      metrics: response.metrics || null,
+    };
+  },
+  createStreamEventWriter: (requestId) => (
+    typeof appendChatJobEvent === "function"
+      ? createChatJobEventWriter(requestId)
+      : async () => {}
+  ),
+  getSharedConnectionConfig: () => (typeof getSharedConnectionConfig === "function" ? getSharedConnectionConfig() : {}),
+  getMysqlStorageConfig,
+  queryMysqlWithReconnect,
+  logDebug: appendServerDebugLog,
+});
+
 // Canonical scheduled-task model invocation flow.
 const callLocalModelForTask = createTaskModelInvoker({
   callLocalModelWithTools,
@@ -2895,6 +3554,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (pathname.startsWith("/writing/")) {
+    Promise.resolve(writingTrainingModule.handleRequest(req, res, pathname))
+      .then((handled) => {
+        if (!handled) {
+          sendJson(res, 404, { error: "Not found" });
+        }
+      })
+      .catch((error) => {
+        sendJson(res, error.statusCode || 500, {
+          error: error.message || "Writing request failed",
+        });
+      });
+    return;
+  }
+
   if (pathname.startsWith("/api/")) {
     proxyRequest(req, res, pathname);
     return;
@@ -2902,6 +3576,9 @@ const server = http.createServer((req, res) => {
 
   serveStatic(req, res, pathname);
 });
+server.requestTimeout = NOVEL_CHAPTER_GENERATION_TIMEOUT_MS + 60_000;
+server.headersTimeout = Math.max(60_000, server.requestTimeout + 5_000);
+server.keepAliveTimeout = 65_000;
 
 async function legacySendQqMessageFinalV1(args = {}) {
   const bridgeUrl = String(args.bridgeUrl || "").trim();
@@ -3200,6 +3877,7 @@ const bootstrapServer = createServerBootstrap({
   initializeDataFiles: async () => {
     await initializeDataFiles();
     await novelModule.ensureNovelsDir();
+    await writingTrainingModule.ensureWritingDir();
     await initMysqlStorage();
   },
   runStartupCleanup,

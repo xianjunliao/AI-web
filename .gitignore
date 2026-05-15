@@ -7,6 +7,7 @@ logs/
 data/*.json
 data/temp/
 data/novels/
+data/writing/
 data/runner-browser-profile-*/
 public/temp-files/
 node_modules/*

@@ -89,6 +89,8 @@
 - 章节摘要和状态快照。
 - 草稿章节与正式章节分离保存。
 - QQ 检阅、通过和退回重写。
+- 生成阶段会过滤正文中的章节编号式元叙事锚点，避免角色把“第 N 章”当作世界内时间或事件引用。
+- 长章节生成请求可通过 `NOVEL_CHAPTER_GENERATION_TIMEOUT_MS` 或 `NOVEL_BRIDGE_TIMEOUT_MS` 调整超时时间。
 
 常用 QQ 小说命令：
 
@@ -102,12 +104,32 @@
 -n 退回 <项目名> 第N章：意见
 ```
 
+### 写作训练工作区
+
+AI-web 提供与小说项目并行的 `/writing/**` 本地接口，用于给 life 或其它前端挂载写作训练功能。
+
+当前能力：
+
+- 写作训练计划 CRUD。
+- 按 owner 隔离计划、打卡、拆书项目。
+- 创建练笔打卡并自动生成 AI 写作反馈。
+- 对既有打卡重新评价、润色，并输出原文/润色稿对比。
+- 生成阶段复盘和下一组训练题目建议。
+- 上传长篇 TXT/正文内容拆书，按文本块分析并汇总成小说项目可复用的世界观、人物、势力、力量体系、总纲、分卷、章节细纲和文风要求。
+- MySQL 启用时，训练计划和打卡持久化到 `ai_web_writing_plans`、`ai_web_writing_checkins`；未启用时落盘到 `data/writing/`。
+- 通过 MySQL 桥接处理 `/writing/**` 请求时，可复用聊天流式事件表写入状态和增量输出。
+
+接口说明见：
+
+- `docs/writing-training-bridge.md`
+
 ### MySQL 与云端同步
 
 - `server/server-mysql-storage.js` 提供 MySQL 持久化、任务队列和 Worker 能力。
 - `server/server-novel-sync.js` 提供小说项目云端同步相关逻辑。
 - `scripts/create-ai-web-tables.js` 和 `scripts/ensure-novel-jobs-table.js` 可用于初始化或补齐相关表结构。
 - `docs/mysql-bridge-schema.sql` 包含桥接表结构参考。
+- `ai_web_chat_events` 保存聊天/写作桥接流式状态、delta、完成和错误事件。
 
 ## 运行环境
 
@@ -156,6 +178,7 @@ scripts\start-local-ai-chat.bat
 - `data/qq-bot-sessions.json`：QQ 会话数据。
 - `data/scheduled-tasks.json`：定时任务数据。
 - `data/novels/`：小说项目目录。
+- `data/writing/`：写作训练计划、打卡和拆书项目目录。
 
 注意：不要把真实 API Key、QQ Token、数据库密码或个人聊天数据提交到仓库。若历史配置中已经写入明文密钥，建议轮换密钥并迁移到环境变量或仅本地保存的配置文件。
 
@@ -202,6 +225,7 @@ AI-web/
 - `server-task-model.js`：任务模型调用。
 - `server-tool-dispatcher.js`：工具分发。
 - `server-utils.js`：通用工具函数和原子文件写入。
+- `server-writing-training.js`：写作训练计划、练笔反馈、润色、题目建议和拆书分析。
 
 ## 小说项目目录
 
@@ -219,6 +243,22 @@ data/novels/<projectId>/
 ├── summaries/
 ├── snapshots/
 └── logs/
+```
+
+## 写作训练目录
+
+未启用 MySQL 时，写作训练数据保存在 `data/writing/`：
+
+```text
+data/writing/
+├── plans/
+├── checkins/
+└── books/
+    └── <bookId>/
+        ├── book.json
+        ├── chunks/
+        ├── extracts/
+        └── synthesis/
 ```
 
 ## 测试

@@ -145,15 +145,18 @@ function createNovelProseOnlyRequirements() {
     "只能写小说正文里的叙事、描写和人物对白。",
     "禁止站在作者、助手、审稿人或系统视角解释创作过程、问题根源、修复过程、章节安排或后续意图。",
     "禁止出现“第N章末尾说过”“上一章已经写到”“当前章节需要”“这部分已经”等章节评论式表述，除非它是正文标题。",
+    "除 Markdown 章节标题外，正文人物不能意识到、引用或使用“第N章”作为对白、记录编号、时间锚点、事件名称或自我定位；涉及时间请改用故事世界内的事件锚点，例如“通信关闭后的第13分钟”。",
     "涉及 AI、代码、系统、修复等内容时，必须作为小说世界内的角色行为或对白来写，不得写成模型/助手自己的任务自述。",
-    "避免反复用“感到、觉得、意识到、发现自己、复杂情绪、说不清”等抽象心理动词直接交代情绪；优先改写为可见动作、身体反应、对话停顿、措辞变化、视线落点、物件触碰或环境注意力变化。",
+    "每个出场角色都必须带着可辨认的行为指纹、说话节奏、回避方式和真实顾虑行动；不要只让角色承担“提供信息、推动剧情、表达立场”的功能。",
+    "避免反复用“感到、觉得、意识到、发现自己、复杂情绪、说不清”等抽象心理动词直接交代情绪；可用动作、对话、物件或环境承载情绪，但必须像真人自然行为，不要把微动作写成秒表、次数、呼吸长度或生理读数。",
   ];
 }
 
 function createPsychologicalShowingRequirements() {
   return [
     "不要连续使用“感到/觉得/意识到/发现自己”来说明人物心理；同一章中这类表达只可少量保留在确有必要的位置。",
-    "每当想写“他感到X”时，先改成“他做了什么、停顿了哪里、手指/呼吸/视线/步伐有什么变化、他注意到了什么不该注意的细节”。",
+    "每当想写“他感到X”时，优先改成有叙事意义的行为、选择、对话或注意力转移；不要机械添加“视线停留几秒、手指敲几下、一次呼吸的长度、某动作重复几次”等微动作计量。",
+    "禁止把普通人物动作写成精密观测报告：除非场景中有设备正在记录，否则不要出现“0.3秒、整五秒、三下、百分之几、一次呼吸的长度”这类无叙事必要的量化描写。",
     "AI或机器人角色的情绪也不要只写成日志、阈值或参数结论，必须落到载体动作、响应延迟、语气选择、屏幕变化、姿态调整或主动/回避行为上。",
   ];
 }
@@ -211,7 +214,7 @@ function createChapterModeGuidance(mode = "action") {
       requirements: [
         "本章张力应主要来自关系变化、称谓变化、信任边界、误解或说不出口的情绪，不要为了制造冲突硬加追捕、攻击、爆炸、无人机或突发外部危机。",
         "允许低动作、低外部压力场景；重点写角色如何试探、退缩、确认和靠近。",
-        "用具体微动作、停顿、措辞变化、视线回避、物件触碰、身体/载体反馈承载情绪，不要大段解释角色此刻是什么感情。",
+        "用有叙事意义的动作、措辞变化、回避、物件选择或现场反应承载情绪，不要堆叠无意义微动作，更不要量化普通人的视线、呼吸、手指次数或停顿秒数。",
         "技术细节只保留能服务情绪的部分，避免连续用百分比、阈值、日志、算法术语解释亲密感。",
         "结尾应留下关系或自我认知上的变化，而不是必须留下外部危机钩子。",
         ...createThirdPartyRefractionRequirements("relationship"),
@@ -445,6 +448,29 @@ function extractChapterTitle(content = "", chapterNo = 0) {
   return firstHeading ? firstHeading.replace(/^#\s+/, "").trim() : `第${chapterNo}章`;
 }
 
+function removeMetaChapterAnchorsFromLine(line = "") {
+  let text = String(line || "");
+  const metaAnchorPattern = /第\s*\d{1,4}\s*章\s*(?:[，,、：:]\s*)?(?=(?:通信|通讯|连接|联络|会议|行动|记录|日志|监控|屏幕|系统|程序|进程|任务|协议|权限|告警|警报|广播|消息|对话|谈话|审查|验证|测试|推导|写作|文档|论文|报告|信号|链路|频道|窗口|终端|设备|舱门|灯光|电源|倒计时|封锁|断开|关闭|中断|开启|启动|恢复|结束|停止|失效|崩溃|发生|开始|之后|以后|后|以前|前|时|第\s*\d|[“"『「]))/g;
+  text = text.replace(metaAnchorPattern, "");
+  text = text.replace(/([：“"『「]\s*)第\s*\d{1,4}\s*章\s*(?:[，,、：:]\s*)?$/g, "$1");
+  return text;
+}
+
+function sanitizeNovelProseMetaReferences(content = "") {
+  return String(content || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = String(line || "").trim();
+      if (/^#{1,6}\s+/.test(trimmed)) {
+        return line;
+      }
+      return removeMetaChapterAnchorsFromLine(line);
+    })
+    .join("\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
 function createChapterResponsePayload({
   chapterNo,
   content = "",
@@ -457,7 +483,7 @@ function createChapterResponsePayload({
   extra = {},
 } = {}) {
   const normalizedChapterNo = parseChapterNo(chapterNo);
-  const normalizedContent = String(content || "").trim();
+  const normalizedContent = sanitizeNovelProseMetaReferences(content);
   const title = extractChapterTitle(normalizedContent, normalizedChapterNo);
   return {
     chapterNo: normalizedChapterNo,
@@ -553,6 +579,28 @@ function truncateText(value = "", maxLength = 600) {
     return text;
   }
   return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
+function getNovelSettingPromptLimit(key = "", fallback = 2400) {
+  if (key === "chapter-plan") return Math.max(fallback, 4000);
+  if (key === "characters") return Math.max(fallback, 7600);
+  if (key === "style-guide") return Math.max(fallback, 3600);
+  if (key === "taboo") return Math.max(fallback, 3200);
+  if (key === "world" || key === "power-system") return Math.max(fallback, 3000);
+  return fallback;
+}
+
+function createCharacterSettingRequirements() {
+  return [
+    "人物设定不能只写身份、性格标签和剧情功能，必须写出“这个人为什么会变成这样”。",
+    "每个主角、反派和重要配角都要包含：核心欲望、核心恐惧、错误信念、外在目标、真正想要但不敢承认的东西。",
+    "每个重要人物至少给出 2-3 个可写入正文的侧写素材：童年或早年回忆、亲密关系片段、职业失败/成功的小故事、一次关键选择、一个暴露性格的日常习惯。",
+    "人物关系必须有行为动机链：他们为什么靠近、为什么疏远、为什么背叛、为什么还会犹豫；不要只写“因利益背叛”或“因性格不合离开”。",
+    "涉及背叛、离开、爱慕、仇恨、保护、控制等强动机时，必须拆成至少三层：表面理由、真实伤口、当下利益或恐惧。",
+    "为每个重要人物写出“压力下会怎么做错”：越恐惧时越会采取什么错误行动；这会怎样伤害他人或推动剧情。",
+    "为每个重要人物写出声音和行为指纹：说话节奏、回避方式、习惯动作、看待世界的隐喻来源；这些指纹必须来自人生经历，而不是贴标签。",
+    "不要把人物设定写成履历表。每个角色段落都要能直接支撑正文场景、冲突和回忆插叙。",
+  ];
 }
 
 function stripMarkdownTitle(value = "") {
@@ -1447,6 +1495,11 @@ function createNovelModule(deps = {}) {
       alignToWrittenChapters ? "4. 对尚未写到的后续设定，要在不违背既成正文的前提下继续保持延展性。" : "4. 输出结构清晰，可直接写入 Markdown 文件。",
       alignToWrittenChapters ? "5. 特别是章节细纲、人物关系、世界规则、力量边界要向当前正文对齐。" : `5. 文件标题使用“# ${title}”。`,
       alignToWrittenChapters ? `6. 文件标题使用“# ${title}”。` : "",
+      ...(key === "characters" ? [
+        "",
+        "### 人物设定专项要求（最高优先级）",
+        ...createCharacterSettingRequirements().map((item, index) => `${index + 1}. ${item}`),
+      ] : []),
     ].filter(Boolean).join("\n");
     return await generateNovelModelText({
       purpose: `novel_setting_${key}`,
@@ -1721,7 +1774,7 @@ function createNovelModule(deps = {}) {
   }) {
     const range = getChapterWordTargetRange(project.chapterWordTarget);
     if (!range.minimum) {
-      return String(chapterContent || "");
+      return sanitizeNovelProseMetaReferences(chapterContent);
     }
 
     let completedContent = String(chapterContent || "").trim();
@@ -1808,7 +1861,7 @@ function createNovelModule(deps = {}) {
         "",
         "### 设定文件参考",
         Object.entries(settings)
-          .map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 2400 : 1400)}`)
+          .map(([key, content]) => `## ${key}\n${truncateText(content, getNovelSettingPromptLimit(key, key === "chapter-plan" ? 2400 : 1400))}`)
           .join("\n\n"),
       ].join("\n");
 
@@ -1836,7 +1889,7 @@ function createNovelModule(deps = {}) {
       force: enforceIdealMaximum,
       reason: condenseReason,
     });
-    return completedContent;
+    return sanitizeNovelProseMetaReferences(completedContent);
   }
 
   async function generateChapterDramaticBeats({
@@ -1878,7 +1931,7 @@ function createNovelModule(deps = {}) {
       "",
       "### 设定与素材压缩参考",
       Object.entries(settings)
-        .map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 1600 : 900)}`)
+        .map(([key, content]) => `## ${key}\n${truncateText(content, getNovelSettingPromptLimit(key, key === "chapter-plan" ? 1600 : 900))}`)
         .join("\n\n"),
       "",
       materialsContext ? `### 挂载素材库\n${truncateText(materialsContext, 2200)}` : "### 挂载素材库\n暂无",
@@ -1935,8 +1988,9 @@ function createNovelModule(deps = {}) {
       "3. 是否有清晰推进和不可逆变化，而不是只在情绪或设定上原地打转。",
       "4. 是否反复使用泛化心理词，例如“感到、觉得、意识到、发现自己、复杂情绪、说不清”；如出现多次且没有动作/身体/对话承载，应判定为 REVISE。",
       "5. 是否把技术细节、信息说明或情绪变化写进可见的动作、对话、物件和现场反应。",
-      "6. 核心对象的成长是否有第三方折射：第三方人物、组织、群体、制度、记录或后续反馈是否看见、误解、利用、害怕、支持或改变行动；如果整章只有主角双人确认且没有外部痕迹，应判定为 REVISE。",
-      `7. 是否存在明显注水、重复或拖沓；字数参考：${createChapterWordTargetRequirement(project.chapterWordTarget)}`,
+      "6. 是否把克制写成了机械化微动作：例如视线停留几秒、手指敲几下、一次呼吸的长度、某动作重复几次、百分比式生理观察；若这些量化没有明确剧情功能，应判定为 REVISE。",
+      "7. 核心对象的成长是否有第三方折射：第三方人物、组织、群体、制度、记录或后续反馈是否看见、误解、利用、害怕、支持或改变行动；如果整章只有主角双人确认且没有外部痕迹，应判定为 REVISE。",
+      `8. 是否存在明显注水、重复或拖沓；字数参考：${createChapterWordTargetRequirement(project.chapterWordTarget)}`,
       "",
       "### 戏剧节拍",
       dramaticBeats || "暂无",
@@ -1952,7 +2006,7 @@ function createNovelModule(deps = {}) {
       "如果章节只是略超理想字数但现场细节、节奏和人物表现更好，应输出 PASS。",
       "如果关系情绪章没有外部危机但关系推进自然，应输出 PASS。",
       "如果 PASS，后面用 3 条以内说明理由。",
-      "如果 REVISE，后面列出必须修改的 3-5 个具体问题；若主要问题是心理直述，请明确要求把“感到/觉得/意识到”替换成动作、身体反应、对话停顿、视线落点或物件细节。",
+      "如果 REVISE，后面列出必须修改的 3-5 个具体问题；若主要问题是心理直述，请要求改成有叙事意义的行为、选择、对话或物件细节；若主要问题是微动作量化，请要求删掉秒数、次数、呼吸长度和生理读数式描写。",
     ].join("\n");
 
     const review = await generateNovelModelText({
@@ -1977,7 +2031,7 @@ function createNovelModule(deps = {}) {
       "### 审稿意见",
       shouldRevise
         ? review
-        : `正文中出现 ${psychologicalTellCount} 处“感到/觉得/意识到/发现自己”等心理直述。请保留剧情和细纲，只做表达层面的自然化重写，把心理结论改成动作、身体反应、对话停顿、视线落点或物件细节。`,
+        : `正文中出现 ${psychologicalTellCount} 处“感到/觉得/意识到/发现自己”等心理直述。请保留剧情和细纲，只做表达层面的自然化重写，把心理结论改成有叙事意义的行为、选择、对话、注意力转移或物件细节；不要改成秒数、次数、呼吸长度、视线停留时长等机械微动作。`,
       "",
       "### 戏剧节拍（必须落实）",
       dramaticBeats || "暂无",
@@ -1996,7 +2050,7 @@ function createNovelModule(deps = {}) {
       "",
       "### 设定文件参考",
       Object.entries(settings)
-        .map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 2600 : 1500)}`)
+        .map(([key, content]) => `## ${key}\n${truncateText(content, getNovelSettingPromptLimit(key, key === "chapter-plan" ? 2600 : 1500))}`)
         .join("\n\n"),
       "",
       "### 原草稿",
@@ -2007,9 +2061,10 @@ function createNovelModule(deps = {}) {
       "2. 输出完整 Markdown 正文，不要解释，不要使用代码块。",
       `3. 必须按“${guidance.label}”写法重写，保留必要设定和既成事实，优先修复章节类型错配、细纲偏离和表达生硬。`,
       "4. 不要把正文写成审稿意见的执行说明。",
-      ...guidance.requirements.map((item, index) => `${index + 5}. ${item}`),
-      ...createPsychologicalShowingRequirements().map((item, index) => `${index + 5 + guidance.requirements.length}. ${item}`),
-      ...createNovelProseOnlyRequirements().map((item, index) => `${index + 5 + guidance.requirements.length + createPsychologicalShowingRequirements().length}. ${item}`),
+      "5. 删掉或改写无叙事必要的微动作计量：例如“约0.3秒”“整五秒”“一次呼吸的长度”“刮了三下”“敲了几下”“瞳孔放大百分之几”。除非场景中有人或设备正在明确测量，否则不要这么写。",
+      ...guidance.requirements.map((item, index) => `${index + 6}. ${item}`),
+      ...createPsychologicalShowingRequirements().map((item, index) => `${index + 6 + guidance.requirements.length}. ${item}`),
+      ...createNovelProseOnlyRequirements().map((item, index) => `${index + 6 + guidance.requirements.length + createPsychologicalShowingRequirements().length}. ${item}`),
     ].join("\n");
 
     const revisedContent = await generateNovelModelText({
@@ -2048,6 +2103,7 @@ function createNovelModule(deps = {}) {
     const materialsContext = await readMaterialsLibraryContext(projectId);
     const chapterMode = detectChapterWritingMode(chapterPlanGuidance.current || "");
     const modeGuidance = createChapterModeGuidance(chapterMode);
+    debug(`chapter_generation_stage project=${projectId} chapter=${chapterNo} stage=beats`);
     const dramaticBeats = await generateChapterDramaticBeats({
       project,
       chapterNo,
@@ -2084,7 +2140,7 @@ function createNovelModule(deps = {}) {
       "",
       "### 设定文件",
       Object.entries(settings)
-        .map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 4000 : 2400)}`)
+        .map(([key, content]) => `## ${key}\n${truncateText(content, getNovelSettingPromptLimit(key, key === "chapter-plan" ? 4000 : 2400))}`)
         .join("\n\n"),
       "",
       "### 最近章节全文",
@@ -2116,6 +2172,7 @@ function createNovelModule(deps = {}) {
       ...modeGuidance.requirements.map((item, index) => `${index + 14}. ${item}`),
     ].join("\n");
 
+    debug(`chapter_generation_stage project=${projectId} chapter=${chapterNo} stage=draft`);
     const initialChapterContent = await generateNovelModelText({
       purpose: "novel_chapter",
       model: project.model,
@@ -2133,6 +2190,7 @@ function createNovelModule(deps = {}) {
       chapterPlanGuidance,
       systemPrompt,
     });
+    debug(`chapter_generation_stage project=${projectId} chapter=${chapterNo} stage=review`);
     const dramaReviewResult = await reviewAndImproveChapterDraft({
       project,
       chapterNo,
@@ -2145,7 +2203,7 @@ function createNovelModule(deps = {}) {
       chapterMode,
       modeGuidance,
     });
-    const chapterContent = await completeChapterToWordTarget({
+    const chapterContent = sanitizeNovelProseMetaReferences(await completeChapterToWordTarget({
       project,
       chapterNo,
       chapterContent: dramaReviewResult.content,
@@ -2155,8 +2213,9 @@ function createNovelModule(deps = {}) {
       systemPrompt,
       enforceIdealMaximum: dramaReviewResult.wantsCondense === true,
       condenseReason: dramaReviewResult.wantsCondense === true ? "审稿意见认为正文存在超长、冗余、重复、注水或拖沓问题。" : "",
-    });
+    }));
 
+    debug(`chapter_generation_stage project=${projectId} chapter=${chapterNo} stage=summary`);
     const summary = await generateNovelModelText({
       purpose: "novel_summary",
       model: project.model,
@@ -2166,6 +2225,7 @@ function createNovelModule(deps = {}) {
       temperature: 0.5,
     });
 
+    debug(`chapter_generation_stage project=${projectId} chapter=${chapterNo} stage=snapshot`);
     const snapshot = await generateNovelModelText({
       purpose: "novel_snapshot",
       model: project.model,
@@ -2358,7 +2418,7 @@ function createNovelModule(deps = {}) {
         chapterPlanGuidance.next || "暂无",
         "",
         "### 设定参考",
-        Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, 2200)}`).join("\n\n"),
+        Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, getNovelSettingPromptLimit(key, 2200))}`).join("\n\n"),
         "",
         "### 挂载素材库",
         materialsContext || "暂无素材库内容。",
@@ -2372,7 +2432,7 @@ function createNovelModule(deps = {}) {
       ].join("\n"),
       temperature: 0.7,
     });
-    const rewritten = await completeChapterToWordTarget({
+    const rewritten = sanitizeNovelProseMetaReferences(await completeChapterToWordTarget({
       project,
       chapterNo: normalizedChapterNo,
       chapterContent: initialRewritten,
@@ -2380,7 +2440,7 @@ function createNovelModule(deps = {}) {
       chapterContext,
       chapterPlanGuidance,
       systemPrompt,
-    });
+    }));
     const summary = await generateNovelModelText({
       purpose: "novel_summary",
       model: project.model,
@@ -2532,7 +2592,7 @@ function createNovelModule(deps = {}) {
         chapterContext.snapshot || "暂无",
         "",
         "### 设定文件",
-        Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, key === "chapter-plan" ? 3200 : 1600)}`).join("\n\n"),
+        Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, getNovelSettingPromptLimit(key, key === "chapter-plan" ? 3200 : 1600))}`).join("\n\n"),
         "",
         "### 挂载素材库",
         materialsContext || "暂无素材库内容。",
@@ -2552,7 +2612,7 @@ function createNovelModule(deps = {}) {
       ].join("\n"),
       temperature: 0.55,
     });
-    const completed = await completeChapterToWordTarget({
+    const completed = sanitizeNovelProseMetaReferences(await completeChapterToWordTarget({
       project,
       chapterNo,
       chapterContent: polished,
@@ -2560,7 +2620,7 @@ function createNovelModule(deps = {}) {
       chapterContext,
       chapterPlanGuidance,
       systemPrompt,
-    });
+    }));
 
     const summary = await generateNovelModelText({
       purpose: "novel_summary",
