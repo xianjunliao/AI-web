@@ -20,6 +20,13 @@ This document summarizes AI-web changes that support the current life web experi
 - Generated, regenerated, polished, and rewritten chapter responses include both top-level content fields and a nested `chapter` payload so life can persist the result directly.
 - When life sends a `lifeProjectSnapshot`, AI-web uses a temporary local project for generation and does not write draft/log artifacts back into the normal AI-web project directory.
 - For MySQL bridge `generate-next` requests carrying a `lifeProjectId`, AI-web pre-pulls the latest project, settings, materials, and chapters from MySQL before generating.
+- Chapter reader/editor pages can request four post-generation editorial actions from AI-web:
+  - `POST /novels/projects/{projectId}/chapters/{chapterNo}/quality-review` returns a Markdown quality review with score, strengths, reading blockers, continuity checks, and a release checklist.
+  - `POST /novels/projects/{projectId}/chapters/{chapterNo}/ai-detect` returns a Markdown AI-style diagnosis with an AI-feel score, suspicious passages, and humanization advice.
+  - `POST /novels/projects/{projectId}/chapters/{chapterNo}/optimize-suggestions` returns prioritized P0/P1/P2 revision suggestions.
+  - `POST /novels/projects/{projectId}/chapters/{chapterNo}/final-polish` rewrites the chapter as the final publishable text, updates the chapter file, regenerates summary/snapshot files, and returns the updated nested `chapter` payload.
+- The quality, AI-detection, and optimization endpoints are read-only for chapter content; `final-polish` is the only new post-generation action that writes chapter artifacts.
+- `final-polish` accepts optional `qualityContext` or `feedback` so life can pass earlier quality review and AI-detection output back into the final rewrite step.
 
 ## Chat Bridge
 
@@ -32,3 +39,4 @@ This document summarizes AI-web changes that support the current life web experi
 - Do not commit local runtime files such as logs or private tool folders.
 - Confirm both life and AI-web point at the same MySQL database when bridge mode is enabled.
 - Restart AI-web after connection-sync changes so background workers use the new behavior.
+- Restart AI-web after deploying chapter editorial action changes so the bridge worker accepts the new write paths.

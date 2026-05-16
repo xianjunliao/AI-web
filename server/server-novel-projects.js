@@ -2817,6 +2817,249 @@ function createNovelModule(deps = {}) {
     throw error;
   }
 
+  async function loadChapterQualityContext(projectId, chapterNo) {
+    const normalizedChapterNo = parseChapterNo(chapterNo);
+    if (!normalizedChapterNo) {
+      const error = new Error("Invalid chapter number");
+      error.statusCode = 400;
+      throw error;
+    }
+    const { project, paths } = await readProjectFileSet(projectId);
+    const chapter = await getChapterContent(projectId, normalizedChapterNo, { preferDraft: true });
+    const settings = {};
+    for (const definition of SETTING_DEFINITIONS) {
+      settings[definition.key] = await readSetting(projectId, definition.key);
+    }
+    const chapterContext = await readRecentChapterContext(projectId, normalizedChapterNo);
+    const chapterPlanGuidance = buildChapterPlanGuidance(settings["chapter-plan"] || "", normalizedChapterNo);
+    const materialsContext = await readMaterialsLibraryContext(projectId);
+    return {
+      project,
+      paths,
+      chapterNo: normalizedChapterNo,
+      chapter,
+      settings,
+      chapterContext,
+      chapterPlanGuidance,
+      materialsContext,
+    };
+  }
+
+  function buildChapterQualityPrompt(context, taskInstruction = "") {
+    const {
+      project,
+      chapterNo,
+      chapter,
+      settings,
+      chapterContext,
+      chapterPlanGuidance,
+      materialsContext,
+    } = context;
+    return [
+      taskInstruction,
+      "",
+      "### 项目基础信息",
+      buildProjectPromptSummary(project),
+      "",
+      "### 当前章节信息",
+      `章节：第 ${chapterNo} 章`,
+      `标题：${chapter.title || extractChapterTitle(chapter.content, chapterNo)}`,
+      `状态：${chapter.status || "unknown"}`,
+      "",
+      "### 当前章节细纲（最高优先级）",
+      chapterPlanGuidance.current || `未从“章节细纲”中定位到第 ${chapterNo} 章条目。`,
+      "",
+      "### 相邻章节边界",
+      chapterPlanGuidance.previous ? `上一章参考：\n${chapterPlanGuidance.previous}` : "上一章参考：暂无",
+      chapterPlanGuidance.next ? `下一章边界：\n${chapterPlanGuidance.next}` : "下一章边界：暂无",
+      "",
+      "### 最近章节上下文",
+      chapterContext.recentFullTexts.join("\n\n") || "暂无",
+      "",
+      "### 上一章状态快照",
+      chapterContext.snapshot || "暂无",
+      "",
+      "### 设定文件",
+      Object.entries(settings).map(([key, content]) => `## ${key}\n${truncateText(content, getNovelSettingPromptLimit(key, key === "chapter-plan" ? 3600 : 1800))}`).join("\n\n"),
+      "",
+      "### 挂载素材库",
+      materialsContext || "暂无素材库内容。",
+      "",
+      "### 当前章节正文",
+      chapter.content || "",
+    ].filter(Boolean).join("\n");
+  }
+
+  async function reviewChapterQuality(projectId, chapterNo, options = {}) {
+    const context = await loadChapterQualityContext(projectId, chapterNo);
+    const taskInstruction = [
+      "请以资深网文编辑视角评价当前章节。",
+      "必须输出 Markdown，包含：",
+      "1. 总评分/10。",
+      "2. 最好的 3 个点。",
+      "3. 最影响阅读的 3 个问题。",
+      "4. 人物、节奏、设定连续性检查。",
+      "5. 发布前必改清单。",
+      "要求具体到句子、段落、情节或角色行为，不要空泛表扬。",
+      String(options.instruction || "").trim(),
+    ].filter(Boolean).join("\n");
+    const result = await generateNovelModelText({
+      purpose: "novel_chapter_quality_review",
+      model: context.project.model,
+      ...projectModelRouting(context.project),
+      systemPrompt: "你是中文小说章节质检编辑。只输出小说评价，不要创建、查询、编辑或运行定时任务，不要调用任何工具。",
+      userPrompt: buildChapterQualityPrompt(context, taskInstruction),
+      temperature: 0.35,
+    });
+    return {
+      ok: true,
+      action: "quality-review",
+      chapterNo: context.chapterNo,
+      title: context.chapter.title,
+      result: String(result || "").trim(),
+      review: String(result || "").trim(),
+    };
+  }
+
+  async function detectChapterAiStyle(projectId, chapterNo, options = {}) {
+    const context = await loadChapterQualityContext(projectId, chapterNo);
+    const taskInstruction = [
+      "请专门检查当前章节的 AI 感。",
+      "必须输出 Markdown，包含：",
+      "1. AI感指数/100。",
+      "2. 疑似 AI 味最重的 5 处，摘录原句或描述位置。",
+      "3. 机械句式、情绪直给、解释过多、转场生硬的具体表现。",
+      "4. 人味增强改法。",
+      "不要只说“较流畅”，必须指出可修改位置。",
+      String(options.instruction || "").trim(),
+    ].filter(Boolean).join("\n");
+    const result = await generateNovelModelText({
+      purpose: "novel_chapter_ai_detect",
+      model: context.project.model,
+      ...projectModelRouting(context.project),
+      systemPrompt: "你是中文小说 AI 痕迹识别编辑。只输出文本分析，不要创建、查询、编辑或运行定时任务，不要调用任何工具。",
+      userPrompt: buildChapterQualityPrompt(context, taskInstruction),
+      temperature: 0.25,
+    });
+    return {
+      ok: true,
+      action: "ai-detect",
+      chapterNo: context.chapterNo,
+      title: context.chapter.title,
+      result: String(result || "").trim(),
+      aiDetection: String(result || "").trim(),
+    };
+  }
+
+  async function suggestChapterOptimizations(projectId, chapterNo, options = {}) {
+    const context = await loadChapterQualityContext(projectId, chapterNo);
+    const taskInstruction = [
+      "请给出当前章节的可执行优化建议。",
+      "按优先级输出：P0 必改、P1 建议改、P2 可选增强。",
+      "每条都必须包含“问题 - 为什么影响效果 - 怎么改”，并尽量指向具体段落或情节。",
+      String(options.instruction || "").trim(),
+    ].filter(Boolean).join("\n");
+    const result = await generateNovelModelText({
+      purpose: "novel_chapter_optimize_suggestions",
+      model: context.project.model,
+      ...projectModelRouting(context.project),
+      systemPrompt: "你是中文小说修订建议编辑。只输出优化建议，不要创建、查询、编辑或运行定时任务，不要调用任何工具。",
+      userPrompt: buildChapterQualityPrompt(context, taskInstruction),
+      temperature: 0.35,
+    });
+    return {
+      ok: true,
+      action: "optimize-suggestions",
+      chapterNo: context.chapterNo,
+      title: context.chapter.title,
+      result: String(result || "").trim(),
+      suggestions: String(result || "").trim(),
+    };
+  }
+
+  async function finalPolishChapter(projectId, chapterNo, options = {}) {
+    const context = await loadChapterQualityContext(projectId, chapterNo);
+    const qualityContext = String(options.qualityContext || options.feedback || "").trim();
+    const taskInstruction = [
+      "请对当前章节做最终发布级润色。",
+      "必须保留剧情事件、人物行动、信息量、章节顺序和结尾方向。",
+      "去掉 AI 感套话、重复句式、直白解释，增强画面、动作、心理暗流和对白质感。",
+      "如果提供了前置质检结果，必须优先修复其中的 P0/P1 问题、AI感问题和评价指出的阅读阻碍。",
+      qualityContext ? [
+        "### 前置质检结果（必须优先修复）",
+        qualityContext,
+      ].join("\n") : "",
+      "只输出润色后的完整正文，不要解释，不要输出清单，不要使用代码块。",
+      String(options.instruction || "").trim(),
+    ].filter(Boolean).join("\n");
+    const raw = await generateNovelModelText({
+      purpose: "novel_chapter_final_polish",
+      model: context.project.model,
+      ...projectModelRouting(context.project),
+      systemPrompt: "你是中文小说终稿润色编辑。只输出润色后的小说正文，不要创建、查询、编辑或运行定时任务，不要调用任何工具。",
+      userPrompt: buildChapterQualityPrompt(context, taskInstruction),
+      temperature: 0.55,
+    });
+    const polished = sanitizeNovelProseMetaReferences(
+      stripMarkdownTitle(String(raw || "")
+        .replace(/^```(?:markdown|md|text)?\s*/i, "")
+        .replace(/```$/i, "")
+        .trim())
+    );
+    if (!polished.trim()) {
+      const error = new Error("Final polish returned empty content");
+      error.statusCode = 502;
+      throw error;
+    }
+    const targetPath = context.chapter.status === "draft"
+      ? path.join(context.paths.draftsDir, formatChapterFileName(context.chapterNo, ".draft.md"))
+      : path.join(context.paths.chaptersDir, formatChapterFileName(context.chapterNo));
+    await writeFileAtomic(targetPath, polished.trim() + "\n");
+    const summary = await generateNovelModelText({
+      purpose: "novel_summary",
+      model: context.project.model,
+      ...projectModelRouting(context.project),
+      systemPrompt: "你是小说章节摘要助手。输出纯 Markdown，不要使用代码块。",
+      userPrompt: `请为《${context.project.name}》第 ${context.chapterNo} 章生成章节摘要，要求包含：本章事件、人物变化、伏笔推进。\n\n${polished}`,
+      temperature: 0.45,
+    });
+    const snapshot = await generateNovelModelText({
+      purpose: "novel_snapshot",
+      model: context.project.model,
+      ...projectModelRouting(context.project),
+      systemPrompt: "你是小说连续性整理助手。输出纯 Markdown，不要使用代码块。",
+      userPrompt: `请为《${context.project.name}》第 ${context.chapterNo} 章生成状态快照，包含：人物状态、地点/时间线、伏笔状态、未解决冲突。\n\n${polished}`,
+      temperature: 0.35,
+    });
+    await Promise.all([
+      writeFileAtomic(path.join(context.paths.summariesDir, formatChapterFileName(context.chapterNo, ".summary.md")), String(summary || "").trim() + "\n"),
+      writeFileAtomic(path.join(context.paths.snapshotsDir, formatChapterFileName(context.chapterNo, ".state.md")), String(snapshot || "").trim() + "\n"),
+      writeJsonFileAtomic(context.paths.projectFile, { ...context.project, updatedAt: Date.now() }),
+    ]);
+    const chapterPayload = createChapterResponsePayload({
+      chapterNo: context.chapterNo,
+      content: polished,
+      summary,
+      snapshot,
+      extra: {
+        finalPolished: true,
+      },
+    });
+    return {
+      ok: true,
+      action: "final-polish",
+      chapterNo: context.chapterNo,
+      title: chapterPayload.title,
+      status: context.chapter.status || chapterPayload.status,
+      content: polished,
+      polishedContent: polished,
+      qualityContextUsed: Boolean(qualityContext),
+      chapter: chapterPayload,
+      summary,
+      snapshot,
+    };
+  }
+
   async function exportProjectMarkdown(projectId) {
     const { project } = await readProjectFileSet(projectId);
     const chapterEntries = await listChaptersMeta(projectId);
@@ -3235,6 +3478,50 @@ function createNovelModule(deps = {}) {
       return true;
     }
 
+    const qualityReviewMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/([^/]+)\/quality-review$/);
+    if (qualityReviewMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(qualityReviewMatch[1]);
+      const chapterNo = decodeURIComponent(qualityReviewMatch[2]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+        reviewChapterQuality(effectiveProjectId, chapterNo, payload)
+      ));
+      return true;
+    }
+
+    const aiDetectMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/([^/]+)\/ai-detect$/);
+    if (aiDetectMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(aiDetectMatch[1]);
+      const chapterNo = decodeURIComponent(aiDetectMatch[2]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+        detectChapterAiStyle(effectiveProjectId, chapterNo, payload)
+      ));
+      return true;
+    }
+
+    const finalPolishMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/([^/]+)\/final-polish$/);
+    if (finalPolishMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(finalPolishMatch[1]);
+      const chapterNo = decodeURIComponent(finalPolishMatch[2]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+        finalPolishChapter(effectiveProjectId, chapterNo, payload)
+      ));
+      return true;
+    }
+
+    const optimizeSuggestionsMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/([^/]+)\/optimize-suggestions$/);
+    if (optimizeSuggestionsMatch && req.method === "POST") {
+      const projectId = decodeURIComponent(optimizeSuggestionsMatch[1]);
+      const chapterNo = decodeURIComponent(optimizeSuggestionsMatch[2]);
+      const payload = await parseJsonBody(req);
+      sendJson(res, 200, await withLifeSnapshotProject(projectId, payload, (effectiveProjectId) =>
+        suggestChapterOptimizations(effectiveProjectId, chapterNo, payload)
+      ));
+      return true;
+    }
+
     const rewriteMatch = pathname.match(/^\/novels\/projects\/([^/]+)\/chapters\/([^/]+)\/rewrite$/);
     if (rewriteMatch && req.method === "POST") {
       const projectId = decodeURIComponent(rewriteMatch[1]);
@@ -3297,6 +3584,10 @@ function createNovelModule(deps = {}) {
     deleteChapterAndProgress,
     regenerateChapter,
     rewriteChapter,
+    reviewChapterQuality,
+    detectChapterAiStyle,
+    finalPolishChapter,
+    suggestChapterOptimizations,
     rejectChapter,
     exportProjectMarkdown,
     getChapterContent,

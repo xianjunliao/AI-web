@@ -12,6 +12,7 @@ This note records the AI-web side of the recent life integration work.
 - Bridge chat calls avoid tool rounds unless a request actually needs web search, weather, or scheduler tools.
 - Novel generation from life snapshots now returns direct chapter payloads while avoiding local artifact writes for temporary snapshot projects.
 - MySQL-backed `generate-next` jobs can pre-pull the latest life project state into AI-web before running generation.
+- Chapter-level editorial actions are available for life through the novel bridge: quality review, AI-style detection, prioritized optimization suggestions, and final publish polish.
 
 ## Main Files
 
@@ -22,6 +23,7 @@ This note records the AI-web side of the recent life integration work.
   - Limits bridge chat tool rounds when tools are not needed.
   - Syncs remote/current and local model lists to separate MySQL config keys.
   - Pre-syncs life novel projects from MySQL before bridge generation.
+  - Allows chapter editorial write paths through the MySQL-backed novel bridge.
 
 - `server/server-connection-config.js`
   - Supports persistence through the MySQL storage layer.
@@ -36,6 +38,9 @@ This note records the AI-web side of the recent life integration work.
   - Supports per-project local/remote routing.
   - Runs setting generation concurrently with `NOVEL_SETTING_CONCURRENCY`.
   - Adds chapter-mode planning, draft review, optional rewrite, optional condense, and richer chapter response payloads.
+  - Adds `quality-review`, `ai-detect`, `optimize-suggestions`, and `final-polish` chapter actions.
+  - Reuses project settings, recent chapter context, chapter-plan guidance, and materials when building editorial prompts.
+  - `final-polish` writes the polished chapter, refreshes summary and state snapshot files, and returns an updated chapter payload.
 
 - `server/server-novel-sync.js`
   - Can pull a project snapshot directly from MySQL tables before generation.
@@ -48,6 +53,7 @@ This note records the AI-web side of the recent life integration work.
 - If no model is provided by a novel project, AI-web tries the shared connection model before returning a configuration error.
 - Tool-enabled chat remains available, but normal chat requests now use fewer tool/model rounds.
 - Snapshot-based novel calls should include `lifeProjectSnapshot` when life wants generation without modifying AI-web's local project artifacts.
+- Post-generation editorial calls can be forwarded through `ai_web_novel_jobs`; read-only analysis calls return Markdown text, while `final-polish` mutates the target chapter and derived chapter metadata.
 
 ## Verification
 

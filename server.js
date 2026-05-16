@@ -1319,7 +1319,11 @@ function isMysqlNovelChapterWritePath(pathValue = "") {
     /^\/novels\/projects\/[^/?]+\/chapters\/batch-generate(?:\?|$)/.test(pathText) ||
     /^\/novels\/projects\/[^/?]+\/chapters\/polish-manual(?:\?|$)/.test(pathText) ||
     /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/rewrite(?:\?|$)/.test(pathText) ||
-    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/regenerate(?:\?|$)/.test(pathText)
+    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/regenerate(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/quality-review(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/ai-detect(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/final-polish(?:\?|$)/.test(pathText) ||
+    /^\/novels\/projects\/[^/?]+\/chapters\/[^/?]+\/optimize-suggestions(?:\?|$)/.test(pathText)
   );
 }
 
