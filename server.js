@@ -474,53 +474,6 @@ function resolveMonitoredRequestSource(req) {
   ).slice(0, 128);
 }
 
-const NO_THINK_DIRECTIVE = "请直接回答，不要进入深度思考或推理模式，不要输出 <think>...</think> 内容。如果模型支持 /no_think，请使用 no_think 模式。";
-
-function isDisableThinkingRequested(payload = {}, options = {}) {
-  if (options.localOnly !== true) return false;
-  return payload.disableThinking === true
-    || payload.noThinking === true
-    || payload.disable_thinking === true
-    || String(payload.reasoningEffort || payload.reasoning_effort || "").toLowerCase() === "none";
-}
-
-function contentHasNoThinkDirective(content) {
-  if (typeof content === "string") return /(^|\s)\/no_think\b/i.test(content);
-  if (Array.isArray(content)) {
-    return content.some((item) => /(^|\s)\/no_think\b/i.test(String(item?.text || "")));
-  }
-  return false;
-}
-
-function prependNoThinkToContent(content) {
-  if (contentHasNoThinkDirective(content)) return content;
-  if (typeof content === "string") return `/no_think\n${content}`;
-  if (Array.isArray(content)) {
-    return [{ type: "text", text: "/no_think\n" }, ...content];
-  }
-  return content;
-}
-
-function applyDisableThinkingDirective(payload = {}) {
-  const messages = Array.isArray(payload.messages)
-    ? payload.messages.map((message) => ({ ...message }))
-    : [];
-  let lastUserIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "user") {
-      lastUserIndex = index;
-      break;
-    }
-  }
-  if (lastUserIndex >= 0) {
-    messages[lastUserIndex].content = prependNoThinkToContent(messages[lastUserIndex].content);
-  }
-  payload.messages = [
-    { role: "system", content: NO_THINK_DIRECTIVE },
-    ...messages,
-  ];
-}
-
 function normalizeChatCompletionPayload(payload = {}, options = {}) {
   const nextPayload = payload && typeof payload === "object" ? { ...payload } : {};
   const fallbackUserText = String(nextPayload.question || nextPayload.user_text || "").trim();
@@ -553,9 +506,6 @@ function normalizeChatCompletionPayload(payload = {}, options = {}) {
     if (sharedModel) {
       nextPayload.model = sharedModel;
     }
-  }
-  if (isDisableThinkingRequested(nextPayload, options)) {
-    applyDisableThinkingDirective(nextPayload);
   }
   delete nextPayload.connectionConfig;
   delete nextPayload.modelRoute;
@@ -818,7 +768,9 @@ function handleStreamPayloadLine(line, state, onDelta) {
       state.firstDeltaAt = Date.now();
     }
     state.rawText += deltaText;
-    const visibleDeltaText = state.thinkingDeltaFilter ? state.thinkingDeltaFilter.push(deltaText) : deltaText;
+    const visibleDeltaText = state.preserveThinking
+      ? deltaText
+      : (state.thinkingDeltaFilter ? state.thinkingDeltaFilter.push(deltaText) : deltaText);
     if (visibleDeltaText) {
       state.text += visibleDeltaText;
       onDelta(visibleDeltaText, event);
@@ -826,7 +778,7 @@ function handleStreamPayloadLine(line, state, onDelta) {
   }
 }
 
-async function callConfiguredChatCompletionStream(payload = {}, { onDelta = () => {} } = {}) {
+async function callConfiguredChatCompletionStream(payload = {}, { onDelta = () => {}, preserveThinking = false } = {}) {
   const connectionConfig = payload.connectionConfig && typeof payload.connectionConfig === "object"
     ? payload.connectionConfig
     : null;
@@ -850,7 +802,8 @@ async function callConfiguredChatCompletionStream(payload = {}, { onDelta = () =
     lastEvent: null,
     usage: null,
     firstDeltaAt: 0,
-    thinkingDeltaFilter: createThinkingDeltaFilter(),
+    preserveThinking: preserveThinking === true,
+    thinkingDeltaFilter: preserveThinking === true ? null : createThinkingDeltaFilter(),
   };
   await requestStream(targetUrl, {
     method: "POST",
@@ -873,12 +826,14 @@ async function callConfiguredChatCompletionStream(payload = {}, { onDelta = () =
   if (state.buffer.trim()) {
     handleStreamPayloadLine(state.buffer, state, onDelta);
   }
-  const trailingText = state.thinkingDeltaFilter.flush();
+  const trailingText = state.thinkingDeltaFilter ? state.thinkingDeltaFilter.flush() : "";
   if (trailingText) {
     state.text += trailingText;
     onDelta(trailingText, state.lastEvent || {});
   }
-  const text = stripModelThinkingContent((state.rawText || state.text).trim()) || state.text.trim();
+  const text = preserveThinking
+    ? (state.rawText || state.text).trim()
+    : (stripModelThinkingContent((state.rawText || state.text).trim()) || state.text.trim());
   if (!text) {
     throw new Error("Stream completed without final text");
   }
@@ -1053,6 +1008,7 @@ function createBridgeTextResponse(text = "", model = "", extras = {}) {
 
 async function callBridgeChatCompletion(payload = {}, options = {}) {
   const onDelta = typeof options.onDelta === "function" ? options.onDelta : null;
+  const preserveThinking = options.preserveThinking === true;
   const connectionConfig = payload.connectionConfig && typeof payload.connectionConfig === "object"
     ? payload.connectionConfig
     : null;
@@ -1078,6 +1034,7 @@ async function callBridgeChatCompletion(payload = {}, options = {}) {
       let emittedDelta = false;
       try {
         return await callConfiguredChatCompletionStream({ ...requestPayload, connectionConfig, localOnly }, {
+          preserveThinking,
           onDelta: (deltaText, event) => {
             emittedDelta = true;
             onDelta(deltaText, event);
@@ -1168,6 +1125,7 @@ async function processOneChatJob(workerId = "ai-web-worker") {
     }, {
       onDelta: (deltaText) => writeStreamEvent({ eventType: "delta", deltaText }),
       onEvent: writeStreamEvent,
+      preserveThinking: true,
     });
     if (!responsePayload.metrics) {
       responsePayload.metrics = buildChatMetrics({
